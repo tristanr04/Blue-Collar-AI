@@ -1,0 +1,725 @@
+Upgrade the existing Blue Collar Financial AI project into a complete AI-powered financial intake, budgeting, debt, investment, and financial coaching application.
+
+Do not remove the existing working features. Preserve the current app structure, dashboard, onboarding, paystub calculator, debts, bills, banking, investments, scenario builder, settings, local demo data, and mobile-first design.
+
+The goal is to make the app work across the user’s entire financial life, not just money coming in.
+
+==================================================
+CORE PRODUCT REQUIREMENTS
+==================================================
+
+The app must support:
+
+- Paystubs
+- Checking accounts
+- Savings accounts
+- Credit cards
+- Auto loans
+- Personal loans
+- Mortgages
+- Brokerage accounts
+- Retirement accounts
+- Monthly bills
+- Bank statements
+- Credit-card statements
+- Investment statements
+- Loan statements
+- Utility bills
+- Screenshots
+- Images saved from Files
+- PDFs saved from Files
+
+Users should be able to upload financial documents, have the app classify and extract the correct data, review the extracted information, confirm it, and automatically populate the correct section of the app.
+
+No financial data should be saved until the user confirms it.
+
+Never invent missing values.
+
+==================================================
+SUPPORTED FILE INPUTS
+==================================================
+
+Support:
+
+- PNG
+- JPG
+- JPEG
+- HEIC
+- PDF
+
+Allow uploads from:
+
+- Photos
+- Camera
+- Files
+
+Detect the real MIME type instead of relying only on the extension.
+
+Reject corrupted, encrypted, password-protected, unsupported, oversized, or unreadable files with a clear user-facing message.
+
+Show the detected file type and processing progress.
+
+==================================================
+SEPARATE PROCESSING PIPELINES
+==================================================
+
+Use different processing logic for screenshots, image files, and PDFs.
+
+IMAGE FILES:
+
+- Correct orientation using EXIF data.
+- Convert HEIC to PNG or JPEG on the server.
+- Resize oversized images while preserving text clarity.
+- Improve contrast and sharpness when necessary.
+- Preserve the source image for the review screen.
+- Detect whether the image contains one document or multiple financial documents.
+- If multiple documents are detected in one image, label it “Multiple documents detected” and ask the user to crop or upload each document separately.
+- Do not force mixed images into the paystub category.
+
+PDF FILES:
+
+- Do not treat an entire PDF as one screenshot.
+- First attempt native PDF text extraction.
+- Preserve page numbers and page order.
+- If a page contains reliable embedded text, use that text.
+- If a page is scanned or has little usable text, render that page as a high-resolution image and analyze it visually.
+- Classify and extract each page separately.
+- Combine pages only when they clearly belong to the same statement or document.
+- Allow users to choose which pages to import.
+- Show page-level classifications and confidence scores.
+- Support multi-page bank, credit-card, mortgage, loan, investment, retirement, and pay statements.
+
+Saved files and screenshots containing the same information should produce the same confirmed financial values.
+
+==================================================
+DOCUMENT CLASSIFICATION
+==================================================
+
+Classify every uploaded image or PDF page before extraction as one of:
+
+- Paystub
+- Checking account
+- Savings account
+- Bank statement
+- Credit card
+- Credit-card statement
+- Auto loan
+- Personal loan
+- Mortgage
+- Brokerage account
+- Investment statement
+- Retirement account
+- Retirement statement
+- Monthly bill
+- Utility bill
+- Multiple documents detected
+- Unknown
+
+Never automatically classify all uploads as paystubs.
+
+Allow the user to manually change the document type before saving.
+
+==================================================
+DOCUMENT-SPECIFIC EXTRACTION
+==================================================
+
+1. PAYSTUBS
+
+Extract:
+
+- employer
+- pay date
+- pay period
+- hourly rate
+- regular hours
+- overtime hours
+- double-time hours
+- per diem
+- standby pay
+- bonuses
+- gross pay
+- federal tax
+- state tax
+- Social Security
+- Medicare
+- union dues
+- insurance deductions
+- retirement contribution
+- retirement contribution rate
+- employer match
+- other deductions
+- net pay
+
+Save confirmed values to:
+
+- Paystubs
+- Income profile
+- Dashboard
+- Cash-flow calculations
+
+Calculate:
+
+- taxable gross
+- non-taxable income
+- estimated take-home
+- weekly income
+- monthly income
+- overtime contribution
+- double-time contribution
+- per diem contribution
+
+2. CREDIT CARDS
+
+Extract:
+
+- issuer
+- account name
+- last four digits
+- current balance
+- statement balance
+- credit limit
+- available credit
+- APR
+- minimum payment
+- due date
+- autopay status
+
+Save confirmed values to:
+
+- Debts
+- Credit utilization
+- Monthly obligations
+- Dashboard
+
+Calculate:
+
+- utilization percentage
+- total revolving debt
+- estimated payoff time
+- high-interest debt priority
+
+3. AUTO LOANS AND PERSONAL LOANS
+
+Extract:
+
+- lender
+- loan name
+- last four digits
+- current balance
+- original amount
+- APR
+- monthly payment
+- remaining term
+- original term
+- next due date
+- payoff amount if shown
+
+Save confirmed values to:
+
+- Debts
+- Monthly obligations
+- Dashboard
+
+Calculate:
+
+- payoff estimate
+- interest cost estimate
+- debt-to-income contribution
+
+4. MORTGAGES
+
+Extract:
+
+- lender
+- property address if shown
+- current principal balance
+- original loan amount
+- interest rate
+- monthly payment
+- principal and interest
+- escrow
+- taxes and insurance
+- next due date
+- remaining term
+- property value if shown
+
+Save confirmed values to:
+
+- Debts
+- Housing
+- Monthly obligations
+- Net worth
+
+Calculate:
+
+- home equity when property value is available
+- mortgage debt
+- debt-to-income contribution
+
+5. BANK ACCOUNTS
+
+Extract:
+
+- institution
+- account type
+- account name
+- last four digits
+- current balance
+- available balance
+- APY
+- statement date if shown
+
+Save confirmed values to:
+
+- Banking
+- Liquid assets
+- Emergency fund
+- Net worth
+- Dashboard
+
+6. BROKERAGE ACCOUNTS
+
+Extract:
+
+- institution
+- account type
+- total account value
+- cash
+- buying power
+- margin used
+- margin rate if shown
+- daily return
+- total return if shown
+
+Save confirmed values to:
+
+- Investments
+- Assets
+- Net worth
+- Dashboard
+
+7. RETIREMENT ACCOUNTS
+
+Extract:
+
+- institution
+- account type
+- current balance
+- employee contribution rate
+- employee contributions
+- employer match
+- employer match rate
+- vesting information
+- year-to-date contributions
+
+Save confirmed values to:
+
+- Investments
+- Retirement planning
+- Net worth
+- Dashboard
+
+8. MONTHLY BILLS
+
+Extract:
+
+- provider
+- category
+- amount due
+- due date
+- billing frequency
+- autopay status
+- account last four digits if shown
+
+Save confirmed values to:
+
+- Bills
+- Monthly expenses
+- Cash-flow calculations
+
+9. BANK AND CREDIT-CARD STATEMENTS
+
+Extract individual transactions when available:
+
+- date
+- merchant or description
+- amount
+- debit or credit
+- category
+- source account
+- transaction identifier if available
+
+Rules:
+
+- Do not treat deposits as expenses.
+- Do not treat refunds as spending.
+- Do not treat transfers between the user’s own accounts as income or spending.
+- Detect recurring transactions and suggest them as monthly bills.
+- Require user confirmation before adding recurring bills.
+- Prevent duplicate transactions.
+
+==================================================
+CONFIDENCE, VALIDATION, AND REVIEW
+==================================================
+
+Every extracted field must include:
+
+- field name
+- extracted value
+- document type
+- source filename
+- source page number
+- confidence score
+- original source text or visual region used
+
+Use statuses:
+
+- Needs review
+- Confirmed
+- Rejected
+- Duplicate detected
+- Low confidence
+- Multiple documents detected
+- Unknown
+
+Leave uncertain fields blank instead of guessing.
+
+Show the original document or page beside the extracted fields.
+
+Allow the user to edit:
+
+- document type
+- field values
+- account name
+- category
+- source destination
+
+Nothing should update the user’s financial profile until the user taps Confirm.
+
+Validation rules:
+
+- Hours must be between 0 and 168.
+- Percentages must be between 0% and 100%.
+- APR must be between 0% and 100%.
+- Credit limits must be greater than or equal to identified balances.
+- Net pay cannot exceed gross pay plus identified non-taxable income.
+- Minimum payments cannot be negative.
+- Account balances cannot be negative unless the account type permits overdraft or margin.
+- Due dates must be valid dates.
+- Duplicate accounts must not be created automatically.
+
+Duplicate detection should compare:
+
+- institution
+- account type
+- last four digits
+- balance
+- statement date
+- loan identifier
+- transaction identifier
+
+When a possible duplicate is found, allow the user to:
+
+- update the existing account
+- create a new account
+- reject the import
+
+==================================================
+AUTOMATIC ROUTING
+==================================================
+
+After confirmation, route data automatically:
+
+- Paystub → Paystubs and Income
+- Checking / Savings → Banking
+- Bank statement → Banking and Transactions
+- Credit card → Debts
+- Credit-card statement → Debts and Transactions
+- Auto loan → Debts
+- Personal loan → Debts
+- Mortgage → Debts and Housing
+- Brokerage → Investments
+- Investment statement → Investments
+- Retirement → Investments and Retirement
+- Monthly bill → Bills
+- Utility bill → Bills and Expenses
+
+Update automatically after confirmation:
+
+- dashboard
+- free cash flow
+- monthly obligations
+- debt totals
+- credit utilization
+- liquid cash
+- emergency fund
+- investment balances
+- retirement balances
+- net worth
+- financial health score
+- scenario builder inputs
+
+==================================================
+FINANCIAL DASHBOARD
+==================================================
+
+Keep the existing dashboard and improve it into a Financial Command Center.
+
+Show:
+
+- Weekly take-home
+- Monthly take-home
+- Gross income
+- Taxable income
+- Non-taxable per diem
+- Monthly bills
+- Minimum debt payments
+- Monthly free cash flow
+- Checking
+- Savings
+- Liquid cash
+- Total debt
+- Credit-card utilization
+- Investments
+- Retirement
+- Home equity
+- Net worth
+- Emergency fund coverage
+- Financial Health Score from 0 to 100
+- Recommended next moves
+
+The Financial Health Score should consider:
+
+- positive cash flow
+- emergency fund coverage
+- credit utilization
+- high-interest debt
+- debt-to-income ratio
+- savings rate
+- retirement contribution rate
+- liquidity
+- payment history only when confirmed data exists
+
+Do not penalize missing data as if it were bad data.
+
+Explain what would improve the score.
+
+==================================================
+AI FINANCIAL ASSISTANT
+==================================================
+
+Add a main navigation item called:
+
+Ask Blue Collar AI
+
+The assistant must use only confirmed user financial data.
+
+It must answer questions involving:
+
+- income
+- overtime
+- double time
+- per diem
+- taxes
+- bills
+- debts
+- APRs
+- minimum payments
+- checking
+- savings
+- investments
+- retirement
+- emergency fund
+- net worth
+- free cash flow
+- debt payoff
+- affordability
+- time off
+- 401(k) contribution changes
+- vehicle purchases
+- housing affordability
+- scenario planning
+
+Example questions:
+
+- How much OT do I need to pay off my truck in one year?
+- Which debt should I pay first?
+- Can I afford this truck payment?
+- What happens if I increase my 401(k) to 15%?
+- How many months of expenses do I have saved?
+- What would my check be with 20 hours of OT?
+- Can I afford to take two weeks off?
+- What is my best financial move this month?
+- What happens if I sell my truck?
+- Can I afford a $450,000 house?
+- How much double time would I need to cover a major repair?
+- What is my debt-to-income ratio?
+- What would my budget look like if per diem stopped?
+
+The assistant must:
+
+- calculate answers from confirmed user data
+- show the numbers used
+- explain assumptions
+- identify missing information
+- ask for missing information when required
+- separate known facts from estimates
+- never invent balances, rates, payments, or income
+- avoid guaranteeing outcomes
+- provide educational guidance
+- state that it is not a licensed financial adviser
+- avoid recommending specific securities
+- never use unconfirmed OCR results
+
+The AI assistant should support structured calculation tools for:
+
+- paycheck estimation
+- overtime projection
+- double-time projection
+- debt payoff
+- snowball comparison
+- avalanche comparison
+- debt-to-income ratio
+- emergency fund coverage
+- affordability
+- retirement contribution impact
+- monthly cash-flow projection
+- scenario analysis
+
+==================================================
+SERVER-SIDE AI IMPLEMENTATION
+==================================================
+
+Replace simulated extraction with a real server-side image and document analysis system.
+
+Do not expose any API key in frontend code.
+
+Use Replit Secrets with:
+
+OPENAI_API_KEY
+
+Create secure backend endpoints for:
+
+1. Image upload and document classification
+2. PDF upload and page extraction
+3. Structured financial field extraction
+4. AI financial assistant questions
+5. File cleanup after processing
+
+The extraction endpoint must:
+
+- accept the uploaded file
+- inspect the MIME type
+- process images and PDFs differently
+- classify the document first
+- request structured JSON output
+- validate the JSON against the correct schema
+- return confidence scores and source references
+- reject invalid results
+- avoid fabricated values
+
+The AI assistant endpoint must receive:
+
+- the user’s confirmed financial profile
+- the user’s question
+
+It must not receive unconfirmed extraction guesses.
+
+==================================================
+DATA STORAGE AND PRIVACY
+==================================================
+
+Keep the current local demo mode.
+
+For production behavior:
+
+- Process uploaded files temporarily.
+- Delete raw files after extraction unless the user explicitly chooses to save them.
+- Do not store full account numbers.
+- Store only last four digits when needed.
+- Never request bank login credentials.
+- Never request Social Security numbers.
+- Never place financial data in public logs.
+- Do not log raw documents.
+- Add clear privacy notices.
+- Require user confirmation before storage.
+- Add a full data deletion option.
+- Add export and import of the confirmed profile as JSON.
+
+Use localStorage for demo mode.
+
+If persistent accounts are added, use secure authenticated storage with row-level access controls.
+
+==================================================
+USER EXPERIENCE
+==================================================
+
+Keep the mobile-first dark navy, white, and green visual design.
+
+Primary onboarding action:
+
+Scan My Finances
+
+Upload flow:
+
+1. Choose Photos, Camera, or Files
+2. Upload one or more documents
+3. Show processing progress
+4. Classify every file or page
+5. Show review queue
+6. Let user edit classifications and values
+7. Confirm each document
+8. Route data to the correct app section
+9. Show updated Financial Command Center
+10. Offer Ask Blue Collar AI
+
+Add visible guidance:
+
+- Upload one financial document per image.
+- Crop collage images before upload.
+- PDFs may contain multiple pages.
+- Review every extracted value before confirming.
+- Low-confidence values will be left blank.
+
+==================================================
+TESTING REQUIREMENTS
+==================================================
+
+Test using separate files for:
+
+- Paystub
+- Checking account
+- Savings account
+- Credit card 1
+- Credit card 2
+- Auto loan
+- Mortgage
+- Brokerage account
+- 401(k)
+- Utility bill
+- Text-based PDF statement
+- Scanned PDF statement
+- Multi-page bank statement
+- Multi-page credit-card statement
+- HEIC image
+- JPG image
+- PNG image
+
+Verify:
+
+- every document is classified correctly
+- every document populates the correct section
+- files and screenshots containing the same values produce matching confirmed results
+- uncertain values remain blank
+- duplicate accounts are detected
+- confirmed data updates the dashboard
+- confirmed data updates the scenario builder
+- the AI assistant answers at least five financial questions using confirmed data
+- no API keys appear in frontend code
+- no raw documents appear in logs
+- uploaded files are deleted after extraction
+- the app runs without frontend or backend errors
+
+Keep the current demo data and manual-entry fallback working when no API key is configured.
+
+Do not publish the updated version until the complete upload, review, confirmation, routing, dashboard, and AI assistant flow works end to end.
