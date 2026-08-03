@@ -3,6 +3,9 @@ import OpenAI from "openai";
 import { AskRequestSchema } from "@workspace/api-zod";
 import { validateBody } from "../lib/validate.js";
 import { logger } from "../lib/logger.js";
+import { aiAskLimiter } from "../middlewares/rate-limit.js";
+import { aiKillSwitch, aiGlobalSemaphore } from "../middlewares/ai-guard.js";
+import { makeAbortController } from "../middlewares/timeout.js";
 
 const router: IRouter = Router();
 
@@ -12,13 +15,21 @@ const openai = new OpenAI({
 });
 
 // ─── POST /api/ai/ask ─────────────────────────────────────────────────────────
+// Middleware stack (innermost last):
+//   1. aiKillSwitch       — AI_ENABLED=false → 503
+//   2. aiAskLimiter       — 20 req/hour/IP   → 429
+//   3. aiGlobalSemaphore  — global concurrency cap → 429
+//   4. validateBody       — Zod AskRequestSchema → 400
+//   5. handler            — 60-second AbortController timeout
 
 router.post(
   "/ai/ask",
+  aiKillSwitch,
+  aiAskLimiter,
+  aiGlobalSemaphore.middleware(),
   validateBody(AskRequestSchema, "request_validation"),
   async (req, res) => {
     // req.body is validated and typed as AskRequest at this point.
-    // question is trimmed; financialProfile is depth- and size-checked.
     const { question, financialProfile } = req.body as {
       question: string;
       financialProfile?: Record<string, unknown>;
@@ -52,16 +63,22 @@ CALCULATION TOOLS you can use:
 
 At the end of every response, add one line: "⚠️ I am not a licensed financial adviser. This is educational guidance, not financial advice."`;
 
+    // 60-second abort: fires on client disconnect OR timeout.
+    const abort = makeAbortController(res, 60_000);
+
     try {
-      const stream = await openai.chat.completions.create({
-        model: "gpt-5.6-terra",
-        max_completion_tokens: 1500,
-        stream: true,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: question },
-        ],
-      });
+      const stream = await openai.chat.completions.create(
+        {
+          model: "gpt-5.6-terra",
+          max_completion_tokens: 1500,
+          stream: true,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: question },
+          ],
+        },
+        { signal: abort.signal },
+      );
 
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
@@ -73,9 +90,31 @@ At the end of every response, add one line: "⚠️ I am not a licensed financia
           res.write(`data: ${JSON.stringify({ delta })}\n\n`);
         }
       }
+
+      abort.clearTimeout();
       res.write("data: [DONE]\n\n");
       res.end();
     } catch (err) {
+      abort.clearTimeout();
+
+      const isAbort =
+        abort.signal.aborted ||
+        (err instanceof Error && (err.name === "AbortError" || err.message.includes("abort")));
+
+      if (isAbort) {
+        logger.warn({ path: req.path, event: "ai_ask_timeout" }, "AI ask timed out or client disconnected");
+        if (!res.headersSent) {
+          res.status(504).json({
+            stage: "ai_timeout",
+            error: "AI request timed out. Please try again.",
+          });
+        } else {
+          res.write(`data: ${JSON.stringify({ error: "Stream timed out." })}\n\n`);
+          res.end();
+        }
+        return;
+      }
+
       logger.error({ err }, "ai/ask failed");
       if (!res.headersSent) {
         res.status(500).json({ error: "AI assistant is temporarily unavailable." });

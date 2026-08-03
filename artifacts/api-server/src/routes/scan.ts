@@ -9,6 +9,9 @@ import { AiExtractionOutputSchema } from "@workspace/api-zod";
 import { validateValue } from "../lib/validate.js";
 import { logger } from "../lib/logger.js";
 import { normalizeInstitution } from "../lib/institution-registry.js";
+import { scanLimiter } from "../middlewares/rate-limit.js";
+import { scanSemaphore } from "../middlewares/ai-guard.js";
+import { makeAbortController } from "../middlewares/timeout.js";
 
 const router: IRouter = Router();
 
@@ -124,35 +127,41 @@ If the document contains multiple unrelated financial documents, set docType to 
 
 // ─── Build messages for GPT ───────────────────────────────────────────────────
 
-async function extractFromImage(buffer: Buffer, mimeType: string) {
+async function extractFromImage(buffer: Buffer, mimeType: string, signal?: AbortSignal) {
   const b64 = buffer.toString("base64");
   const imgMime = mimeType === "image/heic" ? "image/jpeg" : mimeType;
-  const response = await openai.chat.completions.create({
-    model: "gpt-5.6-terra",
-    max_completion_tokens: 2048,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: "Extract all financial data from this document." },
-          { type: "image_url", image_url: { url: `data:${imgMime};base64,${b64}`, detail: "high" } },
-        ],
-      },
-    ],
-  });
+  const response = await openai.chat.completions.create(
+    {
+      model: "gpt-5.6-terra",
+      max_completion_tokens: 2048,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Extract all financial data from this document." },
+            { type: "image_url", image_url: { url: `data:${imgMime};base64,${b64}`, detail: "high" } },
+          ],
+        },
+      ],
+    },
+    { signal },
+  );
   return response.choices[0]?.message?.content ?? "{}";
 }
 
-async function extractFromText(text: string, pageHint?: string) {
-  const response = await openai.chat.completions.create({
-    model: "gpt-5.6-terra",
-    max_completion_tokens: 2048,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: `Extract all financial data from this document text${pageHint ? ` (${pageHint})` : ""}:\n\n${text.slice(0, 8000)}` },
-    ],
-  });
+async function extractFromText(text: string, pageHint?: string, signal?: AbortSignal) {
+  const response = await openai.chat.completions.create(
+    {
+      model: "gpt-5.6-terra",
+      max_completion_tokens: 2048,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: `Extract all financial data from this document text${pageHint ? ` (${pageHint})` : ""}:\n\n${text.slice(0, 8000)}` },
+      ],
+    },
+    { signal },
+  );
   return response.choices[0]?.message?.content ?? "{}";
 }
 
@@ -170,132 +179,163 @@ function safeParseJson(raw: string): { data: Record<string, unknown>; parseError
 }
 
 // ─── POST /api/scan-document ──────────────────────────────────────────────────
+// Middleware stack (innermost last):
+//   1. scanLimiter       — 10 scans/hour/IP → 429
+//   2. scanSemaphore     — 3 concurrent/IP  → 429
+//   3. upload.single     — multer file parse
+//   4. handler           — 90-second AbortController timeout
 
-// Route registered at POST /api/scan-document (via app.use("/api", router))
-router.post("/scan-document", upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    res.status(400).json({ stage: "backend_receipt", error: "No file received. Please try again." });
-    return;
-  }
+router.post(
+  "/scan-document",
+  scanLimiter,
+  scanSemaphore.middleware(),
+  upload.single("file"),
+  async (req, res) => {
+    // 90-second abort: fires on client disconnect OR timeout.
+    const abort = makeAbortController(res, 90_000);
 
-  const { buffer, originalname } = req.file;
+    if (!req.file) {
+      abort.clearTimeout();
+      res.status(400).json({ stage: "backend_receipt", error: "No file received. Please try again." });
+      return;
+    }
 
-  // Detect MIME from magic bytes — ignore whatever the browser reported
-  let mime: string;
-  try {
-    mime = detectMime(buffer);
-  } catch (err) {
-    logger.error({ err }, "MIME detection failed");
-    res.status(422).json({ stage: "mime_validation", error: "Could not read file. Please try a different file." });
-    return;
-  }
+    const { buffer, originalname } = req.file;
 
-  // Normalize .jpg/.jpeg → image/jpeg when magic-byte detection falls back to
-  // octet-stream (can happen with some iOS-generated JPEGs that omit the SOI marker)
-  if (mime === "application/octet-stream") {
-    const ext = originalname.split(".").pop()?.toLowerCase() ?? "";
-    if (ext === "jpg" || ext === "jpeg") mime = "image/jpeg";
-    else if (ext === "png") mime = "image/png";
-    else if (ext === "heic" || ext === "heif") mime = "image/heic";
-    else if (ext === "pdf") mime = "application/pdf";
-  }
+    // Detect MIME from magic bytes — ignore whatever the browser reported
+    let mime: string;
+    try {
+      mime = detectMime(buffer);
+    } catch (err) {
+      abort.clearTimeout();
+      logger.error({ err }, "MIME detection failed");
+      res.status(422).json({ stage: "mime_validation", error: "Could not read file. Please try a different file." });
+      return;
+    }
 
-  const supported = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/heic", "application/pdf"];
-  if (!supported.includes(mime)) {
-    res.status(422).json({
-      stage: "mime_validation",
-      error: `Unsupported file type (${mime}). Please upload JPG, PNG, HEIC, or PDF.`,
-    });
-    return;
-  }
+    // Normalize .jpg/.jpeg → image/jpeg when magic-byte detection falls back to
+    // octet-stream (can happen with some iOS-generated JPEGs that omit the SOI marker)
+    if (mime === "application/octet-stream") {
+      const ext = originalname.split(".").pop()?.toLowerCase() ?? "";
+      if (ext === "jpg" || ext === "jpeg") mime = "image/jpeg";
+      else if (ext === "png") mime = "image/png";
+      else if (ext === "heic" || ext === "heif") mime = "image/heic";
+      else if (ext === "pdf") mime = "application/pdf";
+    }
 
-  try {
-    let rawJson: string;
+    const supported = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/heic", "application/pdf"];
+    if (!supported.includes(mime)) {
+      abort.clearTimeout();
+      res.status(422).json({
+        stage: "mime_validation",
+        error: `Unsupported file type (${mime}). Please upload JPG, PNG, HEIC, or PDF.`,
+      });
+      return;
+    }
 
-    if (mime === "application/pdf") {
-      let pdfText = "";
-      try {
-        const parsed = await pdfParse(buffer);
-        pdfText = parsed.text;
-      } catch {
-        pdfText = "";
+    try {
+      let rawJson: string;
+
+      if (mime === "application/pdf") {
+        let pdfText = "";
+        try {
+          const parsed = await pdfParse(buffer);
+          pdfText = parsed.text;
+        } catch {
+          pdfText = "";
+        }
+
+        if (pdfText.trim().length > 100) {
+          rawJson = await extractFromText(pdfText, "PDF", abort.signal);
+        } else {
+          abort.clearTimeout();
+          res.status(422).json({
+            stage: "image_decode",
+            error: "This PDF appears to be image-only with no embedded text. Screenshot individual pages and upload as images.",
+          });
+          return;
+        }
+      } else {
+        rawJson = await extractFromImage(buffer, mime, abort.signal);
       }
 
-      if (pdfText.trim().length > 100) {
-        rawJson = await extractFromText(pdfText, "PDF");
-      } else {
+      // ── Parse JSON from raw AI text ───────────────────────────────────────────
+      const { data: rawParsed, parseError } = safeParseJson(rawJson);
+
+      if (parseError) {
+        abort.clearTimeout();
+        logger.warn({ file: originalname }, "AI returned non-JSON response");
         res.status(422).json({
-          stage: "image_decode",
-          error: "This PDF appears to be image-only with no embedded text. Screenshot individual pages and upload as images.",
+          stage: "ai_json_parse",
+          error: "AI returned an unreadable response. Please try again.",
         });
         return;
       }
-    } else {
-      rawJson = await extractFromImage(buffer, mime);
-    }
 
-    // ── Parse JSON from raw AI text ───────────────────────────────────────────
-    const { data: rawParsed, parseError } = safeParseJson(rawJson);
-
-    if (parseError) {
-      logger.warn({ file: originalname }, "AI returned non-JSON response");
-      res.status(422).json({
-        stage: "ai_json_parse",
-        error: "AI returned an unreadable response. Please try again.",
-      });
-      return;
-    }
-
-    // ── Validate AI output shape with Zod ─────────────────────────────────────
-    // Unknown docTypes coerce to "Unknown". Malformed numeric fields (NaN,
-    // Infinity, wrong type) cause rejection. Missing optional fields get defaults.
-    const validation = validateValue(
-      AiExtractionOutputSchema,
-      rawParsed,
-      "ai_output_validation",
-    );
-
-    if (!validation.success) {
-      logger.warn(
-        { file: originalname, fieldErrors: validation.body.fieldErrors },
-        "AI output failed schema validation",
+      // ── Validate AI output shape with Zod ─────────────────────────────────────
+      const validation = validateValue(
+        AiExtractionOutputSchema,
+        rawParsed,
+        "ai_output_validation",
       );
-      res.status(422).json({
-        ...validation.body,
-        error: "AI returned an unrecognized response format. Please try again.",
+
+      if (!validation.success) {
+        abort.clearTimeout();
+        logger.warn(
+          { file: originalname, fieldErrors: validation.body.fieldErrors },
+          "AI output failed schema validation",
+        );
+        res.status(422).json({
+          ...validation.body,
+          error: "AI returned an unrecognized response format. Please try again.",
+        });
+        return;
+      }
+
+      const data = validation.data;
+
+      // ── Normalize institution name server-side against the registry ───────────
+      const fieldsMap = data.fields ?? {};
+      const fieldInstitutionValue = fieldsMap.institution?.value;
+      const rawInstitutionName: string | null =
+        data.institution?.rawName ??
+        (typeof fieldInstitutionValue === "string" ? fieldInstitutionValue : null);
+
+      const institution = normalizeInstitution(rawInstitutionName);
+
+      abort.clearTimeout();
+
+      logger.info(
+        { docType: data.docType, file: originalname, institution: institution.normalizedName },
+        "scan complete",
+      );
+
+      res.json({ ...data, institution, fileName: originalname, mimeType: mime });
+    } catch (err) {
+      abort.clearTimeout();
+
+      // Distinguish AbortError (timeout/disconnect) from other failures.
+      const isAbort =
+        abort.signal.aborted ||
+        (err instanceof Error && (err.name === "AbortError" || err.message.includes("abort")));
+
+      if (isAbort) {
+        if (!res.headersSent) {
+          res.status(504).json({
+            stage: "scan_timeout",
+            error: "Document analysis timed out. Please try again.",
+          });
+        }
+        return;
+      }
+
+      logger.error({ err }, "scan failed");
+      res.status(500).json({
+        stage: "ai_request",
+        error: "Document analysis failed. Please try again.",
       });
-      return;
     }
-
-    const data = validation.data;
-
-    // ── Normalize institution name server-side against the registry ───────────
-    // Fall back to the institution field value if the top-level institution
-    // object was absent in the AI output.
-    // Use `?? {}` to satisfy strict-null checks — data.fields has a Zod
-    // default({}) so it is always present at runtime, but the TypeScript
-    // inference of ZodEffects.default() can appear optional.
-    const fieldsMap = data.fields ?? {};
-    const fieldInstitutionValue = fieldsMap.institution?.value;
-    const rawInstitutionName: string | null =
-      data.institution?.rawName ??
-      (typeof fieldInstitutionValue === "string" ? fieldInstitutionValue : null);
-
-    const institution = normalizeInstitution(rawInstitutionName);
-
-    logger.info(
-      { docType: data.docType, file: originalname, institution: institution.normalizedName },
-      "scan complete",
-    );
-
-    res.json({ ...data, institution, fileName: originalname, mimeType: mime });
-  } catch (err) {
-    logger.error({ err }, "scan failed");
-    res.status(500).json({
-      stage: "ai_request",
-      error: "Document analysis failed. Please try again.",
-    });
-  }
-});
+  },
+);
 
 export default router;
