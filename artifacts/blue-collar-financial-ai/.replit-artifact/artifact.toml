@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Blue Collar Financial AI"
+description = "A mobile-first financial planning app for working professionals to confirm pay data, organize finances, understand cash flow, and test scenarios privately in their browser."
+version = "1.0.0"
+id = "artifacts/blue-collar-financial-ai"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23906
+
+[services.development]
+run = "pnpm --filter @workspace/blue-collar-financial-ai run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/blue-collar-financial-ai", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/blue-collar-financial-ai/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23906"
+BASE_PATH = "/"
