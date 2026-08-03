@@ -18,3 +18,8 @@ expertMode = true
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 20000
+
+[userenv]
+
+[userenv.shared]
+ALLOWED_ORIGINS = "True 10 http://localhost:3000,http://localhost:5173,https://*.replit.dev,https://*.repl.co"
