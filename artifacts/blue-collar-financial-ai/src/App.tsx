@@ -6,8 +6,11 @@ import { Route, Switch, Router as WouterRouter } from 'wouter';
 import { StoreProvider } from '@/lib/store';
 import { JobQueueProvider } from '@/lib/jobQueue';
 import { Shell } from '@/components/layout/Shell';
+import { DeveloperOnlyPage, ProtectedPage } from '@/components/auth/ProtectedPage';
 
 import Welcome from '@/pages/Welcome';
+import SignIn from '@/pages/SignIn';
+import SignUp from '@/pages/SignUp';
 import Onboarding from '@/pages/Onboarding';
 import Scanner from '@/pages/Scanner';
 import Dashboard from '@/pages/Dashboard';
@@ -26,26 +29,36 @@ import NotFound from '@/pages/not-found';
 
 const queryClient = new QueryClient();
 
+const protectedPage = (Page: React.ComponentType) => function ProtectedRoute() {
+  return <ProtectedPage><Page /></ProtectedPage>;
+};
+
+const developerPage = (Page: React.ComponentType) => function DeveloperRoute() {
+  return <DeveloperOnlyPage><Page /></DeveloperOnlyPage>;
+};
+
 function Router() {
   return (
     <Shell>
       <Switch>
         <Route path="/" component={Welcome} />
         <Route path="/welcome" component={Welcome} />
-        <Route path="/onboarding" component={Onboarding} />
-        <Route path="/scanner" component={Scanner} />
-        <Route path="/dashboard" component={Dashboard} />
-        <Route path="/documents/review" component={DocumentsReview} />
-        <Route path="/documents" component={Documents} />
-        <Route path="/paystubs" component={Paystubs} />
-        <Route path="/debts" component={Debts} />
-        <Route path="/bills" component={Bills} />
-        <Route path="/banking" component={Banking} />
-        <Route path="/investments" component={Investments} />
-        <Route path="/scenario" component={Scenario} />
-        <Route path="/settings" component={Settings} />
-        <Route path="/ask-ai" component={AskAI} />
-        <Route path="/test-lab" component={TestLab} />
+        <Route path="/sign-in" component={SignIn} />
+        <Route path="/sign-up" component={SignUp} />
+        <Route path="/onboarding" component={protectedPage(Onboarding)} />
+        <Route path="/scanner" component={protectedPage(Scanner)} />
+        <Route path="/dashboard" component={protectedPage(Dashboard)} />
+        <Route path="/documents/review" component={protectedPage(DocumentsReview)} />
+        <Route path="/documents" component={protectedPage(Documents)} />
+        <Route path="/paystubs" component={protectedPage(Paystubs)} />
+        <Route path="/debts" component={protectedPage(Debts)} />
+        <Route path="/bills" component={protectedPage(Bills)} />
+        <Route path="/banking" component={protectedPage(Banking)} />
+        <Route path="/investments" component={protectedPage(Investments)} />
+        <Route path="/scenario" component={protectedPage(Scenario)} />
+        <Route path="/settings" component={protectedPage(Settings)} />
+        <Route path="/ask-ai" component={protectedPage(AskAI)} />
+        <Route path="/test-lab" component={developerPage(TestLab)} />
         <Route component={NotFound} />
       </Switch>
     </Shell>
