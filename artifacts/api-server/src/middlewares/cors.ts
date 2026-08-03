@@ -1,18 +1,31 @@
 /**
  * Production-safe CORS middleware.
  *
- * Development  — allows localhost on any port, *.replit.dev, *.replit.app,
- *                and same-origin (no Origin header) requests.
- * Production   — allows only origins listed in the ALLOWED_ORIGINS env var
- *                (comma-separated).  Same-origin requests are always allowed.
- *
- * Never uses unrestricted cors() in production.
+ * Development allows localhost, loopback, and Replit preview domains.
+ * Production allows only exact origins or safe subdomain wildcards listed in
+ * ALLOWED_ORIGINS, for example https://*.replit.dev.
  */
 
 import cors, { type CorsOptions } from "cors";
 import { logger } from "../lib/logger.js";
 
-// ─── Origin matcher ───────────────────────────────────────────────────────────
+function wildcardOriginMatches(origin: string, pattern: string): boolean {
+  const match = pattern.match(/^(https?):\/\/\*\.([a-z0-9.-]+)(?::(\d+))?$/i);
+  if (!match) return false;
+
+  try {
+    const parsed = new URL(origin);
+    const [, protocol, baseHost, port] = match;
+    if (parsed.protocol !== `${protocol.toLowerCase()}:`) return false;
+    if (port && parsed.port !== port) return false;
+
+    const host = parsed.hostname.toLowerCase();
+    const base = baseHost.toLowerCase();
+    return host.endsWith(`.${base}`) && host !== base;
+  } catch {
+    return false;
+  }
+}
 
 /** Returns true when the origin should be allowed. */
 export function isOriginAllowed(
@@ -23,31 +36,32 @@ export function isOriginAllowed(
   if (isDev) {
     if (/^https?:\/\/localhost(:\d+)?$/.test(origin)) return true;
     if (/^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin)) return true;
-    if (/\.replit\.dev$/.test(origin)) return true;
-    if (/\.replit\.app$/.test(origin)) return true;
+    if (/^https:\/\/[^/]+\.replit\.dev$/.test(origin)) return true;
+    if (/^https:\/\/[^/]+\.replit\.app$/.test(origin)) return true;
+    if (/^https:\/\/[^/]+\.repl\.co$/.test(origin)) return true;
     return false;
   }
-  return allowedOrigins.includes(origin);
-}
 
-// ─── Options factory ──────────────────────────────────────────────────────────
+  return allowedOrigins.some(
+    (allowed) => allowed === origin || wildcardOriginMatches(origin, allowed),
+  );
+}
 
 export function buildCorsOptions(
   overrides?: { isDev?: boolean; allowedOrigins?: string[] },
 ): CorsOptions {
-  const isDev =
-    overrides?.isDev ?? process.env.NODE_ENV !== "production";
+  const isDev = overrides?.isDev ?? process.env.NODE_ENV !== "production";
 
-  const allowedOrigins: string[] =
+  const allowedOrigins =
     overrides?.allowedOrigins ??
     (process.env.ALLOWED_ORIGINS ?? "")
       .split(",")
-      .map((s) => s.trim())
+      .map((value) => value.trim())
       .filter(Boolean);
 
   return {
     origin(origin, callback) {
-      // Same-origin requests (curl, server-to-server, proxied) have no Origin header.
+      // Requests without an Origin header are server-to-server or same-origin.
       if (!origin) {
         callback(null, true);
         return;
@@ -55,15 +69,14 @@ export function buildCorsOptions(
 
       if (isOriginAllowed(origin, isDev, allowedOrigins)) {
         callback(null, true);
-      } else {
-        logger.warn(
-          { origin, isDev, event: "cors_rejected" },
-          "CORS: origin not allowed",
-        );
-        // Return false — the cors library will omit Access-Control-Allow-Origin,
-        // causing browsers to block the response.
-        callback(null, false);
+        return;
       }
+
+      logger.warn(
+        { origin, isDev, event: "cors_rejected" },
+        "CORS: origin not allowed",
+      );
+      callback(null, false);
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -71,8 +84,6 @@ export function buildCorsOptions(
     optionsSuccessStatus: 204,
   };
 }
-
-// ─── Middleware ───────────────────────────────────────────────────────────────
 
 export function makeCors(
   overrides?: { isDev?: boolean; allowedOrigins?: string[] },
