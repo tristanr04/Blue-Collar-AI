@@ -1,0 +1,356 @@
+Build an automated testing and financial-update system for Blue Collar Financial AI.
+
+Preserve all currently working functionality. Do not rewrite the scanner, upload pipeline, document review, bills, banking, debts, investments, paystubs, dashboard, or AI assistant unless required to fix a verified test failure.
+
+This task has two sections:
+
+==================================================
+SECTION 1 — AUTOMATED SCANNER TEST LAB
+==================================================
+
+Create a developer-only page called:
+
+Scanner Test Lab
+
+Purpose:
+Automatically test financial-document classification, extraction, validation, routing, and account updating.
+
+Create test categories for:
+
+BANKING
+- Checking
+- Savings
+- Money market
+- Certificate of deposit
+- Cash-management account
+- Unknown bank
+- Unknown credit union
+
+INCOME
+- Paystub
+- Overtime paystub
+- Double-time paystub
+- Per-diem paystub
+- Storm-pay paystub
+
+DEBTS
+- Credit card
+- Auto loan
+- Personal loan
+- Student loan
+- Mortgage
+- HELOC
+- Margin loan
+- 401(k) loan
+
+INVESTMENTS
+- Brokerage
+- Margin brokerage
+- Roth IRA
+- Traditional IRA
+- 401(k)
+- Roth 401(k)
+- 403(b)
+- 457(b)
+- Pension
+- HSA investment account
+- Employee stock plan
+
+BILLS
+- Electric
+- Natural gas
+- Water
+- Internet
+- Cell phone
+- Auto insurance
+- Home insurance
+- Medical
+- Subscription
+- Rent
+- Utility bill from an unknown provider
+
+FILE TYPES
+- JPG
+- JPEG
+- PNG
+- HEIC
+- HEIF
+- Text-based PDF
+- Scanned PDF
+- Multi-page PDF
+
+Create a reusable test-fixture format:
+
+type ScannerTestFixture = {
+  id: string;
+  name: string;
+  category: string;
+  filePath: string;
+  expectedDocumentType: string;
+  expectedInstitution?: string;
+  expectedFields: Record<string, {
+    value: string | number | boolean | null;
+    tolerance?: number;
+  }>;
+  expectedDestination: string;
+};
+
+For every test, record:
+
+- Upload success
+- HTTP response
+- MIME validation
+- Document classification
+- Institution detection
+- Extracted fields
+- Confidence scores
+- Validation warnings
+- Destination section
+- Duplicate detection result
+- Account update result
+- Dashboard recalculation result
+- Test duration
+- Pass or fail
+
+Use numeric tolerances:
+
+- Dollar values: ±$0.01
+- Percentages: ±0.01 percentage points
+- Hours: ±0.01 hours
+- Dates: exact normalized date
+- Text: normalized case-insensitive comparison
+
+Never count a blank expected field as a failure when the source document does not contain it.
+
+Add dashboard metrics:
+
+- Overall pass rate
+- Classification accuracy
+- Field extraction accuracy
+- Routing accuracy
+- Duplicate-detection accuracy
+- Average processing time
+- Pass rate by document type
+- Pass rate by file type
+- Most common failure reason
+- Tests passed
+- Tests failed
+- Tests needing manual review
+
+Add controls:
+
+- Run all tests
+- Run failed tests
+- Run selected category
+- Run one test
+- Stop test run
+- Export results as JSON
+- Export results as CSV
+- Clear results
+
+Run tests sequentially or with limited concurrency so the AI API is not overwhelmed.
+
+Add configurable concurrency:
+
+- Default: 2 files at once
+- Maximum: 3 files at once
+
+Add retry behavior:
+
+- Retry network and temporary server failures up to 2 times
+- Do not retry schema-validation failures automatically
+- Preserve the original failure details
+
+Add a failure report showing:
+
+- Test name
+- Expected result
+- Actual result
+- Exact mismatched fields
+- Raw normalized extraction result
+- Error stage
+- Relevant frontend or backend route
+- Retry history
+
+Do not expose API keys, raw financial images, or private data in logs.
+
+Use only synthetic test documents in the Test Lab.
+
+==================================================
+SECTION 2 — AUTOMATED FINANCIAL PROFILE UPDATES
+==================================================
+
+After a real user confirms a scanned document, automatically update the appropriate financial records.
+
+Paystub:
+- Add to paycheck history
+- Update income averages
+- Update regular, OT, DT, per diem, gross, deductions, and net-pay history
+- Ask before changing the user’s default pay assumptions
+
+Banking:
+- Match an existing account using institution, type, and last four digits
+- Update current and available balances
+- Update liquid cash, emergency fund, and net worth
+- Never duplicate an existing account silently
+
+Credit cards:
+- Update balance, limit, APR, minimum payment, and due date
+- Recalculate utilization and monthly obligations
+
+Loans:
+- Update principal balance, APR, payment, due date, and remaining term
+- Recalculate debt totals, payoff estimates, and DTI
+
+Mortgage:
+- Update balance, payment, escrow, rate, and due date
+- Recalculate housing expense, total debt, and home equity
+
+Bills:
+- Match recurring providers
+- Update amount and due date
+- Detect bill increases or decreases
+- Recalculate monthly expenses
+- Ask before replacing a user-created budget target
+
+Investments and retirement:
+- Update balances, cash, margin, contribution rates, employer match, and vested balances
+- Recalculate investment totals, retirement totals, and net worth
+
+Every confirmed import must create a change-history record:
+
+type FinancialChangeRecord = {
+  id: string;
+  timestamp: string;
+  sourceDocumentId: string;
+  sourceFilename: string;
+  destinationSection: string;
+  recordId: string;
+  field: string;
+  oldValue: unknown;
+  newValue: unknown;
+  userConfirmed: boolean;
+};
+
+Add:
+
+- Undo last import
+- View import history
+- Restore previous value
+- Update existing account
+- Create new account
+- Reject update
+- Ignore older statement
+
+Never overwrite newer data with an older statement without explicit approval.
+
+After every successful update, automatically recalculate:
+
+- Weekly income
+- Monthly income
+- Monthly expenses
+- Minimum debt payments
+- Free cash flow
+- Credit utilization
+- Debt-to-income ratio
+- Liquid cash
+- Emergency-fund coverage
+- Investments
+- Retirement
+- Home equity
+- Net worth
+- Financial Health Score
+- Scenario Builder defaults
+- AI assistant financial context
+
+==================================================
+BACKGROUND JOB SYSTEM
+==================================================
+
+Create a job queue for scanner tests and confirmed financial updates.
+
+Job statuses:
+
+- Queued
+- Processing
+- Waiting for AI
+- Validating
+- Routing
+- Completed
+- Failed
+- Cancelled
+
+Requirements:
+
+- Jobs must continue if the user navigates to another page.
+- Persist unfinished jobs so a page refresh does not lose progress.
+- Show progress in the UI.
+- Allow cancellation.
+- Prevent the same file from being processed twice simultaneously.
+- Use idempotency keys to prevent duplicate imports.
+- Do not automatically confirm real financial documents.
+- User confirmation remains mandatory before financial data is saved.
+
+If the server restarts:
+- recover queued or interrupted jobs safely
+- mark uncertain interrupted jobs for retry
+- do not duplicate completed financial updates
+
+==================================================
+TESTING AND COMPLETION
+==================================================
+
+First run automated tests against the currently working TTCU checking screenshot and PSO electric bill fixture.
+
+Expected TTCU values:
+- document type: Checking account
+- institution: TTCU Federal Credit Union
+- last four: 4428
+- current balance: 3842.19
+- available balance: 3771.44
+- pending transactions: -70.75
+- last deposit: 2418.66
+
+Expected PSO values:
+- document type: Utility bill
+- provider: PSO
+- category: Electric
+- amount due: 164.38
+- due date: 2024-06-12
+- recurring frequency: Monthly
+
+Verify the full flow:
+
+Upload
+→ classify
+→ extract
+→ validate
+→ review
+→ confirm
+→ match or create account
+→ update financial profile
+→ recalculate dashboard
+→ update AI context
+→ create change-history record
+→ support Undo
+
+Do not publish until:
+
+- Existing user-facing scanner remains functional
+- TTCU test passes
+- PSO test passes
+- Confirmed documents route correctly
+- Duplicate protection works
+- Undo works
+- Dashboard recalculates
+- No API key is exposed
+- No unrelated existing feature is broken
+
+When finished, report:
+
+- Files created or modified
+- Test results
+- Any remaining failures
+- Scanner pass rates
+- How financial-update automation works
+- How to add future test fixtures
