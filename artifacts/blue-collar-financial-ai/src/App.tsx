@@ -19,6 +19,7 @@ import Banking from '@/pages/Banking';
 import Investments from '@/pages/Investments';
 import Scenario from '@/pages/Scenario';
 import Settings from '@/pages/Settings';
+import AskAI from '@/pages/AskAI';
 import NotFound from '@/pages/not-found';
 
 const queryClient = new QueryClient();
@@ -41,6 +42,7 @@ function Router() {
         <Route path="/investments" component={Investments} />
         <Route path="/scenario" component={Scenario} />
         <Route path="/settings" component={Settings} />
+        <Route path="/ask-ai" component={AskAI} />
         <Route component={NotFound} />
       </Switch>
     </Shell>

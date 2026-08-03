@@ -2,316 +2,442 @@ import React, { useState, useRef, useCallback } from 'react';
 import { useLocation } from 'wouter';
 import {
   Upload, ScanLine, CheckCircle2, AlertTriangle, X, Plus, Trash2,
-  FileImage, ArrowRight, ShieldCheck, RotateCcw, ChevronDown, ChevronUp,
+  ArrowRight, ShieldCheck, RotateCcw, ChevronDown, ChevronDown as ChevronUp,
+  Loader2, FileImage, ThumbsUp, ThumbsDown, Edit2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Progress } from '@/components/ui/progress';
 import { useStore } from '@/lib/store';
-import {
-  runOcrOnFiles, extractFromText,
-  ScanResult, ExtractedField,
-  ExtractedPaystub, ExtractedBankAccount, ExtractedCreditCard,
-  ExtractedLoan, ExtractedInvestment,
-} from '@/lib/ocr';
+import { scanFile, ScanResult, ScanFieldValue } from '@/lib/api';
 
-// ─── Confidence dot ───────────────────────────────────────────────────────────
+// ─── Document types ───────────────────────────────────────────────────────────
 
-function ConfidenceDot({ confidence, found }: { confidence: string; found: boolean }) {
-  if (!found) return (
-    <span title="Not found — please fill in" className="inline-block w-2.5 h-2.5 rounded-full bg-slate-300 dark:bg-slate-600 flex-shrink-0" />
-  );
-  const cls = confidence === 'high'
-    ? 'bg-emerald-500'
-    : confidence === 'medium'
-    ? 'bg-amber-400'
-    : 'bg-slate-400';
-  const label = confidence === 'high' ? 'High confidence' : confidence === 'medium' ? 'Medium confidence' : 'Low confidence — verify';
-  return <span title={label} className={`inline-block w-2.5 h-2.5 rounded-full ${cls} flex-shrink-0`} />;
+const DOC_TYPES = [
+  'Paystub', 'Checking Account', 'Savings Account', 'Bank Statement',
+  'Credit Card', 'Credit Card Statement', 'Auto Loan', 'Personal Loan',
+  'Mortgage', 'Brokerage Account', 'Investment Statement',
+  'Retirement Account', 'Retirement Statement', 'Monthly Bill', 'Utility Bill', 'Unknown',
+];
+
+const DOC_TYPE_EMOJI: Record<string, string> = {
+  'Paystub': '💵', 'Checking Account': '🏦', 'Savings Account': '🏦',
+  'Bank Statement': '🏦', 'Credit Card': '💳', 'Credit Card Statement': '💳',
+  'Auto Loan': '🚗', 'Personal Loan': '📋', 'Mortgage': '🏠',
+  'Brokerage Account': '📈', 'Investment Statement': '📈',
+  'Retirement Account': '🏦', 'Retirement Statement': '🏦',
+  'Monthly Bill': '📄', 'Utility Bill': '💡', 'Unknown': '❓',
+};
+
+// ─── Fields per doc type ──────────────────────────────────────────────────────
+
+const DOC_FIELDS: Record<string, Array<{ key: string; label: string; type?: string; prefix?: string }>> = {
+  'Paystub': [
+    { key: 'employer', label: 'Employer' },
+    { key: 'payDate', label: 'Pay Date', type: 'date' },
+    { key: 'hourlyRate', label: 'Hourly Rate', type: 'number', prefix: '$' },
+    { key: 'regularHours', label: 'Regular Hours', type: 'number' },
+    { key: 'overtimeHours', label: 'OT Hours (1.5×)', type: 'number' },
+    { key: 'doubleTimeHours', label: 'DT Hours (2×)', type: 'number' },
+    { key: 'perDiem', label: 'Per Diem', type: 'number', prefix: '$' },
+    { key: 'standbyPay', label: 'Standby Pay', type: 'number', prefix: '$' },
+    { key: 'bonus', label: 'Bonus', type: 'number', prefix: '$' },
+    { key: 'grossPay', label: 'Gross Pay', type: 'number', prefix: '$' },
+    { key: 'federalTax', label: 'Federal Tax', type: 'number', prefix: '$' },
+    { key: 'stateTax', label: 'State Tax', type: 'number', prefix: '$' },
+    { key: 'socialSecurity', label: 'Social Security', type: 'number', prefix: '$' },
+    { key: 'medicare', label: 'Medicare', type: 'number', prefix: '$' },
+    { key: 'unionDues', label: 'Union Dues', type: 'number', prefix: '$' },
+    { key: 'insuranceDeductions', label: 'Insurance Deductions', type: 'number', prefix: '$' },
+    { key: 'retirementContribution', label: 'Retirement Contribution', type: 'number', prefix: '$' },
+    { key: 'retirementRate', label: 'Retirement Rate (%)', type: 'number' },
+    { key: 'otherDeductions', label: 'Other Deductions', type: 'number', prefix: '$' },
+    { key: 'netPay', label: 'Net Pay', type: 'number', prefix: '$' },
+  ],
+  'Checking Account': [
+    { key: 'institution', label: 'Bank / Institution' },
+    { key: 'accountName', label: 'Account Name' },
+    { key: 'lastFour', label: 'Last 4 Digits' },
+    { key: 'currentBalance', label: 'Current Balance', type: 'number', prefix: '$' },
+    { key: 'availableBalance', label: 'Available Balance', type: 'number', prefix: '$' },
+    { key: 'apy', label: 'APY (%)', type: 'number' },
+  ],
+  'Savings Account': [
+    { key: 'institution', label: 'Bank / Institution' },
+    { key: 'accountName', label: 'Account Name' },
+    { key: 'lastFour', label: 'Last 4 Digits' },
+    { key: 'currentBalance', label: 'Current Balance', type: 'number', prefix: '$' },
+    { key: 'availableBalance', label: 'Available Balance', type: 'number', prefix: '$' },
+    { key: 'apy', label: 'APY (%)', type: 'number' },
+  ],
+  'Bank Statement': [
+    { key: 'institution', label: 'Bank / Institution' },
+    { key: 'accountName', label: 'Account Name' },
+    { key: 'lastFour', label: 'Last 4 Digits' },
+    { key: 'closingBalance', label: 'Closing Balance', type: 'number', prefix: '$' },
+    { key: 'statementStartDate', label: 'Statement Start', type: 'date' },
+    { key: 'statementEndDate', label: 'Statement End', type: 'date' },
+  ],
+  'Credit Card': [
+    { key: 'issuer', label: 'Issuer' },
+    { key: 'accountName', label: 'Card Name' },
+    { key: 'lastFour', label: 'Last 4 Digits' },
+    { key: 'currentBalance', label: 'Current Balance', type: 'number', prefix: '$' },
+    { key: 'creditLimit', label: 'Credit Limit', type: 'number', prefix: '$' },
+    { key: 'availableCredit', label: 'Available Credit', type: 'number', prefix: '$' },
+    { key: 'apr', label: 'APR (%)', type: 'number' },
+    { key: 'minimumPayment', label: 'Min Payment', type: 'number', prefix: '$' },
+    { key: 'dueDate', label: 'Due Date' },
+  ],
+  'Credit Card Statement': [
+    { key: 'issuer', label: 'Issuer' },
+    { key: 'accountName', label: 'Card Name' },
+    { key: 'lastFour', label: 'Last 4 Digits' },
+    { key: 'closingBalance', label: 'Statement Balance', type: 'number', prefix: '$' },
+    { key: 'creditLimit', label: 'Credit Limit', type: 'number', prefix: '$' },
+    { key: 'apr', label: 'APR (%)', type: 'number' },
+    { key: 'minimumPayment', label: 'Min Payment', type: 'number', prefix: '$' },
+    { key: 'dueDate', label: 'Due Date' },
+  ],
+  'Auto Loan': [
+    { key: 'lender', label: 'Lender' },
+    { key: 'loanName', label: 'Loan Name' },
+    { key: 'lastFour', label: 'Last 4 Digits' },
+    { key: 'currentBalance', label: 'Balance Owed', type: 'number', prefix: '$' },
+    { key: 'originalAmount', label: 'Original Amount', type: 'number', prefix: '$' },
+    { key: 'apr', label: 'APR (%)', type: 'number' },
+    { key: 'monthlyPayment', label: 'Monthly Payment', type: 'number', prefix: '$' },
+    { key: 'remainingTermMonths', label: 'Months Remaining', type: 'number' },
+    { key: 'nextDueDate', label: 'Next Due Date' },
+  ],
+  'Personal Loan': [
+    { key: 'lender', label: 'Lender' },
+    { key: 'loanName', label: 'Loan Name' },
+    { key: 'currentBalance', label: 'Balance Owed', type: 'number', prefix: '$' },
+    { key: 'apr', label: 'APR (%)', type: 'number' },
+    { key: 'monthlyPayment', label: 'Monthly Payment', type: 'number', prefix: '$' },
+    { key: 'remainingTermMonths', label: 'Months Remaining', type: 'number' },
+    { key: 'nextDueDate', label: 'Next Due Date' },
+  ],
+  'Mortgage': [
+    { key: 'lender', label: 'Lender' },
+    { key: 'propertyAddress', label: 'Property Address' },
+    { key: 'principalBalance', label: 'Principal Balance', type: 'number', prefix: '$' },
+    { key: 'originalLoanAmount', label: 'Original Loan Amount', type: 'number', prefix: '$' },
+    { key: 'interestRate', label: 'Interest Rate (%)', type: 'number' },
+    { key: 'monthlyPayment', label: 'Monthly Payment', type: 'number', prefix: '$' },
+    { key: 'escrowAmount', label: 'Escrow', type: 'number', prefix: '$' },
+    { key: 'propertyValue', label: 'Property Value', type: 'number', prefix: '$' },
+    { key: 'nextDueDate', label: 'Next Due Date' },
+  ],
+  'Brokerage Account': [
+    { key: 'institution', label: 'Institution' },
+    { key: 'accountType', label: 'Account Type' },
+    { key: 'totalValue', label: 'Total Value', type: 'number', prefix: '$' },
+    { key: 'cashBalance', label: 'Cash Balance', type: 'number', prefix: '$' },
+    { key: 'dailyReturn', label: 'Daily Return', type: 'number', prefix: '$' },
+    { key: 'totalReturn', label: 'Total Return', type: 'number', prefix: '$' },
+  ],
+  'Investment Statement': [
+    { key: 'institution', label: 'Institution' },
+    { key: 'accountType', label: 'Account Type' },
+    { key: 'totalValue', label: 'Total Value', type: 'number', prefix: '$' },
+  ],
+  'Retirement Account': [
+    { key: 'institution', label: 'Institution' },
+    { key: 'accountType', label: 'Account Type (401k, IRA, etc.)' },
+    { key: 'currentBalance', label: 'Current Balance', type: 'number', prefix: '$' },
+    { key: 'employeeContributionRate', label: 'My Contribution Rate (%)', type: 'number' },
+    { key: 'employerMatchRate', label: 'Employer Match Rate (%)', type: 'number' },
+    { key: 'ytdContributions', label: 'YTD Contributions', type: 'number', prefix: '$' },
+  ],
+  'Retirement Statement': [
+    { key: 'institution', label: 'Institution' },
+    { key: 'accountType', label: 'Account Type' },
+    { key: 'currentBalance', label: 'Current Balance', type: 'number', prefix: '$' },
+    { key: 'employeeContributionRate', label: 'My Contribution Rate (%)', type: 'number' },
+    { key: 'ytdContributions', label: 'YTD Contributions', type: 'number', prefix: '$' },
+  ],
+  'Monthly Bill': [
+    { key: 'provider', label: 'Provider' },
+    { key: 'category', label: 'Category' },
+    { key: 'amountDue', label: 'Amount Due', type: 'number', prefix: '$' },
+    { key: 'dueDate', label: 'Due Date (day of month)', type: 'number' },
+    { key: 'autopay', label: 'AutoPay?' },
+  ],
+  'Utility Bill': [
+    { key: 'provider', label: 'Provider' },
+    { key: 'category', label: 'Category (Electric, Gas, etc.)' },
+    { key: 'amountDue', label: 'Amount Due', type: 'number', prefix: '$' },
+    { key: 'dueDate', label: 'Due Date (day of month)', type: 'number' },
+    { key: 'autopay', label: 'AutoPay?' },
+  ],
+};
+DOC_FIELDS['Unknown'] = [];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function ConfidenceBadge({ score }: { score: number }) {
+  const cls = score >= 85 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+    : score >= 60 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+    : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400';
+  return <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${cls}`}>{score}%</span>;
 }
 
-// ─── Editable field row ───────────────────────────────────────────────────────
-
-function FieldRow({
-  label, ef, onChange, type = 'text', prefix,
-}: {
-  label: string;
-  ef: ExtractedField<any>;
-  onChange: (v: string) => void;
-  type?: 'text' | 'number' | 'date';
-  prefix?: string;
-}) {
-  return (
-    <div className="flex items-center gap-3">
-      <ConfidenceDot confidence={ef.confidence} found={ef.found} />
-      <div className="flex-1 space-y-1">
-        <Label className="text-xs text-muted-foreground">{label}</Label>
-        <div className="relative">
-          {prefix && <span className="absolute left-3 top-3 text-muted-foreground text-sm pointer-events-none">{prefix}</span>}
-          <Input
-            type={type}
-            value={ef.value}
-            onChange={e => onChange(e.target.value)}
-            className={`h-11 bg-background ${prefix ? 'pl-7' : ''} ${!ef.found ? 'border-dashed border-slate-300 dark:border-slate-600' : ''}`}
-            step={type === 'number' ? '0.01' : undefined}
-          />
-        </div>
-      </div>
-    </div>
-  );
+function ConfidenceDot({ score }: { score: number }) {
+  const cls = score >= 85 ? 'bg-emerald-500' : score >= 60 ? 'bg-amber-400' : 'bg-slate-400';
+  return <span className={`inline-block w-2 h-2 rounded-full ${cls} flex-shrink-0`} title={`${score}% confidence`} />;
 }
 
-// ─── Section wrapper ──────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
-  const [open, setOpen] = useState(true);
-  return (
-    <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
-      <button
-        className="w-full flex items-center justify-between p-4 hover:bg-muted/50 transition-colors"
-        onClick={() => setOpen(o => !o)}
-      >
-        <div className="flex items-center gap-2">
-          <span className="font-semibold text-foreground">{title}</span>
-          {count !== undefined && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-accent text-accent-foreground font-medium">{count}</span>
-          )}
-        </div>
-        {open ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
-      </button>
-      {open && <div className="p-4 pt-0 border-t border-border space-y-4">{children}</div>}
-    </div>
-  );
+type ProcessStatus = 'pending' | 'processing' | 'done' | 'error';
+
+interface ProcessedDoc {
+  id: string;
+  file: File;
+  preview: string;
+  status: ProcessStatus;
+  error?: string;
+  result?: ScanResult;
+  // Editable state
+  docType: string;
+  fields: Record<string, { value: string; confidence: number }>;
+  accepted: boolean;
 }
-
-// ─── Types for editable review state ─────────────────────────────────────────
-
-type EditablePaystub = { [K in keyof ExtractedPaystub]: ExtractedField<any> };
-
-interface EditableBankAccount { name: ExtractedField<string>; balance: ExtractedField<number> }
-interface EditableCreditCard { name: ExtractedField<string>; balance: ExtractedField<number>; limit: ExtractedField<number>; apr: ExtractedField<number>; minimumPayment: ExtractedField<number> }
-interface EditableLoan { name: ExtractedField<string>; balance: ExtractedField<number>; apr: ExtractedField<number>; monthlyPayment: ExtractedField<number> }
-interface EditableInvestment { name: ExtractedField<string>; value: ExtractedField<number> }
-
-interface ReviewState {
-  userName: string;
-  hourlyRateFromProfile: number;
-  paystub: EditablePaystub | null;
-  bankAccounts: EditableBankAccount[];
-  creditCards: EditableCreditCard[];
-  loans: EditableLoan[];
-  investments: EditableInvestment[];
-}
-
-function makeField<T>(value: T, confidence = 'high', found = true): ExtractedField<T> {
-  return { value, confidence: confidence as any, found };
-}
-
-function blankBankAccount(): EditableBankAccount {
-  return { name: makeField('', 'low', false), balance: makeField(0, 'low', false) };
-}
-function blankCreditCard(): EditableCreditCard {
-  return { name: makeField('', 'low', false), balance: makeField(0, 'low', false), limit: makeField(0, 'low', false), apr: makeField(0, 'low', false), minimumPayment: makeField(0, 'low', false) };
-}
-function blankLoan(): EditableLoan {
-  return { name: makeField('', 'low', false), balance: makeField(0, 'low', false), apr: makeField(0, 'low', false), monthlyPayment: makeField(0, 'low', false) };
-}
-function blankInvestment(): EditableInvestment {
-  return { name: makeField('', 'low', false), value: makeField(0, 'low', false) };
-}
-
-function scanResultToReview(result: ScanResult, existingName: string): ReviewState {
-  return {
-    userName: existingName || '',
-    hourlyRateFromProfile: result.paystub?.hourlyRate.value ?? 0,
-    paystub: result.paystub as EditablePaystub | null,
-    bankAccounts: result.bankAccounts as EditableBankAccount[],
-    creditCards: result.creditCards as EditableCreditCard[],
-    loans: result.loans as EditableLoan[],
-    investments: result.investments as EditableInvestment[],
-  };
-}
-
-// ─── Steps ────────────────────────────────────────────────────────────────────
-
-type Step = 'upload' | 'processing' | 'review' | 'done';
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
+type Step = 'upload' | 'processing' | 'review' | 'done';
+
 export default function Scanner() {
   const [_, setLocation] = useLocation();
-  const { profile, updateProfile, addPaystub, addDebt, addBill, addAsset } = useStore();
+  const store = useStore();
+  const { updateProfile, addPaystub, addDebt, addBill, addAsset, profile } = store;
 
   const [step, setStep] = useState<Step>('upload');
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
   const [isDragging, setIsDragging] = useState(false);
-  const [fileProgress, setFileProgress] = useState<number[]>([]);
-  const [review, setReview] = useState<ReviewState | null>(null);
-  const [errorMsg, setErrorMsg] = useState('');
+  const [docs, setDocs] = useState<ProcessedDoc[]>([]);
+  const [userName, setUserName] = useState(profile?.name ?? '');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [globalError, setGlobalError] = useState('');
 
   // ── File handling ──────────────────────────────────────────────────────────
 
   const addFiles = useCallback((newFiles: File[]) => {
-    const images = newFiles.filter(f => f.type.startsWith('image/'));
+    const valid = newFiles.filter(f =>
+      f.type.startsWith('image/') ||
+      f.type === 'application/pdf' ||
+      f.name.toLowerCase().endsWith('.heic') ||
+      f.name.toLowerCase().endsWith('.heif')
+    );
     setFiles(prev => {
-      const combined = [...prev, ...images];
-      setPreviews(combined.map(f => URL.createObjectURL(f)));
+      const combined = [...prev, ...valid];
+      setPreviews(combined.map(f => f.type.startsWith('image/') || f.name.match(/\.(heic|heif)$/i) ? URL.createObjectURL(f) : ''));
       return combined;
     });
   }, []);
 
   const removeFile = (i: number) => {
-    setFiles(prev => {
-      const next = prev.filter((_, idx) => idx !== i);
-      setPreviews(next.map(f => URL.createObjectURL(f)));
-      return next;
-    });
+    setFiles(prev => prev.filter((_, idx) => idx !== i));
+    setPreviews(prev => prev.filter((_, idx) => idx !== i));
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    addFiles(Array.from(e.dataTransfer.files));
-  };
-
-  // ── OCR processing ─────────────────────────────────────────────────────────
+  // ── Start processing ───────────────────────────────────────────────────────
 
   const startProcessing = async () => {
     if (files.length === 0) return;
     setStep('processing');
-    setFileProgress(files.map(() => 0));
-    setErrorMsg('');
+    setGlobalError('');
 
-    try {
-      const results = await runOcrOnFiles(files, (fileIndex, progress) => {
-        setFileProgress(prev => {
-          const next = [...prev];
-          next[fileIndex] = progress;
-          return next;
-        });
-      });
+    // Init doc states
+    const initial: ProcessedDoc[] = files.map((f, i) => ({
+      id: crypto.randomUUID(),
+      file: f,
+      preview: previews[i] ?? '',
+      status: 'pending',
+      docType: 'Unknown',
+      fields: {},
+      accepted: true,
+    }));
+    setDocs(initial);
 
-      const combinedText = results.map(r => r.text).join('\n\n\f\n\n');
-      const scanResult = extractFromText(combinedText);
-      setReview(scanResultToReview(scanResult, profile?.name ?? ''));
-      setStep('review');
-    } catch (err) {
-      setErrorMsg('OCR failed. Please try again or enter details manually.');
-      setStep('upload');
+    // Process sequentially
+    for (let i = 0; i < files.length; i++) {
+      setDocs(prev => prev.map((d, idx) => idx === i ? { ...d, status: 'processing' } : d));
+      try {
+        const result = await scanFile(files[i]);
+        const fieldMap: Record<string, { value: string; confidence: number }> = {};
+        for (const [k, v] of Object.entries(result.fields ?? {})) {
+          const fv = v as ScanFieldValue;
+          if (fv.value != null) {
+            fieldMap[k] = { value: String(fv.value), confidence: fv.confidence ?? 80 };
+          }
+        }
+        setDocs(prev => prev.map((d, idx) => idx === i ? {
+          ...d,
+          status: 'done',
+          result,
+          docType: result.docType ?? 'Unknown',
+          fields: fieldMap,
+        } : d));
+      } catch (err) {
+        setDocs(prev => prev.map((d, idx) => idx === i ? {
+          ...d,
+          status: 'error',
+          error: err instanceof Error ? err.message : 'Processing failed',
+          docType: 'Unknown',
+          fields: {},
+        } : d));
+      }
     }
+    setStep('review');
+  };
+
+  // ── Field update ───────────────────────────────────────────────────────────
+
+  const updateField = (docId: string, key: string, value: string) => {
+    setDocs(prev => prev.map(d => d.id === docId
+      ? { ...d, fields: { ...d.fields, [key]: { value, confidence: d.fields[key]?.confidence ?? 90 } } }
+      : d
+    ));
+  };
+
+  const updateDocType = (docId: string, docType: string) => {
+    setDocs(prev => prev.map(d => d.id === docId ? { ...d, docType } : d));
+  };
+
+  const toggleAccepted = (docId: string) => {
+    setDocs(prev => prev.map(d => d.id === docId ? { ...d, accepted: !d.accepted } : d));
   };
 
   // ── Confirm & save ─────────────────────────────────────────────────────────
 
   const confirmAndSave = () => {
-    if (!review) return;
+    const accepted = docs.filter(d => d.accepted && d.status !== 'error');
 
     // Profile
-    const hourly = Number(review.paystub?.hourlyRate.value ?? review.hourlyRateFromProfile ?? 0);
-    updateProfile({
-      name: review.userName || profile?.name || 'You',
-      hourlyRate: hourly,
-      hasCompletedOnboarding: true,
-      payFrequency: profile?.payFrequency ?? 'Weekly',
-      filingContext: profile?.filingContext ?? 'Single',
-    });
-
-    // Paystub
-    if (review.paystub) {
-      const p = review.paystub;
-      addPaystub({
-        employer: String(p.employer.value) || 'Unknown',
-        date: new Date().toISOString(),
-        regularHours: Number(p.regularHours.value) || 0,
-        overtimeHours: Number(p.overtimeHours.value) || 0,
-        doubleTimeHours: Number(p.doubleTimeHours.value) || 0,
-        perDiem: Number(p.perDiem.value) || 0,
-        grossPay: Number(p.grossPay.value) || 0,
-        taxes: Number(p.taxes.value) || 0,
-        deductions: Number(p.deductions.value) || 0,
-        netPay: Number(p.netPay.value) || 0,
+    if (userName.trim()) {
+      updateProfile({
+        name: userName.trim(),
+        hasCompletedOnboarding: true,
+        payFrequency: profile?.payFrequency ?? 'Weekly',
+        hourlyRate: profile?.hourlyRate ?? 0,
+        filingContext: profile?.filingContext ?? 'Single',
       });
     }
 
-    // Bank accounts
-    for (const a of review.bankAccounts) {
-      addAsset({ name: String(a.name.value) || 'Bank Account', type: 'Cash', value: Number(a.balance.value) || 0 });
-    }
+    for (const doc of accepted) {
+      const f = doc.fields;
+      const n = (key: string) => parseFloat(f[key]?.value ?? '') || 0;
+      const s = (key: string) => f[key]?.value ?? '';
 
-    // Credit cards
-    for (const c of review.creditCards) {
-      addDebt({
-        name: String(c.name.value) || 'Credit Card',
-        balance: Number(c.balance.value) || 0,
-        interestRate: Number(c.apr.value) || 0,
-        minimumPayment: Number(c.minimumPayment.value) || 0,
-      });
-    }
+      switch (doc.docType) {
+        case 'Paystub':
+          addPaystub({
+            employer: s('employer') || 'Unknown',
+            date: new Date().toISOString(),
+            regularHours: n('regularHours'),
+            overtimeHours: n('overtimeHours'),
+            doubleTimeHours: n('doubleTimeHours'),
+            perDiem: n('perDiem'),
+            grossPay: n('grossPay'),
+            taxes: (n('federalTax') + n('stateTax') + n('socialSecurity') + n('medicare')) || n('taxes' as any),
+            deductions: n('unionDues') + n('insuranceDeductions') + n('otherDeductions'),
+            netPay: n('netPay'),
+          });
+          if (n('hourlyRate') > 0) {
+            updateProfile({ hourlyRate: n('hourlyRate') });
+          }
+          break;
 
-    // Loans
-    for (const l of review.loans) {
-      addDebt({
-        name: String(l.name.value) || 'Loan',
-        balance: Number(l.balance.value) || 0,
-        interestRate: Number(l.apr.value) || 0,
-        minimumPayment: Number(l.monthlyPayment.value) || 0,
-      });
-    }
+        case 'Checking Account':
+        case 'Savings Account':
+        case 'Bank Statement':
+          if (n('currentBalance') > 0 || n('closingBalance') > 0) {
+            addAsset({
+              name: s('accountName') || s('institution') || doc.docType,
+              type: 'Cash',
+              value: n('currentBalance') || n('closingBalance'),
+            });
+          }
+          break;
 
-    // Investments
-    for (const inv of review.investments) {
-      addAsset({ name: String(inv.name.value) || 'Investment', type: 'Investment', value: Number(inv.value.value) || 0 });
+        case 'Credit Card':
+        case 'Credit Card Statement':
+          if (n('currentBalance') > 0 || n('closingBalance') > 0) {
+            addDebt({
+              name: s('accountName') || s('issuer') || 'Credit Card',
+              balance: n('currentBalance') || n('closingBalance'),
+              interestRate: n('apr'),
+              minimumPayment: n('minimumPayment'),
+            });
+          }
+          break;
+
+        case 'Auto Loan':
+        case 'Personal Loan':
+          if (n('currentBalance') > 0) {
+            addDebt({
+              name: s('loanName') || s('lender') || doc.docType,
+              balance: n('currentBalance'),
+              interestRate: n('apr'),
+              minimumPayment: n('monthlyPayment'),
+            });
+          }
+          break;
+
+        case 'Mortgage':
+          if (n('principalBalance') > 0) {
+            addDebt({
+              name: `Mortgage${s('lender') ? ` – ${s('lender')}` : ''}`,
+              balance: n('principalBalance'),
+              interestRate: n('interestRate'),
+              minimumPayment: n('monthlyPayment'),
+            });
+          }
+          break;
+
+        case 'Brokerage Account':
+        case 'Investment Statement':
+          if (n('totalValue') > 0) {
+            addAsset({
+              name: s('institution') || s('accountType') || 'Brokerage',
+              type: 'Investment',
+              value: n('totalValue'),
+            });
+          }
+          break;
+
+        case 'Retirement Account':
+        case 'Retirement Statement':
+          if (n('currentBalance') > 0) {
+            addAsset({
+              name: `${s('accountType') || 'Retirement'} – ${s('institution') || 'Unknown'}`,
+              type: 'Investment',
+              value: n('currentBalance'),
+            });
+          }
+          break;
+
+        case 'Monthly Bill':
+        case 'Utility Bill':
+          if (n('amountDue') > 0) {
+            const dueDateRaw = parseInt(s('dueDate'), 10);
+            addBill({
+              name: s('provider') || s('category') || doc.docType,
+              amount: n('amountDue'),
+              dueDate: Number.isNaN(dueDateRaw) ? 15 : Math.min(Math.max(dueDateRaw, 1), 31),
+              isAutoPay: s('autopay').toLowerCase().includes('yes') || s('autopay').toLowerCase().includes('true'),
+            });
+          }
+          break;
+      }
     }
 
     setStep('done');
-  };
-
-  // ── Update helpers ─────────────────────────────────────────────────────────
-
-  const updatePaystubField = (field: keyof ExtractedPaystub, value: string) => {
-    setReview(r => r && r.paystub ? {
-      ...r,
-      paystub: { ...r.paystub, [field]: { ...r.paystub[field], value, found: true } },
-    } : r);
-  };
-
-  const updateBankField = (i: number, field: keyof EditableBankAccount, value: string) => {
-    setReview(r => r ? {
-      ...r,
-      bankAccounts: r.bankAccounts.map((a, idx) =>
-        idx === i ? { ...a, [field]: { ...a[field], value, found: true } } : a
-      ),
-    } : r);
-  };
-
-  const updateCardField = (i: number, field: keyof EditableCreditCard, value: string) => {
-    setReview(r => r ? {
-      ...r,
-      creditCards: r.creditCards.map((c, idx) =>
-        idx === i ? { ...c, [field]: { ...c[field], value, found: true } } : c
-      ),
-    } : r);
-  };
-
-  const updateLoanField = (i: number, field: keyof EditableLoan, value: string) => {
-    setReview(r => r ? {
-      ...r,
-      loans: r.loans.map((l, idx) =>
-        idx === i ? { ...l, [field]: { ...l[field], value, found: true } } : l
-      ),
-    } : r);
-  };
-
-  const updateInvestmentField = (i: number, field: keyof EditableInvestment, value: string) => {
-    setReview(r => r ? {
-      ...r,
-      investments: r.investments.map((inv, idx) =>
-        idx === i ? { ...inv, [field]: { ...inv[field], value, found: true } } : inv
-      ),
-    } : r);
   };
 
   // ─── STEP 0: Upload ──────────────────────────────────────────────────────────
@@ -319,7 +445,6 @@ export default function Scanner() {
   if (step === 'upload') {
     return (
       <div className="min-h-[100dvh] bg-background flex flex-col">
-        {/* Header */}
         <div className="sticky top-0 z-40 bg-secondary text-secondary-foreground px-4 py-4 flex items-center gap-3">
           <button onClick={() => setLocation('/')} className="p-2 rounded-full hover:bg-white/10 transition-colors">
             <X className="w-5 h-5" />
@@ -331,32 +456,29 @@ export default function Scanner() {
         </div>
 
         <div className="flex-1 p-4 max-w-2xl mx-auto w-full space-y-4">
-
-          {/* Privacy notice */}
           <div className="bg-accent border border-primary/20 rounded-2xl p-4 flex gap-3">
             <ShieldCheck className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
             <div className="text-sm">
-              <div className="font-semibold text-foreground">Processed entirely on your device</div>
+              <div className="font-semibold text-foreground">AI-powered, on-server analysis</div>
               <div className="text-muted-foreground mt-0.5">
-                Images are analyzed locally using on-device OCR. Nothing is sent to any server. Extractions are best-effort estimates — you confirm every value before anything is saved.
+                Documents are analyzed by AI to extract financial data. Files are processed and immediately discarded — nothing is stored on our servers. Every value requires your confirmation before saving.
               </div>
             </div>
           </div>
 
-          {/* Drop zone */}
           <div
             className={`relative border-2 border-dashed rounded-2xl p-8 text-center transition-all cursor-pointer ${
               isDragging ? 'border-primary bg-accent' : 'border-border hover:border-primary/50 hover:bg-accent/50'
             }`}
             onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
             onDragLeave={() => setIsDragging(false)}
-            onDrop={handleDrop}
+            onDrop={e => { e.preventDefault(); setIsDragging(false); addFiles(Array.from(e.dataTransfer.files)); }}
             onClick={() => fileInputRef.current?.click()}
           >
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept="image/*,.heic,.heif,.pdf"
               multiple
               className="hidden"
               onChange={e => addFiles(Array.from(e.target.files ?? []))}
@@ -364,24 +486,25 @@ export default function Scanner() {
             <div className="w-16 h-16 rounded-full bg-accent mx-auto mb-4 flex items-center justify-center">
               <Upload className="w-7 h-7 text-primary" />
             </div>
-            <div className="font-semibold text-foreground text-lg mb-1">Upload screenshots</div>
+            <div className="font-semibold text-foreground text-lg mb-1">Upload financial documents</div>
             <div className="text-muted-foreground text-sm mb-4">
-              Paystubs, bank statements, credit cards, loan statements, investment accounts
+              JPG · PNG · HEIC · PDF — one document per file works best
             </div>
             <Button className="bg-primary hover:bg-primary/90 text-primary-foreground h-12 px-8 text-base">
-              Choose Photos
+              Choose Files
             </Button>
-            <div className="text-xs text-muted-foreground mt-3">or drag and drop images here</div>
+            <div className="text-xs text-muted-foreground mt-3">or drag and drop here</div>
           </div>
 
-          {/* Tip cards */}
           {files.length === 0 && (
             <div className="grid grid-cols-2 gap-3">
               {[
-                { icon: '💵', label: 'Paystub', desc: 'Rate, hours, net pay' },
-                { icon: '🏦', label: 'Bank Account', desc: 'Checking, savings balance' },
-                { icon: '💳', label: 'Credit Card', desc: 'Balance, limit, APR' },
-                { icon: '📈', label: 'Investment', desc: '401k, IRA, brokerage' },
+                { icon: '💵', label: 'Paystub', desc: 'Rate, hours, net pay, taxes' },
+                { icon: '🏦', label: 'Bank Account', desc: 'Checking, savings balances' },
+                { icon: '💳', label: 'Credit Card', desc: 'Balance, limit, APR, min payment' },
+                { icon: '🚗', label: 'Auto / Loan', desc: 'Balance, APR, monthly payment' },
+                { icon: '📈', label: 'Investments', desc: '401k, IRA, brokerage' },
+                { icon: '💡', label: 'Bills', desc: 'Utilities, subscriptions' },
               ].map(t => (
                 <div key={t.label} className="bg-card border border-border rounded-xl p-3 text-center">
                   <div className="text-2xl mb-1">{t.icon}</div>
@@ -392,7 +515,6 @@ export default function Scanner() {
             </div>
           )}
 
-          {/* File previews */}
           {files.length > 0 && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
@@ -404,7 +526,13 @@ export default function Scanner() {
               <div className="grid grid-cols-3 gap-3">
                 {files.map((file, i) => (
                   <div key={i} className="relative group rounded-xl overflow-hidden border border-border aspect-square bg-muted">
-                    <img src={previews[i]} alt={file.name} className="w-full h-full object-cover" />
+                    {previews[i] ? (
+                      <img src={previews[i]} alt={file.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <FileImage className="w-8 h-8 text-muted-foreground" />
+                      </div>
+                    )}
                     <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center">
                       <button
                         className="opacity-0 group-hover:opacity-100 transition-opacity bg-white rounded-full p-1.5 shadow"
@@ -421,29 +549,21 @@ export default function Scanner() {
               </div>
             </div>
           )}
-
-          {errorMsg && (
-            <div className="bg-destructive/10 border border-destructive/30 rounded-xl p-4 flex gap-3 text-destructive">
-              <AlertTriangle className="w-5 h-5 flex-shrink-0" />
-              <span className="text-sm">{errorMsg}</span>
-            </div>
-          )}
         </div>
 
-        {/* Sticky bottom CTA */}
         <div className="sticky bottom-0 bg-background border-t border-border p-4 space-y-2">
           <Button
             className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
             disabled={files.length === 0}
             onClick={startProcessing}
           >
-            <ScanLine className="w-5 h-5 mr-2" /> Analyze My Finances
+            <ScanLine className="w-5 h-5 mr-2" /> Analyze with AI
           </Button>
           <button
             className="w-full text-sm text-muted-foreground py-2 hover:text-foreground transition-colors"
             onClick={() => setLocation('/onboarding')}
           >
-            Skip scan — enter manually
+            Skip — enter details manually
           </button>
         </div>
       </div>
@@ -453,41 +573,49 @@ export default function Scanner() {
   // ─── STEP 1: Processing ───────────────────────────────────────────────────────
 
   if (step === 'processing') {
-    const totalProgress = fileProgress.length > 0
-      ? Math.round(fileProgress.reduce((s, p) => s + p, 0) / fileProgress.length)
-      : 0;
+    const done = docs.filter(d => d.status === 'done' || d.status === 'error').length;
+    const total = docs.length;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
 
     return (
       <div className="min-h-[100dvh] bg-secondary text-secondary-foreground flex flex-col items-center justify-center p-6 text-center">
-        <div className="w-20 h-20 rounded-full bg-primary/20 flex items-center justify-center mb-6 relative">
+        <div className="w-20 h-20 rounded-full bg-primary/20 flex items-center justify-center mb-6">
           <ScanLine className="w-9 h-9 text-primary animate-pulse" />
         </div>
-        <h2 className="text-2xl font-bold mb-2">Reading your documents</h2>
+        <h2 className="text-2xl font-bold mb-2">Analyzing your documents</h2>
         <p className="text-secondary-foreground/70 mb-8 max-w-xs">
-          Running on-device OCR — this stays on your device and may take a moment per image.
+          AI is classifying and extracting financial data from each file.
         </p>
 
         <div className="w-full max-w-sm space-y-4">
-          <div className="space-y-2">
-            <div className="flex justify-between text-sm">
-              <span>Overall progress</span>
-              <span className="font-semibold">{totalProgress}%</span>
-            </div>
-            <Progress value={totalProgress} className="h-3 rounded-full" />
+          <div className="text-sm font-medium">{done} of {total} complete</div>
+          <div className="h-3 bg-white/10 rounded-full overflow-hidden">
+            <div className="h-full bg-primary rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
           </div>
 
-          <div className="space-y-2 mt-4">
-            {files.map((file, i) => (
-              <div key={i} className="bg-white/10 rounded-xl p-3 text-left">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-sm font-medium truncate flex-1 mr-2">{file.name}</span>
-                  <span className="text-xs text-secondary-foreground/60 flex-shrink-0">
-                    {fileProgress[i] === 100 ? (
-                      <CheckCircle2 className="w-4 h-4 text-primary inline" />
-                    ) : `${fileProgress[i] ?? 0}%`}
-                  </span>
+          <div className="space-y-2 mt-2">
+            {docs.map((doc) => (
+              <div key={doc.id} className="bg-white/10 rounded-xl p-3 text-left flex items-center gap-3">
+                <div className="w-6 h-6 flex-shrink-0 flex items-center justify-center">
+                  {doc.status === 'done' && <CheckCircle2 className="w-5 h-5 text-primary" />}
+                  {doc.status === 'processing' && <Loader2 className="w-5 h-5 text-primary animate-spin" />}
+                  {doc.status === 'error' && <AlertTriangle className="w-5 h-5 text-red-400" />}
+                  {doc.status === 'pending' && <div className="w-4 h-4 rounded-full border-2 border-white/20" />}
                 </div>
-                <Progress value={fileProgress[i] ?? 0} className="h-1.5 rounded-full" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium truncate">{doc.file.name}</div>
+                  {doc.status === 'done' && doc.result && (
+                    <div className="text-xs text-secondary-foreground/60">
+                      {DOC_TYPE_EMOJI[doc.result.docType] ?? '📄'} {doc.result.docType} · {doc.result.classificationConfidence}% confidence
+                    </div>
+                  )}
+                  {doc.status === 'error' && (
+                    <div className="text-xs text-red-300">{doc.error}</div>
+                  )}
+                  {doc.status === 'processing' && (
+                    <div className="text-xs text-secondary-foreground/60">Analyzing…</div>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -498,207 +626,144 @@ export default function Scanner() {
 
   // ─── STEP 2: Review ───────────────────────────────────────────────────────────
 
-  if (step === 'review' && review) {
-    const totalExtracted =
-      (review.paystub ? 1 : 0) +
-      review.bankAccounts.length +
-      review.creditCards.length +
-      review.loans.length +
-      review.investments.length;
+  if (step === 'review') {
+    const accepted = docs.filter(d => d.accepted && d.status !== 'error');
 
     return (
       <div className="min-h-[100dvh] bg-background flex flex-col">
-        {/* Header */}
-        <div className="sticky top-0 z-40 bg-secondary text-secondary-foreground px-4 py-4">
-          <div className="flex items-center gap-3 mb-2">
-            <button onClick={() => setStep('upload')} className="p-2 rounded-full hover:bg-white/10 transition-colors">
-              <RotateCcw className="w-4 h-4" />
-            </button>
-            <div>
-              <h1 className="font-bold text-lg leading-none">Review Extracted Data</h1>
-              <p className="text-secondary-foreground/70 text-xs mt-0.5">Step 2 of 3 — Confirm everything before saving</p>
-            </div>
+        <div className="sticky top-0 z-40 bg-secondary text-secondary-foreground px-4 py-4 flex items-center gap-3">
+          <button onClick={() => setStep('upload')} className="p-2 rounded-full hover:bg-white/10 transition-colors">
+            <RotateCcw className="w-4 h-4" />
+          </button>
+          <div>
+            <h1 className="font-bold text-lg leading-none">Review Extracted Data</h1>
+            <p className="text-secondary-foreground/70 text-xs mt-0.5">Step 2 of 3 — Confirm before saving</p>
           </div>
         </div>
 
-        <div className="flex-1 p-4 max-w-2xl mx-auto w-full space-y-4 pb-32">
-
-          {/* Warning banner */}
+        <div className="flex-1 p-4 max-w-2xl mx-auto w-full space-y-4 pb-36">
           <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-4 flex gap-3">
             <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
             <div className="text-sm">
-              <div className="font-semibold text-amber-900 dark:text-amber-200">Best-effort estimate — nothing is saved yet</div>
+              <div className="font-semibold text-amber-900 dark:text-amber-200">Verify every value — AI makes mistakes</div>
               <div className="text-amber-700 dark:text-amber-300 mt-0.5">
-                OCR is not guaranteed. Please verify every field. Tap a value to edit it.
-              </div>
-              <div className="flex items-center gap-3 mt-2 text-xs">
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> High confidence</span>
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-400 inline-block" /> Check carefully</span>
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-slate-400 inline-block" /> Not found</span>
+                Nothing is saved until you tap Confirm. Edit any field, change the document type, or reject documents you don't want to import.
               </div>
             </div>
           </div>
 
-          {/* Results summary */}
-          <div className="flex items-center gap-2 px-1">
-            <CheckCircle2 className="w-4 h-4 text-primary" />
-            <span className="text-sm font-medium text-foreground">
-              Found {totalExtracted} section{totalExtracted !== 1 ? 's' : ''} across {files.length} image{files.length !== 1 ? 's' : ''}
-            </span>
+          {/* Name */}
+          <div className="bg-card border border-border rounded-2xl p-4 space-y-2">
+            <Label className="text-sm font-semibold">Your Name</Label>
+            <Input
+              value={userName}
+              onChange={e => setUserName(e.target.value)}
+              placeholder="Enter your name"
+              className="h-11"
+            />
           </div>
 
-          {/* Your Name */}
-          <div className="bg-card border border-border rounded-2xl p-4 space-y-3">
-            <h3 className="font-semibold text-foreground">Your Profile</h3>
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">First Name</Label>
-              <Input
-                value={review.userName}
-                onChange={e => setReview(r => r ? { ...r, userName: e.target.value } : r)}
-                placeholder="Enter your name"
-                className="h-11"
-              />
-            </div>
-          </div>
+          {/* Document cards */}
+          {docs.map((doc) => {
+            const fieldDefs = DOC_FIELDS[doc.docType] ?? [];
+            return (
+              <div
+                key={doc.id}
+                className={`bg-card border rounded-2xl overflow-hidden shadow-sm transition-all ${
+                  doc.accepted && doc.status !== 'error' ? 'border-border' : 'border-dashed border-slate-300 dark:border-slate-700 opacity-60'
+                }`}
+              >
+                {/* Doc header */}
+                <div className="p-4 border-b border-border flex items-start gap-3">
+                  {doc.preview && (
+                    <img src={doc.preview} alt="" className="w-12 h-12 rounded-lg object-cover flex-shrink-0" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-base font-semibold text-foreground">
+                        {DOC_TYPE_EMOJI[doc.docType] ?? '📄'} {doc.docType}
+                      </span>
+                      {doc.result && <ConfidenceBadge score={doc.result.classificationConfidence} />}
+                      {doc.status === 'error' && (
+                        <span className="text-xs text-red-500">Error: {doc.error}</span>
+                      )}
+                    </div>
+                    <div className="text-xs text-muted-foreground truncate mt-0.5">{doc.file.name}</div>
 
-          {/* Paystub */}
-          {review.paystub ? (
-            <Section title="Pay Information" count={1}>
-              <FieldRow label="Employer" ef={review.paystub.employer} onChange={v => updatePaystubField('employer', v)} />
-              <div className="grid grid-cols-2 gap-3">
-                <FieldRow label="Hourly Rate" ef={review.paystub.hourlyRate} onChange={v => updatePaystubField('hourlyRate', v)} type="number" prefix="$" />
-                <FieldRow label="Regular Hours" ef={review.paystub.regularHours} onChange={v => updatePaystubField('regularHours', v)} type="number" />
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                <FieldRow label="OT Hours (1.5x)" ef={review.paystub.overtimeHours} onChange={v => updatePaystubField('overtimeHours', v)} type="number" />
-                <FieldRow label="DT Hours (2x)" ef={review.paystub.doubleTimeHours} onChange={v => updatePaystubField('doubleTimeHours', v)} type="number" />
-                <FieldRow label="Per Diem ($)" ef={review.paystub.perDiem} onChange={v => updatePaystubField('perDiem', v)} type="number" prefix="$" />
-              </div>
-              <div className="grid grid-cols-2 gap-3 border-t border-border pt-3">
-                <FieldRow label="Gross Pay" ef={review.paystub.grossPay} onChange={v => updatePaystubField('grossPay', v)} type="number" prefix="$" />
-                <FieldRow label="Taxes" ef={review.paystub.taxes} onChange={v => updatePaystubField('taxes', v)} type="number" prefix="$" />
-                <FieldRow label="Deductions" ef={review.paystub.deductions} onChange={v => updatePaystubField('deductions', v)} type="number" prefix="$" />
-                <FieldRow label="Net Pay" ef={review.paystub.netPay} onChange={v => updatePaystubField('netPay', v)} type="number" prefix="$" />
-              </div>
-            </Section>
-          ) : (
-            <div className="bg-card border border-dashed border-border rounded-2xl p-4 text-center text-muted-foreground text-sm">
-              No paystub detected.{' '}
-              <button className="text-primary font-medium" onClick={() => setReview(r => r ? {
-                ...r,
-                paystub: {
-                  employer: makeField('', 'low', false), date: makeField('', 'low', false),
-                  hourlyRate: makeField(0, 'low', false), regularHours: makeField(40, 'low', false),
-                  overtimeHours: makeField(0, 'low', false), doubleTimeHours: makeField(0, 'low', false),
-                  perDiem: makeField(0, 'low', false), grossPay: makeField(0, 'low', false),
-                  taxes: makeField(0, 'low', false), deductions: makeField(0, 'low', false),
-                  netPay: makeField(0, 'low', false),
-                }
-              } : r)}>Add pay info</button>
-            </div>
-          )}
+                    {/* Type selector */}
+                    <div className="mt-2 flex items-center gap-2">
+                      <Edit2 className="w-3.5 h-3.5 text-muted-foreground" />
+                      <select
+                        value={doc.docType}
+                        onChange={e => updateDocType(doc.id, e.target.value)}
+                        className="text-xs bg-background border border-border rounded-lg px-2 py-1 text-foreground"
+                      >
+                        {DOC_TYPES.map(t => (
+                          <option key={t} value={t}>{t}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
 
-          {/* Bank Accounts */}
-          <Section title="Bank Accounts" count={review.bankAccounts.length}>
-            {review.bankAccounts.map((acct, i) => (
-              <div key={i} className="space-y-3 border border-border rounded-xl p-3">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-foreground">Account {i + 1}</span>
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => setReview(r => r ? { ...r, bankAccounts: r.bankAccounts.filter((_, idx) => idx !== i) } : r)}>
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </Button>
+                  <button
+                    onClick={() => toggleAccepted(doc.id)}
+                    className={`flex-shrink-0 flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl font-medium transition-colors ${
+                      doc.accepted && doc.status !== 'error'
+                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                        : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                    }`}
+                  >
+                    {doc.accepted && doc.status !== 'error'
+                      ? <><ThumbsUp className="w-3.5 h-3.5" /> Accept</>
+                      : <><ThumbsDown className="w-3.5 h-3.5" /> Rejected</>
+                    }
+                  </button>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <FieldRow label="Account Name" ef={acct.name} onChange={v => updateBankField(i, 'name', v)} />
-                  <FieldRow label="Balance" ef={acct.balance} onChange={v => updateBankField(i, 'balance', v)} type="number" prefix="$" />
-                </div>
-              </div>
-            ))}
-            <Button variant="outline" size="sm" className="w-full" onClick={() => setReview(r => r ? { ...r, bankAccounts: [...r.bankAccounts, blankBankAccount()] } : r)}>
-              <Plus className="w-4 h-4 mr-1" /> Add bank account
-            </Button>
-          </Section>
 
-          {/* Credit Cards */}
-          <Section title="Credit Cards" count={review.creditCards.length}>
-            {review.creditCards.map((card, i) => (
-              <div key={i} className="space-y-3 border border-border rounded-xl p-3">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-foreground">Card {i + 1}</span>
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => setReview(r => r ? { ...r, creditCards: r.creditCards.filter((_, idx) => idx !== i) } : r)}>
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </Button>
-                </div>
-                <FieldRow label="Card Name" ef={card.name} onChange={v => updateCardField(i, 'name', v)} />
-                <div className="grid grid-cols-2 gap-3">
-                  <FieldRow label="Balance Owed" ef={card.balance} onChange={v => updateCardField(i, 'balance', v)} type="number" prefix="$" />
-                  <FieldRow label="Credit Limit" ef={card.limit} onChange={v => updateCardField(i, 'limit', v)} type="number" prefix="$" />
-                  <FieldRow label="APR (%)" ef={card.apr} onChange={v => updateCardField(i, 'apr', v)} type="number" />
-                  <FieldRow label="Min Payment" ef={card.minimumPayment} onChange={v => updateCardField(i, 'minimumPayment', v)} type="number" prefix="$" />
-                </div>
+                {/* Fields */}
+                {doc.accepted && doc.status !== 'error' && fieldDefs.length > 0 && (
+                  <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {fieldDefs.map(fd => {
+                      const f = doc.fields[fd.key];
+                      const hasValue = f?.value != null && f.value !== '';
+                      return (
+                        <div key={fd.key} className="space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            {hasValue && <ConfidenceDot score={f!.confidence} />}
+                            {!hasValue && <span className="w-2 h-2 rounded-full border border-dashed border-slate-400 inline-block" />}
+                            <Label className="text-xs text-muted-foreground">{fd.label}</Label>
+                          </div>
+                          <div className="relative">
+                            {fd.prefix && <span className="absolute left-3 top-3 text-muted-foreground text-sm pointer-events-none">{fd.prefix}</span>}
+                            <Input
+                              type={fd.type === 'number' ? 'number' : fd.type === 'date' ? 'date' : 'text'}
+                              value={f?.value ?? ''}
+                              onChange={e => updateField(doc.id, fd.key, e.target.value)}
+                              className={`h-11 text-sm bg-background ${fd.prefix ? 'pl-7' : ''} ${!hasValue ? 'border-dashed' : ''}`}
+                              placeholder={!hasValue ? 'Not found — enter if known' : undefined}
+                              step={fd.type === 'number' ? '0.01' : undefined}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            ))}
-            <Button variant="outline" size="sm" className="w-full" onClick={() => setReview(r => r ? { ...r, creditCards: [...r.creditCards, blankCreditCard()] } : r)}>
-              <Plus className="w-4 h-4 mr-1" /> Add credit card
-            </Button>
-          </Section>
-
-          {/* Loans */}
-          <Section title="Loans & Debts" count={review.loans.length}>
-            {review.loans.map((loan, i) => (
-              <div key={i} className="space-y-3 border border-border rounded-xl p-3">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-foreground">Loan {i + 1}</span>
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => setReview(r => r ? { ...r, loans: r.loans.filter((_, idx) => idx !== i) } : r)}>
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </Button>
-                </div>
-                <FieldRow label="Loan Name" ef={loan.name} onChange={v => updateLoanField(i, 'name', v)} />
-                <div className="grid grid-cols-3 gap-3">
-                  <FieldRow label="Balance" ef={loan.balance} onChange={v => updateLoanField(i, 'balance', v)} type="number" prefix="$" />
-                  <FieldRow label="APR (%)" ef={loan.apr} onChange={v => updateLoanField(i, 'apr', v)} type="number" />
-                  <FieldRow label="Monthly Pmt" ef={loan.monthlyPayment} onChange={v => updateLoanField(i, 'monthlyPayment', v)} type="number" prefix="$" />
-                </div>
-              </div>
-            ))}
-            <Button variant="outline" size="sm" className="w-full" onClick={() => setReview(r => r ? { ...r, loans: [...r.loans, blankLoan()] } : r)}>
-              <Plus className="w-4 h-4 mr-1" /> Add loan
-            </Button>
-          </Section>
-
-          {/* Investments */}
-          <Section title="Investments" count={review.investments.length}>
-            {review.investments.map((inv, i) => (
-              <div key={i} className="space-y-3 border border-border rounded-xl p-3">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-foreground">Account {i + 1}</span>
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => setReview(r => r ? { ...r, investments: r.investments.filter((_, idx) => idx !== i) } : r)}>
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </Button>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <FieldRow label="Account Name" ef={inv.name} onChange={v => updateInvestmentField(i, 'name', v)} />
-                  <FieldRow label="Current Value" ef={inv.value} onChange={v => updateInvestmentField(i, 'value', v)} type="number" prefix="$" />
-                </div>
-              </div>
-            ))}
-            <Button variant="outline" size="sm" className="w-full" onClick={() => setReview(r => r ? { ...r, investments: [...r.investments, blankInvestment()] } : r)}>
-              <Plus className="w-4 h-4 mr-1" /> Add investment
-            </Button>
-          </Section>
+            );
+          })}
         </div>
 
-        {/* Sticky confirm */}
         <div className="fixed bottom-0 inset-x-0 bg-background border-t border-border p-4 space-y-2">
           <Button
             className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
+            disabled={accepted.length === 0}
             onClick={confirmAndSave}
           >
-            <CheckCircle2 className="w-5 h-5 mr-2" /> Confirm &amp; Save Everything
+            <CheckCircle2 className="w-5 h-5 mr-2" />
+            Confirm &amp; Save {accepted.length} Document{accepted.length !== 1 ? 's' : ''}
           </Button>
-          <div className="text-center text-xs text-muted-foreground">
-            Nothing is saved until you tap Confirm
-          </div>
+          <div className="text-center text-xs text-muted-foreground">Nothing is saved until you tap Confirm</div>
         </div>
       </div>
     );
@@ -711,16 +776,25 @@ export default function Scanner() {
       <div className="w-20 h-20 rounded-full bg-primary/20 flex items-center justify-center mb-6">
         <CheckCircle2 className="w-10 h-10 text-primary" />
       </div>
-      <h2 className="text-3xl font-bold mb-2">All saved!</h2>
+      <h2 className="text-3xl font-bold mb-2">Saved!</h2>
       <p className="text-secondary-foreground/70 mb-10 max-w-xs">
-        Your financial picture is set up. Everything stays on this device.
+        Your financial data is now in the app. Review your dashboard or ask the AI assistant any question.
       </p>
-      <Button
-        className="h-14 px-10 text-lg bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
-        onClick={() => setLocation('/dashboard')}
-      >
-        Go to Dashboard <ArrowRight className="w-5 h-5 ml-2" />
-      </Button>
+      <div className="flex flex-col gap-3 w-full max-w-xs">
+        <Button
+          className="h-14 text-lg bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
+          onClick={() => setLocation('/dashboard')}
+        >
+          View Dashboard <ArrowRight className="w-5 h-5 ml-2" />
+        </Button>
+        <Button
+          variant="outline"
+          className="h-12 rounded-2xl border-white/20 text-secondary-foreground hover:bg-white/10"
+          onClick={() => setLocation('/ask-ai')}
+        >
+          Ask Blue Collar AI
+        </Button>
+      </div>
     </div>
   );
 }

@@ -1,0 +1,1 @@
+- [BCFAI Architecture](bcfai-architecture.md) — frontend-only localStorage app + API server for AI scan/chat; key routing and integration details.
