@@ -199,6 +199,7 @@ interface ProcessedDoc {
   preview: string;
   status: ProcessStatus;
   error?: string;
+  errorStage?: string;
   result?: ScanResult;
   // Editable state
   docType: string;
@@ -227,22 +228,89 @@ export default function Scanner() {
   // ── File handling ──────────────────────────────────────────────────────────
 
   const addFiles = useCallback((newFiles: File[]) => {
+    // Accept files whose MIME starts with image/, PDF, HEIC/HEIF, or whose
+    // extension implies an image format. On iOS Safari, JPEG files from the
+    // Photos or Files app often arrive with f.type === "" — the extension
+    // check catches those so they aren't silently dropped.
+    const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp|heic|heif)$/i;
     const valid = newFiles.filter(f =>
       f.type.startsWith('image/') ||
       f.type === 'application/pdf' ||
-      f.name.toLowerCase().endsWith('.heic') ||
-      f.name.toLowerCase().endsWith('.heif')
+      IMAGE_EXT.test(f.name) ||
+      /\.pdf$/i.test(f.name)
     );
-    setFiles(prev => {
-      const combined = [...prev, ...valid];
-      setPreviews(combined.map(f => f.type.startsWith('image/') || f.name.match(/\.(heic|heif)$/i) ? URL.createObjectURL(f) : ''));
-      return combined;
+
+    // Generate previews OUTSIDE the state updater so URL.createObjectURL is
+    // never called twice (React 18 Strict Mode runs updaters twice in dev).
+    // Wrapped in try/catch because iOS Safari throws
+    // "The string did not match the expected pattern" for certain file types.
+    const newPreviews = valid.map(f => {
+      try {
+        if (f.type.startsWith('image/') || IMAGE_EXT.test(f.name)) {
+          return URL.createObjectURL(f);
+        }
+      } catch {
+        // Silently fall back — preview is cosmetic, upload still works
+      }
+      return '';
     });
+
+    setFiles(prev => [...prev, ...valid]);
+    setPreviews(prev => [...prev, ...newPreviews]);
   }, []);
 
   const removeFile = (i: number) => {
     setFiles(prev => prev.filter((_, idx) => idx !== i));
     setPreviews(prev => prev.filter((_, idx) => idx !== i));
+  };
+
+  // ── Parse structured API errors ────────────────────────────────────────────
+
+  const parseApiError = (err: unknown): { stage: string; message: string } => {
+    if (err instanceof Error) {
+      try {
+        const parsed = JSON.parse(err.message);
+        return { stage: parsed.stage ?? 'unknown', message: parsed.message ?? err.message };
+      } catch {
+        return { stage: 'unknown', message: err.message };
+      }
+    }
+    return { stage: 'unknown', message: String(err) };
+  };
+
+  // ── Process a single file and update its doc entry ─────────────────────────
+
+  const processDoc = async (docId: string, file: File) => {
+    setDocs(prev => prev.map(d => d.id === docId ? { ...d, status: 'processing', error: undefined } : d));
+    try {
+      const result = await scanFile(file);
+      const fieldMap: Record<string, { value: string; confidence: number }> = {};
+      for (const [k, v] of Object.entries(result.fields ?? {})) {
+        const fv = v as ScanFieldValue;
+        if (fv.value != null) {
+          fieldMap[k] = { value: String(fv.value), confidence: fv.confidence ?? 80 };
+        }
+      }
+      setDocs(prev => prev.map(d => d.id === docId ? {
+        ...d,
+        status: 'done',
+        result,
+        docType: result.docType ?? 'Unknown',
+        fields: fieldMap,
+        error: undefined,
+      } : d));
+    } catch (err) {
+      const { stage, message } = parseApiError(err);
+      setDocs(prev => prev.map(d => d.id === docId ? {
+        ...d,
+        status: 'error',
+        error: message,
+        errorStage: stage,
+        docType: 'Unknown',
+        fields: {},
+        accepted: false,
+      } : d));
+    }
   };
 
   // ── Start processing ───────────────────────────────────────────────────────
@@ -252,7 +320,6 @@ export default function Scanner() {
     setStep('processing');
     setGlobalError('');
 
-    // Init doc states
     const initial: ProcessedDoc[] = files.map((f, i) => ({
       id: crypto.randomUUID(),
       file: f,
@@ -264,36 +331,25 @@ export default function Scanner() {
     }));
     setDocs(initial);
 
-    // Process sequentially
-    for (let i = 0; i < files.length; i++) {
-      setDocs(prev => prev.map((d, idx) => idx === i ? { ...d, status: 'processing' } : d));
-      try {
-        const result = await scanFile(files[i]);
-        const fieldMap: Record<string, { value: string; confidence: number }> = {};
-        for (const [k, v] of Object.entries(result.fields ?? {})) {
-          const fv = v as ScanFieldValue;
-          if (fv.value != null) {
-            fieldMap[k] = { value: String(fv.value), confidence: fv.confidence ?? 80 };
-          }
-        }
-        setDocs(prev => prev.map((d, idx) => idx === i ? {
-          ...d,
-          status: 'done',
-          result,
-          docType: result.docType ?? 'Unknown',
-          fields: fieldMap,
-        } : d));
-      } catch (err) {
-        setDocs(prev => prev.map((d, idx) => idx === i ? {
-          ...d,
-          status: 'error',
-          error: err instanceof Error ? err.message : 'Processing failed',
-          docType: 'Unknown',
-          fields: {},
-        } : d));
-      }
+    // Process sequentially — update individual statuses as each completes
+    for (const doc of initial) {
+      await processDoc(doc.id, doc.file);
     }
     setStep('review');
+  };
+
+  // ── Retry a failed doc ─────────────────────────────────────────────────────
+
+  const retryDoc = async (docId: string) => {
+    const doc = docs.find(d => d.id === docId);
+    if (!doc) return;
+    await processDoc(docId, doc.file);
+  };
+
+  // ── Remove a doc from the list ─────────────────────────────────────────────
+
+  const removeDoc = (docId: string) => {
+    setDocs(prev => prev.filter(d => d.id !== docId));
   };
 
   // ── Field update ───────────────────────────────────────────────────────────
@@ -690,34 +746,57 @@ export default function Scanner() {
                     </div>
                     <div className="text-xs text-muted-foreground truncate mt-0.5">{doc.file.name}</div>
 
-                    {/* Type selector */}
-                    <div className="mt-2 flex items-center gap-2">
-                      <Edit2 className="w-3.5 h-3.5 text-muted-foreground" />
-                      <select
-                        value={doc.docType}
-                        onChange={e => updateDocType(doc.id, e.target.value)}
-                        className="text-xs bg-background border border-border rounded-lg px-2 py-1 text-foreground"
-                      >
-                        {DOC_TYPES.map(t => (
-                          <option key={t} value={t}>{t}</option>
-                        ))}
-                      </select>
-                    </div>
+                    {/* Type selector — only for successfully scanned docs */}
+                    {doc.status !== 'error' && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <Edit2 className="w-3.5 h-3.5 text-muted-foreground" />
+                        <select
+                          value={doc.docType}
+                          onChange={e => updateDocType(doc.id, e.target.value)}
+                          className="text-xs bg-background border border-border rounded-lg px-2 py-1 text-foreground"
+                        >
+                          {DOC_TYPES.map(t => (
+                            <option key={t} value={t}>{t}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   </div>
 
-                  <button
-                    onClick={() => toggleAccepted(doc.id)}
-                    className={`flex-shrink-0 flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl font-medium transition-colors ${
-                      doc.accepted && doc.status !== 'error'
-                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-                        : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
-                    }`}
-                  >
-                    {doc.accepted && doc.status !== 'error'
-                      ? <><ThumbsUp className="w-3.5 h-3.5" /> Accept</>
-                      : <><ThumbsDown className="w-3.5 h-3.5" /> Rejected</>
-                    }
-                  </button>
+                  {/* Accept/Reject toggle for successful docs */}
+                  {doc.status !== 'error' && (
+                    <button
+                      onClick={() => toggleAccepted(doc.id)}
+                      className={`flex-shrink-0 flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl font-medium transition-colors ${
+                        doc.accepted
+                          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                          : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                      }`}
+                    >
+                      {doc.accepted
+                        ? <><ThumbsUp className="w-3.5 h-3.5" /> Accept</>
+                        : <><ThumbsDown className="w-3.5 h-3.5" /> Rejected</>
+                      }
+                    </button>
+                  )}
+
+                  {/* Retry / Remove for failed docs */}
+                  {doc.status === 'error' && (
+                    <div className="flex-shrink-0 flex flex-col gap-1">
+                      <button
+                        onClick={() => retryDoc(doc.id)}
+                        className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-900/50 transition-colors"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" /> Retry
+                      </button>
+                      <button
+                        onClick={() => removeDoc(doc.id)}
+                        className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl font-medium bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" /> Remove
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Fields */}

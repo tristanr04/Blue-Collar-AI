@@ -21,13 +21,37 @@ export interface ScanResult {
 /** Upload a single file and get AI extraction results. */
 export async function scanFile(file: File): Promise<ScanResult> {
   const form = new FormData();
-  form.append("file", file);
+  // Always pass the filename explicitly so multer receives originalname correctly
+  // even when the browser omits it (common on iOS Safari).
+  form.append("file", file, file.name);
 
-  const res = await fetch(`${API_BASE}/scan`, { method: "POST", body: form });
-  const json = await res.json();
+  let res: Response;
+  try {
+    // Do NOT set Content-Type manually — let fetch generate the multipart boundary.
+    res = await fetch(`${API_BASE}/scan`, { method: "POST", body: form });
+  } catch (err) {
+    throw new Error(
+      JSON.stringify({
+        stage: "upload_request",
+        message: err instanceof Error ? err.message : "Network error — check your connection",
+        filename: file.name,
+      })
+    );
+  }
+
+  const json = await res.json().catch(() => ({
+    stage: "unknown",
+    message: `Upload failed with HTTP ${res.status}`,
+  }));
 
   if (!res.ok) {
-    throw new Error(json.error ?? `Scan failed with status ${res.status}`);
+    throw new Error(
+      JSON.stringify({
+        stage: (json as any).stage ?? "backend_receipt",
+        message: (json as any).error ?? (json as any).message ?? `Upload failed with HTTP ${res.status}`,
+        filename: file.name,
+      })
+    );
   }
   return json as ScanResult;
 }

@@ -1,0 +1,158 @@
+The Financial Scanner upload pipeline is broken.
+
+Current bug:
+Every JPG/JPEG screenshot immediately fails with:
+
+“The string did not match the expected pattern.”
+
+The failure happens before OCR, AI classification, or document extraction begins.
+
+Stop all feature work and debug only this issue.
+
+Required fix:
+
+1. Find the exact line throwing the exception.
+2. Explain the root cause in the Agent response before changing code.
+3. Inspect both:
+   - frontend browser console
+   - backend server logs
+4. Verify whether the upload request reaches the backend.
+5. Do not rewrite the OCR or document-classification logic unless the error originates there.
+
+Replace the upload flow with this structure:
+
+FRONTEND
+
+- Accept File objects directly from:
+  - iPhone Photos
+  - iPhone Camera
+  - iPhone Files
+  - desktop file picker
+- Support:
+  - .jpg
+  - .jpeg
+  - .png
+  - .heic
+  - .heif
+  - .pdf
+- Append the original File directly to FormData.
+- Do not convert the image to a data URL in the browser.
+- Do not parse file content with regex.
+- Do not manually set the multipart Content-Type header.
+- Let fetch generate the multipart boundary automatically.
+
+Use logic equivalent to:
+
+const formData = new FormData();
+formData.append("file", file, file.name);
+
+const response = await fetch("/api/scan-document", {
+  method: "POST",
+  body: formData
+});
+
+if (!response.ok) {
+  const error = await response.json().catch(() => ({
+    stage: "unknown",
+    message: `Upload failed with status ${response.status}`
+  }));
+
+  throw new Error(
+    JSON.stringify({
+      stage: error.stage || "unknown",
+      message: error.message || "Upload failed",
+      filename: file.name
+    })
+  );
+}
+
+const result = await response.json();
+
+BACKEND
+
+- Accept multipart/form-data using a proper multipart parser.
+- Read the uploaded file as a raw Buffer.
+- Do not expect a base64 data URL from the frontend.
+- Do not parse the filename or file contents with fragile regex.
+- Preserve:
+  - original filename
+  - MIME type
+  - file size
+- Normalize extensions:
+  - .jpg and .jpeg → image/jpeg
+  - .png → image/png
+  - .heic → image/heic
+  - .heif → image/heif
+  - .pdf → application/pdf
+- Validate MIME type using both:
+  - upload metadata
+  - file signature when possible
+- Reject unsupported files with a structured error.
+
+If the AI endpoint requires base64, convert only on the server using:
+
+const base64 = buffer.toString("base64");
+const dataUrl = `data:${validatedMimeType};base64,${base64}`;
+
+Do not use a regex that assumes every file already matches:
+
+data:image/...;base64,...
+
+ERROR HANDLING
+
+Wrap each stage separately and return structured errors:
+
+{
+  "stage": "file_selection | upload_request | backend_receipt | mime_validation | image_decode | ai_request | json_parse | classification",
+  "message": "exact error message",
+  "filename": "original filename"
+}
+
+Do not mark failed uploads as Unknown or Rejected.
+
+Use the status:
+
+Processing failed
+
+Add:
+
+- Retry button
+- Remove button
+- Technical error details in development mode
+- Simple user-facing error in production mode
+
+The confirm button must remain disabled for failed documents.
+
+TESTING
+
+Test all of these:
+
+1. JPG selected from iPhone Photos
+2. JPEG selected from iPhone Files
+3. PNG screenshot
+4. HEIC photo
+5. PDF from Files
+6. Blob converted into a File
+7. Filename containing:
+   - spaces
+   - parentheses
+   - hyphens
+   - uppercase extension
+   - multiple periods
+
+Use IMG_5876.jpeg as the primary regression test.
+
+Success criteria:
+
+- IMG_5876.jpeg reaches the backend.
+- MIME validation succeeds.
+- Image decoding succeeds.
+- The app reaches document classification.
+- The error “The string did not match the expected pattern” no longer occurs.
+- Existing OCR and AI extraction behavior remains intact.
+- No unrelated features are changed.
+
+After fixing it, show:
+- the exact file and line that caused the bug
+- the code change made
+- the result of the JPG regression test

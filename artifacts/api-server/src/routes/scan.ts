@@ -134,17 +134,38 @@ function safeParseJson(raw: string): Record<string, unknown> {
 
 router.post("/scan", upload.single("file"), async (req, res) => {
   if (!req.file) {
-    res.status(400).json({ error: "No file uploaded." });
+    res.status(400).json({ stage: "backend_receipt", error: "No file received. Please try again." });
     return;
   }
 
   const { buffer, originalname } = req.file;
-  const mime = detectMime(buffer);
 
-  // Reject unsupported types
+  // Detect MIME from magic bytes — ignore whatever the browser reported
+  let mime: string;
+  try {
+    mime = detectMime(buffer);
+  } catch (err) {
+    logger.error({ err }, "MIME detection failed");
+    res.status(422).json({ stage: "mime_validation", error: "Could not read file. Please try a different file." });
+    return;
+  }
+
+  // Normalize .jpg/.jpeg → image/jpeg when magic-byte detection falls back to
+  // octet-stream (can happen with some iOS-generated JPEGs that omit the SOI marker)
+  if (mime === "application/octet-stream") {
+    const ext = originalname.split(".").pop()?.toLowerCase() ?? "";
+    if (ext === "jpg" || ext === "jpeg") mime = "image/jpeg";
+    else if (ext === "png") mime = "image/png";
+    else if (ext === "heic" || ext === "heif") mime = "image/heic";
+    else if (ext === "pdf") mime = "application/pdf";
+  }
+
   const supported = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/heic", "application/pdf"];
   if (!supported.includes(mime)) {
-    res.status(422).json({ error: `Unsupported file type detected (${mime}). Please upload JPG, PNG, HEIC, or PDF.` });
+    res.status(422).json({
+      stage: "mime_validation",
+      error: `Unsupported file type (${mime}). Please upload JPG, PNG, HEIC, or PDF.`,
+    });
     return;
   }
 
@@ -163,10 +184,9 @@ router.post("/scan", upload.single("file"), async (req, res) => {
       if (pdfText.trim().length > 100) {
         rawJson = await extractFromText(pdfText, "PDF");
       } else {
-        // Scanned PDF with little text — inform user
         res.status(422).json({
-          error: "This PDF appears to be scanned with no embedded text. Please screenshot individual pages and upload them as images.",
-          docType: "Scanned PDF",
+          stage: "image_decode",
+          error: "This PDF appears to be image-only with no embedded text. Screenshot individual pages and upload as images.",
         });
         return;
       }
@@ -179,7 +199,10 @@ router.post("/scan", upload.single("file"), async (req, res) => {
     res.json({ ...result, fileName: originalname, mimeType: mime });
   } catch (err) {
     logger.error({ err }, "scan failed");
-    res.status(500).json({ error: "Document analysis failed. Please try again." });
+    res.status(500).json({
+      stage: "ai_request",
+      error: "Document analysis failed. Please try again.",
+    });
   }
 });
 
