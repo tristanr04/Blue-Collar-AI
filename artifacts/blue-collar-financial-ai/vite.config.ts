@@ -72,6 +72,16 @@ export default defineConfig({
     fs: {
       strict: true,
     },
+    // Proxy /api/* to the API server so the Vite dev server never intercepts
+    // API requests. The API server runs on port 8080 (see artifact.toml).
+    // In the Replit preview Replit's own path router handles this, but this
+    // proxy makes local `pnpm dev` work correctly too.
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8080',
+        changeOrigin: true,
+      },
+    },
   },
   preview: {
     port,

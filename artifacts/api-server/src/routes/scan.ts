@@ -132,7 +132,8 @@ function safeParseJson(raw: string): Record<string, unknown> {
 
 // ─── POST /api/scan ───────────────────────────────────────────────────────────
 
-router.post("/scan", upload.single("file"), async (req, res) => {
+// Route registered at POST /api/scan-document (via app.use("/api", router))
+router.post("/scan-document", upload.single("file"), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ stage: "backend_receipt", error: "No file received. Please try again." });
     return;

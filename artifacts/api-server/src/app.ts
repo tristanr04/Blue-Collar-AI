@@ -31,4 +31,15 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
 
+// Structured 404 for any /api path that didn't match a registered route.
+// Must come AFTER all API routes so it only fires for unknowns.
+app.use("/api", (req, res) => {
+  res.status(404).json({
+    stage: "route_not_found",
+    method: req.method,
+    path: req.originalUrl,
+    message: `API route not found: ${req.method} ${req.originalUrl}`,
+  });
+});
+
 export default app;

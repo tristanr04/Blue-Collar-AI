@@ -1,0 +1,103 @@
+Fix the Financial Scanner HTTP 404 upload error.
+
+Current behavior:
+Every screenshot and saved file reaches the frontend review screen, but upload fails with:
+
+“Upload failed with HTTP 404”
+
+This means the frontend request is reaching a URL with no matching backend route.
+
+Stop all unrelated feature work. Debug only the frontend-to-backend API connection.
+
+Required steps:
+
+1. Find the exact frontend fetch call used by the Financial Scanner.
+2. Record the exact URL and HTTP method it calls.
+3. Find the backend upload route that is actually registered.
+4. Confirm whether the frontend and backend paths match exactly.
+5. Inspect server startup logs and verify the backend process is running.
+6. Add a temporary health route:
+   GET /api/health
+   Response:
+   {
+     "ok": true,
+     "service": "financial-scanner-api"
+   }
+
+7. From the frontend, call /api/health and display the result in development mode.
+8. Make the upload endpoint exactly:
+   POST /api/scan-document
+
+9. Ensure the backend registers that route before any SPA fallback route.
+10. If Express is used, the route order must be:
+    - API middleware and API routes
+    - API 404 handler
+    - frontend static files
+    - SPA catch-all route last
+
+11. Do not allow the React/Vite catch-all route to intercept /api requests.
+12. Verify that POST /api/scan-document accepts multipart/form-data.
+13. Make sure the frontend uses:
+    fetch("/api/scan-document", {
+      method: "POST",
+      body: formData
+    })
+
+14. Do not hardcode:
+    - localhost
+    - 127.0.0.1
+    - a temporary replit.dev URL
+    - a separate frontend port
+    - a stale deployment URL
+
+15. If frontend and backend run on different development ports:
+    - configure the Vite dev proxy for /api
+    - or serve both through the same Replit web process
+
+Example Vite proxy:
+
+server: {
+  proxy: {
+    "/api": {
+      target: "http://127.0.0.1:3001",
+      changeOrigin: true
+    }
+  }
+}
+
+Use the actual backend port in this project.
+
+16. Verify the .replit run command starts both frontend and backend.
+17. Verify the configured public web port points to the server that handles both the UI and /api requests.
+18. Add a structured API 404 response for unknown API routes:
+
+app.use("/api", (req, res) => {
+  res.status(404).json({
+    stage: "route_not_found",
+    method: req.method,
+    path: req.originalUrl,
+    message: "API route not found"
+  });
+});
+
+19. Test these directly:
+    GET /api/health → HTTP 200
+    POST /api/scan-document with no file → HTTP 400, not 404
+    POST /api/scan-document with IMG_5876.jpeg → HTTP 200 or a structured processing error, not 404
+
+20. Test through the actual mobile preview, not only with a local command.
+
+Success criteria:
+- /api/health returns 200 in the Replit preview.
+- /api/scan-document no longer returns 404.
+- A JPG selected from Photos reaches the backend.
+- A JPEG selected from Files reaches the backend.
+- The scanner proceeds to MIME validation and document classification.
+- Existing scanner, review, confirmation, and financial-routing logic remains unchanged.
+
+After fixing it, report:
+- the incorrect frontend URL
+- the backend route that existed
+- the exact mismatch
+- the files changed
+- the results of the health and upload tests

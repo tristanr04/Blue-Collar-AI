@@ -1,7 +1,10 @@
 // API client — all calls go to the API server artifact at /api-server
 // In Replit path-based routing, this resolves correctly through the shared proxy.
 
-const API_BASE = "/api-server/api";
+// Replit path routing: artifact.toml maps paths=["/api"] to the API server on
+// port 8080. The Vite dev server also proxies /api → 8080 (see vite.config.ts).
+// Never use /api-server/... — that prefix is not a registered service path.
+const API_BASE = "/api";
 
 export interface ScanFieldValue {
   value: string | number | boolean | null;
@@ -28,7 +31,7 @@ export async function scanFile(file: File): Promise<ScanResult> {
   let res: Response;
   try {
     // Do NOT set Content-Type manually — let fetch generate the multipart boundary.
-    res = await fetch(`${API_BASE}/scan`, { method: "POST", body: form });
+    res = await fetch(`${API_BASE}/scan-document`, { method: "POST", body: form });
   } catch (err) {
     throw new Error(
       JSON.stringify({
