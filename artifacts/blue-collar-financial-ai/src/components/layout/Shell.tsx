@@ -2,9 +2,10 @@ import React from 'react';
 import { Link, useLocation } from 'wouter';
 import {
   Home, FileText, TrendingUp, CreditCard, Briefcase,
-  PieChart, Calculator, Settings, Sparkles,
+  PieChart, Calculator, Settings, Sparkles, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useJobQueue } from '@/lib/jobQueue';
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: Home },
@@ -19,6 +20,7 @@ const navItems = [
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
+  const { isActive, activeCount, jobs } = useJobQueue();
 
   // Full-screen routes — no nav
   if (
@@ -93,6 +95,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
             <span className="font-semibold text-slate-900 dark:text-white text-sm">Blue Collar FI</span>
           </div>
           <div className="flex items-center gap-1">
+            {isActive && (
+              <div className="flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-medium">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>{activeCount}</span>
+              </div>
+            )}
             <Link href="/ask-ai" className="p-2 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-lg">
               <Sparkles className="w-5 h-5" />
             </Link>

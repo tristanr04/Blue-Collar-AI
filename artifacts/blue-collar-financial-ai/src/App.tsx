@@ -4,6 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
 
 import { StoreProvider } from '@/lib/store';
+import { JobQueueProvider } from '@/lib/jobQueue';
 import { Shell } from '@/components/layout/Shell';
 
 import Welcome from '@/pages/Welcome';
@@ -54,10 +55,12 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <StoreProvider>
-          <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
-            <Router />
-          </WouterRouter>
-          <Toaster />
+          <JobQueueProvider>
+            <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+              <Router />
+            </WouterRouter>
+            <Toaster />
+          </JobQueueProvider>
         </StoreProvider>
       </TooltipProvider>
     </QueryClientProvider>

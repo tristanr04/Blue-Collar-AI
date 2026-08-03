@@ -2,23 +2,38 @@ import React, { useState, useRef } from 'react';
 import { useLocation } from 'wouter';
 import {
   Shield, Trash2, RefreshCw, User, Lock, AlertTriangle,
-  ChevronRight, Download, Upload, CheckCircle2,
+  ChevronRight, Download, Upload, CheckCircle2, History,
+  RotateCcw, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { useStore, PayFrequency, FilingContext } from '@/lib/store';
+import { useStore, PayFrequency, FilingContext, FinancialChangeRecord } from '@/lib/store';
 
 export default function Settings() {
   const [_, setLocation] = useLocation();
-  const { profile, updateProfile, resetToDemo, clearAll } = useStore();
+  const { profile, updateProfile, resetToDemo, clearAll, changeHistory, undoImport, restoreFieldValue } = useStore();
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [saved, setSaved] = useState(false);
   const [importMsg, setImportMsg] = useState('');
   const [importError, setImportError] = useState('');
   const importRef = useRef<HTMLInputElement>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [expandedImport, setExpandedImport] = useState<string | null>(null);
+
+  // Group change records by source document, newest first
+  const importGroups = React.useMemo(() => {
+    const groups: Record<string, FinancialChangeRecord[]> = {};
+    for (const rec of changeHistory) {
+      if (!groups[rec.sourceDocumentId]) groups[rec.sourceDocumentId] = [];
+      groups[rec.sourceDocumentId].push(rec);
+    }
+    return Object.entries(groups)
+      .map(([docId, records]) => ({ docId, records, filename: records[0].sourceFilename, timestamp: records[0].timestamp }))
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }, [changeHistory]);
 
   const [form, setForm] = useState({
     name: profile?.name ?? '',
@@ -246,6 +261,103 @@ export default function Settings() {
           </Button>
         </CardContent>
       </Card>
+
+      {/* Import History */}
+      {importGroups.length > 0 && (
+        <Card className="border-border shadow-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <History className="w-5 h-5 text-primary" /> Import History
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              {importGroups.length} import{importGroups.length !== 1 ? 's' : ''} recorded. Undo reverses all changes from that import.
+            </p>
+
+            {/* Undo last import shortcut */}
+            <Button
+              variant="outline"
+              className="w-full h-11 justify-between text-sm"
+              onClick={() => undoImport(importGroups[0].docId)}
+            >
+              <span className="flex items-center gap-2">
+                <RotateCcw className="w-4 h-4 text-amber-600" />
+                Undo last import ({importGroups[0].filename})
+              </span>
+              <ChevronRight className="w-4 h-4 text-muted-foreground" />
+            </Button>
+
+            {/* Expandable full list */}
+            <button
+              className="flex items-center gap-1 text-xs text-primary hover:underline"
+              onClick={() => setShowHistory(h => !h)}
+            >
+              {showHistory ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              {showHistory ? 'Hide' : 'Show'} all imports
+            </button>
+
+            {showHistory && (
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {importGroups.map(({ docId, filename, timestamp, records }) => (
+                  <div key={docId} className="border border-border rounded-xl overflow-hidden">
+                    <div
+                      className="flex items-center justify-between p-3 cursor-pointer hover:bg-accent transition-colors"
+                      onClick={() => setExpandedImport(expandedImport === docId ? null : docId)}
+                    >
+                      <div>
+                        <div className="text-sm font-medium truncate max-w-[200px]">{filename}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {new Date(timestamp).toLocaleString()} · {records.length} change{records.length !== 1 ? 's' : ''}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          className="text-xs px-2 py-1 rounded-lg bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 hover:bg-amber-200 transition-colors"
+                          onClick={e => { e.stopPropagation(); undoImport(docId); }}
+                        >
+                          Undo
+                        </button>
+                        {expandedImport === docId
+                          ? <ChevronUp className="w-4 h-4 text-muted-foreground" />
+                          : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+                      </div>
+                    </div>
+
+                    {expandedImport === docId && (
+                      <div className="border-t border-border divide-y divide-border">
+                        {records.map(rec => (
+                          <div key={rec.id} className="flex items-center justify-between px-3 py-2 bg-background">
+                            <div className="text-xs">
+                              <span className="font-medium capitalize">{rec.field}</span>
+                              {rec.field !== 'created' && (
+                                <span className="text-muted-foreground ml-1">
+                                  {rec.oldValue != null ? `${rec.oldValue} → ${rec.newValue}` : `set to ${rec.newValue}`}
+                                </span>
+                              )}
+                              {rec.field === 'created' && (
+                                <span className="text-muted-foreground ml-1">Created in {rec.destinationSection}</span>
+                              )}
+                            </div>
+                            {rec.field !== 'created' && rec.oldValue != null && (
+                              <button
+                                className="text-[10px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 transition-colors ml-2 flex-shrink-0"
+                                onClick={() => restoreFieldValue(rec.id)}
+                              >
+                                Restore
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Danger Zone */}
       <Card className="border-destructive/30 shadow-sm">

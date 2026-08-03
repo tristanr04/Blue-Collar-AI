@@ -3,13 +3,16 @@ import { useLocation } from 'wouter';
 import {
   Upload, ScanLine, CheckCircle2, AlertTriangle, X, Plus, Trash2,
   ArrowRight, ShieldCheck, RotateCcw, ChevronDown, ChevronDown as ChevronUp,
-  Loader2, FileImage, ThumbsUp, ThumbsDown, Edit2,
+  Loader2, FileImage, ThumbsUp, ThumbsDown, Edit2, RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useStore } from '@/lib/store';
 import { scanFile, ScanResult, ScanFieldValue, InstitutionInfo } from '@/lib/api';
+import { buildUpdatePlan, applyUpdatePlan, type UpdatePlan, type UpdatePlanEntry, type MatchChoice } from '@/lib/financialUpdater';
+import { fileIdempotencyKey } from '@/lib/financialMatcher';
+import { useJobQueue } from '@/lib/jobQueue';
 
 // ─── Document types ───────────────────────────────────────────────────────────
 
@@ -377,7 +380,13 @@ type Step = 'upload' | 'processing' | 'review' | 'done';
 export default function Scanner() {
   const [_, setLocation] = useLocation();
   const store = useStore();
-  const { updateProfile, addPaystub, addDebt, addBill, addAsset, profile } = store;
+  const {
+    updateProfile, addPaystub, addDebt, addBill, addAsset,
+    updateAsset, updateDebt, updateBill, addChangeRecords, undoImport,
+    assets, debts, bills,
+    profile,
+  } = store;
+  const { enqueue, updateJob } = useJobQueue();
 
   const [step, setStep] = useState<Step>('upload');
   const [files, setFiles] = useState<File[]>([]);
@@ -387,6 +396,10 @@ export default function Scanner() {
   const [userName, setUserName] = useState(profile?.name ?? '');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [globalError, setGlobalError] = useState('');
+  // Smart-update state
+  const [updatePlan, setUpdatePlan] = useState<UpdatePlan | null>(null);
+  const [matchChoices, setMatchChoices] = useState<Record<string, MatchChoice>>({});
+  const [lastImportDocId, setLastImportDocId] = useState<string | null>(null);
 
   // ── File handling ──────────────────────────────────────────────────────────
 
@@ -599,12 +612,77 @@ export default function Scanner() {
     setDocs(prev => prev.map(d => d.id === docId ? { ...d, accepted: !d.accepted } : d));
   };
 
-  // ── Confirm & save ─────────────────────────────────────────────────────────
+  // ── Confirm & save (smart two-phase) ──────────────────────────────────────
 
+  /** Phase 2: apply the resolved plan, record changes, advance to done */
+  const doApplyPlan = useCallback((plan: UpdatePlan, choices: Record<string, MatchChoice>) => {
+    const changeRecords = applyUpdatePlan(plan, choices, {
+      addPaystub,
+      updateAsset,
+      addAsset,
+      updateDebt,
+      addDebt,
+      updateBill,
+      addBill,
+    });
+    if (changeRecords.length > 0) {
+      addChangeRecords(changeRecords);
+      setLastImportDocId(plan.sourceDocumentId);
+    }
+    setUpdatePlan(null);
+    setStep('done');
+  }, [addPaystub, updateAsset, addAsset, updateDebt, addDebt, updateBill, addBill, addChangeRecords]);
+
+  /** Phase 1 (legacy path): called when there's no smart-update plan.
+   *  Falls through to doApplyPlan immediately when no matches exist. */
   const confirmAndSave = () => {
     const accepted = docs.filter(d => d.accepted && d.status !== 'error');
 
     // Profile
+    if (userName.trim()) {
+      updateProfile({
+        name: userName.trim(),
+        hasCompletedOnboarding: true,
+        payFrequency: profile?.payFrequency ?? 'Weekly',
+        hourlyRate: profile?.hourlyRate ?? 0,
+        filingContext: profile?.filingContext ?? 'Single',
+      });
+    }
+
+    // If we're already showing a resolved plan, apply it
+    if (updatePlan) {
+      doApplyPlan(updatePlan, matchChoices);
+      return;
+    }
+
+    // Build update plan from accepted docs
+    const plan = buildUpdatePlan(accepted, { assets, debts, bills });
+    const needsResolution = plan.entries.some(
+      e => e.defaultAction === 'update' || e.isOlderStatement || e.billAmountDelta !== 0,
+    );
+
+    if (needsResolution) {
+      // Show match resolution UI — initialise choices to the recommended defaults
+      const initialChoices: Record<string, MatchChoice> = {};
+      for (const entry of plan.entries) {
+        initialChoices[entry.docId] = entry.defaultAction === 'skip' ? 'skip' : entry.defaultAction;
+      }
+      setUpdatePlan(plan);
+      setMatchChoices(initialChoices);
+      return;
+    }
+
+    // No matches — apply immediately
+    doApplyPlan(plan, {});
+  };
+
+  // ── (legacy body) keep existing type-switch logic for direct apply  ─────────
+
+  /** @deprecated Use doApplyPlan + applyUpdatePlan instead.
+   *  Kept for reference until full migration. Not called from UI any more. */
+  const _legacyDirectSave_UNUSED = () => {
+    const accepted = docs.filter(d => d.accepted && d.status !== 'error');
+
     if (userName.trim()) {
       updateProfile({
         name: userName.trim(),
@@ -995,6 +1073,72 @@ export default function Scanner() {
             />
           </div>
 
+          {/* ── Match resolution (shown after first "Confirm" click reveals matches) ── */}
+          {updatePlan && updatePlan.entries.some(e => e.defaultAction === 'update' || e.isOlderStatement || e.billAmountDelta !== 0) && (
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <RefreshCw className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                <span className="font-semibold text-blue-900 dark:text-blue-200 text-sm">Existing accounts found</span>
+              </div>
+              <p className="text-xs text-blue-700 dark:text-blue-300">
+                We found possible matches in your profile. Choose whether to update the existing record or create a new one.
+              </p>
+              {updatePlan.entries.filter(e => e.matchedId || e.isOlderStatement || e.billAmountDelta !== 0).map((entry: UpdatePlanEntry) => (
+                <div key={entry.docId} className="bg-white dark:bg-background rounded-xl border border-blue-200 dark:border-blue-800 p-3 space-y-2">
+                  <div className="text-sm font-medium text-foreground">{entry.docLabel}</div>
+
+                  {entry.isOlderStatement && (
+                    <div className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded-lg p-2 flex items-start gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                      This statement may be older than your current data — updating could overwrite newer values.
+                    </div>
+                  )}
+
+                  {entry.billAmountDelta !== 0 && (
+                    <div className={`text-xs rounded-lg p-2 flex items-center gap-1.5 ${
+                      entry.billAmountDelta > 0
+                        ? 'text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/20'
+                        : 'text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/20'
+                    }`}>
+                      <span className="font-bold">{entry.billAmountDelta > 0 ? '↑' : '↓'}</span>
+                      Bill amount changed by ${Math.abs(entry.billAmountDelta).toFixed(2)}/mo
+                      {entry.billAmountDelta > 0 ? ' (increase)' : ' (decrease)'}
+                    </div>
+                  )}
+
+                  {entry.matchedId && (
+                    <div className="text-xs text-muted-foreground">
+                      Match: <span className="font-medium text-foreground">"{entry.matchedName}"</span>
+                    </div>
+                  )}
+
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setMatchChoices(prev => ({ ...prev, [entry.docId]: 'update' }))}
+                      className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors ${
+                        (matchChoices[entry.docId] ?? 'update') === 'update'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                      }`}
+                    >
+                      Update "{entry.matchedName ?? 'existing'}"
+                    </button>
+                    <button
+                      onClick={() => setMatchChoices(prev => ({ ...prev, [entry.docId]: 'create' }))}
+                      className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors ${
+                        matchChoices[entry.docId] === 'create'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                      }`}
+                    >
+                      <Plus className="w-3 h-3 inline mr-1" />Create new
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Document cards */}
           {docs.map((doc) => {
             const fieldDefs = DOC_FIELDS[doc.docType] ?? [];
@@ -1140,15 +1284,33 @@ export default function Scanner() {
         </div>
 
         <div className="fixed bottom-0 inset-x-0 bg-background border-t border-border p-4 space-y-2">
-          <Button
-            className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
-            disabled={accepted.length === 0}
-            onClick={confirmAndSave}
-          >
-            <CheckCircle2 className="w-5 h-5 mr-2" />
-            Confirm &amp; Save {accepted.length} Document{accepted.length !== 1 ? 's' : ''}
-          </Button>
-          <div className="text-center text-xs text-muted-foreground">Nothing is saved until you tap Confirm</div>
+          {updatePlan ? (
+            <Button
+              className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
+              onClick={() => {
+                // Rebuild the plan fresh from current doc state so any edits
+                // made after the match-resolution UI appeared are captured.
+                const accepted = docs.filter(d => d.accepted && d.status !== 'error');
+                const freshPlan = buildUpdatePlan(accepted, { assets, debts, bills });
+                doApplyPlan(freshPlan, matchChoices);
+              }}
+            >
+              <CheckCircle2 className="w-5 h-5 mr-2" />
+              Apply Choices &amp; Save
+            </Button>
+          ) : (
+            <Button
+              className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
+              disabled={accepted.length === 0}
+              onClick={confirmAndSave}
+            >
+              <CheckCircle2 className="w-5 h-5 mr-2" />
+              Confirm &amp; Save {accepted.length} Document{accepted.length !== 1 ? 's' : ''}
+            </Button>
+          )}
+          <div className="text-center text-xs text-muted-foreground">
+            {updatePlan ? 'Review your choices above, then tap Apply' : 'Nothing is saved until you tap Confirm'}
+          </div>
         </div>
       </div>
     );
@@ -1162,9 +1324,27 @@ export default function Scanner() {
         <CheckCircle2 className="w-10 h-10 text-primary" />
       </div>
       <h2 className="text-3xl font-bold mb-2">Saved!</h2>
-      <p className="text-secondary-foreground/70 mb-10 max-w-xs">
+      <p className="text-secondary-foreground/70 mb-6 max-w-xs">
         Your financial data is now in the app. Review your dashboard or ask the AI assistant any question.
       </p>
+
+      {/* Undo last import */}
+      {lastImportDocId && (
+        <div className="mb-6 w-full max-w-xs">
+          <button
+            className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl border border-white/20 text-secondary-foreground/80 hover:bg-white/10 transition-colors text-sm"
+            onClick={() => {
+              undoImport(lastImportDocId);
+              setLastImportDocId(null);
+              setStep('review');
+            }}
+          >
+            <RotateCcw className="w-4 h-4" />
+            Undo this import
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-col gap-3 w-full max-w-xs">
         <Button
           className="h-14 text-lg bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
