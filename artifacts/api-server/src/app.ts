@@ -4,6 +4,7 @@ import router from "./routes/index.js";
 import { logger } from "./lib/logger.js";
 import { makeCors } from "./middlewares/cors.js";
 import { generalLimiter } from "./middlewares/rate-limit.js";
+import { aiKillSwitch, aiGlobalSemaphore } from "./middlewares/ai-guard.js";
 
 const app: Express = express();
 
@@ -60,6 +61,30 @@ app.use((err: unknown, _req: express.Request, res: express.Response, next: expre
 // ─── General rate limiter (100 req / 15 min per IP) ───────────────────────────
 
 app.use("/api", generalLimiter);
+
+// Both scan and chat consume paid AI capacity. Keep the global kill switch and
+// global concurrency ceiling in front of both endpoints. The chat route also
+// retains its endpoint-specific controls; the scan route has its own per-IP
+// semaphore and hourly limiter inside the route module.
+app.use("/api", (req, res, next) => {
+  if (req.method === "POST" && (req.path === "/scan-document" || req.path === "/ai/ask")) {
+    aiKillSwitch(req, res, next);
+    return;
+  }
+  next();
+});
+
+const globalAiConcurrency = aiGlobalSemaphore.middleware();
+app.use("/api", (req, res, next) => {
+  // ai/ask already applies this semaphore inside its route. Apply it here only
+  // to scanning so one shared global ceiling covers all paid AI work without
+  // double-counting chat requests.
+  if (req.method === "POST" && req.path === "/scan-document") {
+    globalAiConcurrency(req, res, next);
+    return;
+  }
+  next();
+});
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
