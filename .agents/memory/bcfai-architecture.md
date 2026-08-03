@@ -43,4 +43,13 @@ description: Key decisions, routing, and integration details for the BCFAI proje
 - Only penalizes categories where confirmed data exists (no paystubs = no score)
 - Uses recharts `BarChart` for monthly cash flow visualization
 
+## API Abuse Protection (added security-and-production-hardening branch)
+- CORS: `makeCors()` in `middlewares/cors.ts` — dev allows localhost/replit.dev/replit.app; prod requires ALLOWED_ORIGINS env var
+- Rate limits (express-rate-limit, in-memory): general 100/15min, AI ask 20/hr, scan 10/hr — all 429s include Retry-After
+- Concurrency: `PerIpConcurrencySemaphore` (scan, 3/IP), `GlobalConcurrencySemaphore` (AI, AI_MAX_CONCURRENT_REQUESTS default 10)
+- Kill switch: `aiKillSwitch` reads AI_ENABLED at request time — false/0 → 503
+- Timeouts: `makeAbortController(res, ms)` passes AbortSignal to OpenAI calls; scan=90s, AI ask=60s
+- JSON body cap: `express.json({ limit: '250kb' })`
+- Env vars: AI_ENABLED (default true), AI_MAX_CONCURRENT_REQUESTS (default 10), ALLOWED_ORIGINS (empty = prod blocks all cross-origin)
+
 **Why:** These decisions are not obvious from code alone and will affect any future changes to file handling, AI routing, or nav structure.
