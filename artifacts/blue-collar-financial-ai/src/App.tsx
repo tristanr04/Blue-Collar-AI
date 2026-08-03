@@ -8,6 +8,7 @@ import { Shell } from '@/components/layout/Shell';
 
 import Welcome from '@/pages/Welcome';
 import Onboarding from '@/pages/Onboarding';
+import Scanner from '@/pages/Scanner';
 import Dashboard from '@/pages/Dashboard';
 import Documents from '@/pages/Documents';
 import DocumentsReview from '@/pages/DocumentsReview';
@@ -29,6 +30,7 @@ function Router() {
         <Route path="/" component={Welcome} />
         <Route path="/welcome" component={Welcome} />
         <Route path="/onboarding" component={Onboarding} />
+        <Route path="/scanner" component={Scanner} />
         <Route path="/dashboard" component={Dashboard} />
         <Route path="/documents/review" component={DocumentsReview} />
         <Route path="/documents" component={Documents} />

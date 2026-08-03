@@ -26,7 +26,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
 
   // Don't show shell on welcome or onboarding
-  if (location === '/welcome' || location === '/onboarding' || location === '/') {
+  if (location === '/welcome' || location === '/onboarding' || location === '/' || location.startsWith('/scanner')) {
     return <>{children}</>;
   }
 
