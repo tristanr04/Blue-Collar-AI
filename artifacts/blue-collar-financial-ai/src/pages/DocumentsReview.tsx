@@ -13,7 +13,7 @@ export default function DocumentsReview() {
   // Find first pending doc
   const docToReview = documents.find(d => d.status === 'Pending Review');
   
-  const [formData, setFormData] = useState(docToReview?.data || {});
+  const [formData, setFormData] = useState<Record<string, string>>(docToReview?.data || {});
 
   if (!docToReview) {
     return (

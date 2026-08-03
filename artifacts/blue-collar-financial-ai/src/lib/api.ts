@@ -12,10 +12,27 @@ export interface ScanFieldValue {
   sourceText?: string;
 }
 
+export interface InstitutionInfo {
+  rawName: string | null;
+  normalizedName: string | null;
+  institutionCategory: string | null;
+  matchedAlias: string | null;
+  confidence: number;
+  isKnownInstitution: boolean;
+}
+
+export interface UnknownField {
+  label: string;
+  value: string | number | null;
+  confidence: number | null;
+}
+
 export interface ScanResult {
   docType: string;
   classificationConfidence: number;
   fields: Record<string, ScanFieldValue>;
+  institution?: InstitutionInfo;
+  unknownFields?: UnknownField[];
   fileName: string;
   mimeType: string;
   error?: string;

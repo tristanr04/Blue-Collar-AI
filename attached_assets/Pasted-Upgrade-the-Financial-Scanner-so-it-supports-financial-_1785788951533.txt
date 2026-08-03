@@ -1,0 +1,534 @@
+Upgrade the Financial Scanner so it supports financial documents from any bank, credit union, brokerage, retirement provider, 401(k) administrator, lender, or financial institution.
+
+Do not rely on a fixed whitelist of institutions.
+
+Preserve all currently working scanner, upload, review, routing, dashboard, bill, debt, paystub, and AI-assistant functionality.
+
+==================================================
+CORE REQUIREMENT
+==================================================
+
+The scanner must identify the document by its financial structure and content, not by requiring the institution to already exist in a hard-coded list.
+
+Examples of supported institution categories:
+
+- National banks
+- Regional banks
+- Community banks
+- Credit unions
+- Online banks
+- Fintech cash accounts
+- Brokerages
+- Robo-advisers
+- 401(k) providers
+- 403(b) providers
+- 457 plan providers
+- Pension administrators
+- IRA custodians
+- HSA providers
+- Employee stock-plan providers
+- Mortgage servicers
+- Auto lenders
+- Student-loan servicers
+- Personal-loan lenders
+
+Unknown institutions must still work.
+
+==================================================
+DOCUMENT CLASSIFICATION
+==================================================
+
+Classify documents using visible labels, account structure, balances, transaction language, and financial fields.
+
+Supported account/document types:
+
+BANKING
+- Checking account
+- Savings account
+- Money-market account
+- Certificate of deposit
+- Cash-management account
+- Business checking
+- Business savings
+- Joint account
+- High-yield savings
+- Prepaid or fintech account
+
+BROKERAGE
+- Individual brokerage
+- Joint brokerage
+- Margin brokerage
+- Cash brokerage
+- Robo-adviser account
+- Employee stock-plan account
+- Restricted-stock account
+- Equity-compensation account
+- Crypto brokerage when clearly identified
+- Treasury or fixed-income account
+
+RETIREMENT
+- Traditional 401(k)
+- Roth 401(k)
+- 403(b)
+- 457(b)
+- Traditional IRA
+- Roth IRA
+- SEP IRA
+- SIMPLE IRA
+- Pension
+- Cash-balance pension
+- Thrift Savings Plan
+- Profit-sharing plan
+- Employee Stock Ownership Plan
+- HSA investment account
+- Rollover IRA
+
+LOANS AND CREDIT
+- Credit card
+- Line of credit
+- Personal loan
+- Auto loan
+- Mortgage
+- HELOC
+- Student loan
+- Equipment loan
+- Secured loan
+- Margin loan
+
+If the institution is unknown, classify the account type anyway and store the institution name exactly as shown.
+
+==================================================
+FLEXIBLE INSTITUTION DETECTION
+==================================================
+
+Create a shared institution-normalization service.
+
+Input examples:
+- “JPMorgan Chase Bank, N.A.”
+- “Chase”
+- “Chase Bank”
+- “CHASE”
+- “Fidelity Investments”
+- “Fidelity NetBenefits”
+- “Fidelity Workplace Services”
+- “Charles Schwab & Co.”
+- “Schwab Retirement Plan Services”
+
+Output:
+
+{
+  rawInstitutionName: string,
+  normalizedInstitutionName: string,
+  institutionCategory: string,
+  matchedAlias: string | null,
+  confidence: number,
+  isKnownInstitution: boolean
+}
+
+Use a provider registry only as an optional enhancement, never as a requirement.
+
+If no provider match exists:
+- preserve the raw institution name
+- set normalizedInstitutionName to a cleaned version of the raw name
+- set isKnownInstitution to false
+- continue extraction normally
+- allow the user to rename or confirm the institution
+
+==================================================
+PROVIDER REGISTRY
+==================================================
+
+Create a maintainable provider registry in a separate file or database table.
+
+Suggested structure:
+
+type InstitutionRegistryEntry = {
+  id: string;
+  canonicalName: string;
+  aliases: string[];
+  categories: InstitutionCategory[];
+  domains?: string[];
+  logos?: string[];
+  retirementBrands?: string[];
+};
+
+Include common examples for testing, but do not limit support to them:
+
+BANKS AND CREDIT UNIONS
+- Chase
+- Bank of America
+- Wells Fargo
+- Citibank
+- U.S. Bank
+- PNC
+- Truist
+- Capital One
+- Discover Bank
+- Ally
+- SoFi
+- Chime
+- Current
+- Varo
+- Navy Federal Credit Union
+- PenFed Credit Union
+- BECU
+- Tinker Federal Credit Union
+- TTCU Federal Credit Union
+- Oklahoma Central Credit Union
+- Local and unknown credit unions
+
+BROKERAGES
+- Fidelity
+- Charles Schwab
+- Vanguard
+- Robinhood
+- E*TRADE
+- Merrill
+- Morgan Stanley
+- Interactive Brokers
+- Webull
+- Betterment
+- Wealthfront
+- Acorns
+- Empower
+- Principal
+- T. Rowe Price
+- Edward Jones
+- Raymond James
+- Ameriprise
+- M1
+- Public
+- TradeStation
+- Firstrade
+
+RETIREMENT AND WORKPLACE PROVIDERS
+- Fidelity NetBenefits
+- Vanguard Retirement
+- Schwab Retirement Plan Services
+- Empower Retirement
+- Principal
+- Voya
+- T. Rowe Price Retirement
+- John Hancock
+- Transamerica
+- Nationwide Retirement Solutions
+- Lincoln Financial
+- Corebridge Financial
+- Alight
+- ADP Retirement Services
+- Paychex Retirement Services
+- Human Interest
+- Guideline
+- Ascensus
+- Vestwell
+- Newport
+- OneAmerica
+- MassMutual
+- Prudential
+- MissionSquare Retirement
+- Thrift Savings Plan
+- Unknown employer-sponsored providers
+
+The registry should support adding new aliases without changing extraction code.
+
+==================================================
+ACCOUNT-SPECIFIC EXTRACTION
+==================================================
+
+BANK ACCOUNTS
+
+Extract:
+- institution
+- raw institution name
+- normalized institution name
+- account type
+- account nickname
+- owner type
+- last four digits
+- current balance
+- available balance
+- pending balance
+- APY
+- interest earned
+- statement date
+- account status
+
+BROKERAGE ACCOUNTS
+
+Extract:
+- institution
+- account type
+- account title
+- last four digits
+- total account value
+- securities value
+- cash balance
+- buying power
+- margin balance
+- margin available
+- margin interest rate
+- day change
+- total return
+- realized gain/loss
+- unrealized gain/loss
+- holdings when shown
+- statement date
+
+RETIREMENT ACCOUNTS
+
+Extract:
+- institution
+- employer or plan sponsor
+- plan name
+- plan type
+- account type
+- last four digits
+- total balance
+- vested balance
+- employee contribution rate
+- Roth contribution rate
+- pretax contribution rate
+- employee YTD contributions
+- employer YTD contributions
+- employer match formula when shown
+- employer match amount
+- vesting percentage
+- vesting schedule
+- outstanding plan loan
+- loan payment
+- beneficiaries status when shown
+- investment allocations
+- statement date
+
+Do not confuse:
+- employee contributions with employer match
+- account value with vested balance
+- buying power with account value
+- margin available with cash
+- 401(k) loan balance with retirement account balance
+- Roth 401(k) with Roth IRA
+- brokerage cash with checking-account cash
+
+==================================================
+GENERIC FIELD EXTRACTION
+==================================================
+
+The AI extraction request must return structured JSON.
+
+Use a generic base schema:
+
+{
+  documentType: string,
+  institution: {
+    rawName: string | null,
+    normalizedName: string | null,
+    category: string | null,
+    isKnownInstitution: boolean,
+    confidence: number
+  },
+  account: {
+    accountType: string | null,
+    accountName: string | null,
+    lastFour: string | null,
+    ownerType: string | null
+  },
+  fields: Record<string, {
+    value: string | number | boolean | null,
+    confidence: number | null,
+    sourceText: string | null
+  }>,
+  statementDate: string | null,
+  warnings: string[],
+  unknownFields: {
+    label: string,
+    value: string | number | null,
+    confidence: number | null
+  }[]
+}
+
+Preserve unknown labeled fields instead of discarding them.
+
+Example:
+
+{
+  "label": "Vested Account Balance",
+  "value": 48216.83,
+  "confidence": 0.96
+}
+
+==================================================
+NO WHITELIST FAILURES
+==================================================
+
+The following must never happen:
+
+- “Unsupported bank”
+- “Unknown brokerage cannot be imported”
+- “401(k) provider not recognized”
+- Rejecting a document only because its institution is not in the registry
+- Forcing unknown retirement plans into a brokerage schema
+- Forcing brokerage statements into bank-account fields
+
+If the institution cannot be identified:
+- display “Institution needs confirmation”
+- retain all extracted account data
+- let the user enter or correct the institution
+- continue to the review screen
+
+==================================================
+USER REVIEW
+==================================================
+
+On the review screen, allow users to edit:
+
+- institution name
+- account type
+- plan type
+- employer
+- account nickname
+- last four digits
+- all balances
+- contribution rates
+- employer match
+- statement date
+- destination section
+
+Include:
+- “This institution was not recognized, but the account data was extracted.”
+- “Save this institution for future documents.”
+
+When the user saves a previously unknown institution:
+- create a local custom registry entry
+- store its aliases
+- use it for future matching
+- do not make the custom institution visible to other users
+
+==================================================
+ACCOUNT MATCHING
+==================================================
+
+Match existing accounts using multiple signals:
+
+1. normalized institution
+2. account type
+3. last four digits
+4. employer or plan sponsor
+5. plan name
+6. account nickname
+7. statement date
+8. prior balance proximity
+
+Use a match score.
+
+Example:
+
+function scoreAccountMatch(imported, existing) {
+  let score = 0;
+
+  if (
+    imported.institution.normalizedName &&
+    imported.institution.normalizedName === existing.institution.normalizedName
+  ) score += 30;
+
+  if (
+    imported.account.lastFour &&
+    imported.account.lastFour === existing.account.lastFour
+  ) score += 40;
+
+  if (
+    imported.account.accountType &&
+    imported.account.accountType === existing.account.accountType
+  ) score += 15;
+
+  if (
+    imported.planName &&
+    imported.planName === existing.planName
+  ) score += 10;
+
+  if (
+    imported.employer &&
+    imported.employer === existing.employer
+  ) score += 5;
+
+  return score;
+}
+
+Suggested behavior:
+- score 80 or greater: strong existing-account match
+- score 50–79: ask user to confirm match
+- below 50: suggest creating a new account
+
+Never merge accounts based only on institution name.
+
+==================================================
+AI ASSISTANT INTEGRATION
+==================================================
+
+The AI assistant must understand all confirmed account types.
+
+Examples:
+- “How much do I have across every retirement account?”
+- “What percentage of my net worth is in retirement?”
+- “Am I getting my full employer match?”
+- “How much margin am I using?”
+- “How much cash is available across checking, savings and brokerage?”
+- “What happens if I raise my 401(k) contribution to 15%?”
+- “Which account should count toward my emergency fund?”
+- “How much of my retirement balance is vested?”
+- “Does my 401(k) loan affect my net worth?”
+
+The assistant must distinguish:
+- liquid cash
+- invested assets
+- retirement assets
+- vested retirement assets
+- restricted stock
+- margin debt
+- retirement-plan loans
+- available credit
+- available buying power
+
+==================================================
+TESTING
+==================================================
+
+Test with documents from:
+
+1. A major national bank
+2. A regional bank
+3. A small local credit union
+4. An unknown fictional credit union
+5. Fidelity brokerage
+6. Schwab brokerage
+7. Vanguard brokerage
+8. Robinhood margin account
+9. Fidelity NetBenefits 401(k)
+10. Empower 401(k)
+11. Principal 401(k)
+12. Voya 401(k)
+13. An unknown employer 401(k) administrator
+14. Roth IRA
+15. Traditional IRA
+16. 403(b)
+17. 457(b)
+18. Pension statement
+19. HSA investment account
+20. Employee stock-plan statement
+
+Success criteria:
+
+- Every document reaches classification and review.
+- Unknown institutions are not rejected.
+- Correct account type is identified.
+- Values route to Banking, Investments, Retirement, or Debts correctly.
+- Existing accounts update rather than duplicate.
+- Unknown institutions can be manually confirmed and saved.
+- The AI assistant correctly totals assets across multiple institutions.
+- The system works without maintaining an exhaustive provider whitelist.
+- No currently working scanner or bill functionality is broken.
+
+After implementation, report:
+- files created or changed
+- institution normalization method
+- account-matching logic
+- results for known and unknown institution tests

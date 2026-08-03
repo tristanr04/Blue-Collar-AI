@@ -9,24 +9,49 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useStore } from '@/lib/store';
-import { scanFile, ScanResult, ScanFieldValue } from '@/lib/api';
+import { scanFile, ScanResult, ScanFieldValue, InstitutionInfo } from '@/lib/api';
 
 // ─── Document types ───────────────────────────────────────────────────────────
 
 const DOC_TYPES = [
-  'Paystub', 'Checking Account', 'Savings Account', 'Bank Statement',
-  'Credit Card', 'Credit Card Statement', 'Auto Loan', 'Personal Loan',
-  'Mortgage', 'Brokerage Account', 'Investment Statement',
-  'Retirement Account', 'Retirement Statement', 'Monthly Bill', 'Utility Bill', 'Unknown',
+  // Paystub
+  'Paystub',
+  // Banking
+  'Checking Account', 'Savings Account', 'High-Yield Savings', 'Money Market Account',
+  'Certificate of Deposit', 'Cash Management Account', 'Bank Statement',
+  // Credit / Debt
+  'Credit Card', 'Credit Card Statement', 'Line of Credit',
+  'Auto Loan', 'Personal Loan', 'Mortgage', 'HELOC', 'Student Loan',
+  // Brokerage
+  'Brokerage Account', 'Margin Account', 'Robo-Adviser Account', 'Employee Stock Plan',
+  // Retirement
+  '401(k)', 'Roth 401(k)', '403(b)', '457(b)',
+  'Traditional IRA', 'Roth IRA', 'SEP IRA', 'SIMPLE IRA', 'Rollover IRA',
+  'Pension', 'Thrift Savings Plan', 'HSA Investment Account',
+  // Legacy aliases kept for backward compat
+  'Retirement Account', 'Retirement Statement', 'Investment Statement',
+  // Bills
+  'Monthly Bill', 'Utility Bill',
+  'Unknown',
 ];
 
 const DOC_TYPE_EMOJI: Record<string, string> = {
-  'Paystub': '💵', 'Checking Account': '🏦', 'Savings Account': '🏦',
-  'Bank Statement': '🏦', 'Credit Card': '💳', 'Credit Card Statement': '💳',
+  'Paystub': '💵',
+  'Checking Account': '🏦', 'Savings Account': '🏦', 'High-Yield Savings': '🏦',
+  'Money Market Account': '🏦', 'Certificate of Deposit': '🏦',
+  'Cash Management Account': '🏦', 'Bank Statement': '🏦',
+  'Credit Card': '💳', 'Credit Card Statement': '💳', 'Line of Credit': '💳',
   'Auto Loan': '🚗', 'Personal Loan': '📋', 'Mortgage': '🏠',
-  'Brokerage Account': '📈', 'Investment Statement': '📈',
-  'Retirement Account': '🏦', 'Retirement Statement': '🏦',
-  'Monthly Bill': '📄', 'Utility Bill': '💡', 'Unknown': '❓',
+  'HELOC': '🏠', 'Student Loan': '🎓',
+  'Brokerage Account': '📈', 'Margin Account': '📈',
+  'Robo-Adviser Account': '🤖', 'Employee Stock Plan': '📊',
+  '401(k)': '🏦', 'Roth 401(k)': '🏦', '403(b)': '🏦', '457(b)': '🏦',
+  'Traditional IRA': '🏦', 'Roth IRA': '🏦', 'SEP IRA': '🏦',
+  'SIMPLE IRA': '🏦', 'Rollover IRA': '🏦',
+  'Pension': '🏦', 'Thrift Savings Plan': '🏦', 'HSA Investment Account': '🏥',
+  'Retirement Account': '🏦', 'Retirement Statement': '🏦', 'Investment Statement': '📈',
+  'Monthly Bill': '📄', 'Utility Bill': '💡',
+  'Unknown': '❓',
 };
 
 // ─── Fields per doc type ──────────────────────────────────────────────────────
@@ -175,6 +200,140 @@ const DOC_FIELDS: Record<string, Array<{ key: string; label: string; type?: stri
 };
 DOC_FIELDS['Unknown'] = [];
 
+// ── New banking types ──────────────────────────────────────────────────────
+DOC_FIELDS['High-Yield Savings'] = DOC_FIELDS['Savings Account'];
+DOC_FIELDS['Money Market Account'] = DOC_FIELDS['Savings Account'];
+DOC_FIELDS['Cash Management Account'] = DOC_FIELDS['Checking Account'];
+DOC_FIELDS['Certificate of Deposit'] = [
+  ...DOC_FIELDS['Savings Account'],
+  { key: 'maturityDate', label: 'Maturity Date', type: 'date' },
+  { key: 'termMonths', label: 'Term (months)', type: 'number' },
+  { key: 'penaltyForEarlyWithdrawal', label: 'Early Withdrawal Penalty', type: 'number', prefix: '$' },
+];
+
+// ── New credit / debt types ────────────────────────────────────────────────
+DOC_FIELDS['Line of Credit'] = [
+  { key: 'lender', label: 'Lender' },
+  { key: 'accountName', label: 'Account Name' },
+  { key: 'lastFour', label: 'Last 4 Digits' },
+  { key: 'creditLimit', label: 'Credit Limit', type: 'number', prefix: '$' },
+  { key: 'currentBalance', label: 'Balance Used', type: 'number', prefix: '$' },
+  { key: 'availableCredit', label: 'Available Credit', type: 'number', prefix: '$' },
+  { key: 'apr', label: 'APR (%)', type: 'number' },
+  { key: 'minimumPayment', label: 'Min Payment', type: 'number', prefix: '$' },
+  { key: 'dueDate', label: 'Due Date' },
+];
+DOC_FIELDS['HELOC'] = [
+  { key: 'lender', label: 'Lender' },
+  { key: 'creditLimit', label: 'Credit Limit', type: 'number', prefix: '$' },
+  { key: 'currentBalance', label: 'Balance Drawn', type: 'number', prefix: '$' },
+  { key: 'availableCredit', label: 'Available Credit', type: 'number', prefix: '$' },
+  { key: 'interestRate', label: 'Interest Rate (%)', type: 'number' },
+  { key: 'monthlyPayment', label: 'Monthly Payment', type: 'number', prefix: '$' },
+  { key: 'drawPeriodEnd', label: 'Draw Period End', type: 'date' },
+];
+DOC_FIELDS['Student Loan'] = [
+  { key: 'servicer', label: 'Loan Servicer' },
+  { key: 'loanType', label: 'Loan Type' },
+  { key: 'currentBalance', label: 'Balance Owed', type: 'number', prefix: '$' },
+  { key: 'originalAmount', label: 'Original Amount', type: 'number', prefix: '$' },
+  { key: 'interestRate', label: 'Interest Rate (%)', type: 'number' },
+  { key: 'monthlyPayment', label: 'Monthly Payment', type: 'number', prefix: '$' },
+  { key: 'remainingTermMonths', label: 'Months Remaining', type: 'number' },
+  { key: 'repaymentPlan', label: 'Repayment Plan' },
+  { key: 'nextDueDate', label: 'Next Due Date' },
+];
+
+// ── New brokerage types ────────────────────────────────────────────────────
+const BROKERAGE_FIELDS = [
+  { key: 'institution', label: 'Institution' },
+  { key: 'accountType', label: 'Account Type' },
+  { key: 'lastFour', label: 'Last 4 Digits' },
+  { key: 'totalValue', label: 'Total Value', type: 'number', prefix: '$' },
+  { key: 'securitiesValue', label: 'Securities Value', type: 'number', prefix: '$' },
+  { key: 'cashBalance', label: 'Cash / Uninvested', type: 'number', prefix: '$' },
+  { key: 'buyingPower', label: 'Buying Power', type: 'number', prefix: '$' },
+  { key: 'unrealizedGain', label: 'Unrealized Gain/Loss', type: 'number', prefix: '$' },
+  { key: 'totalReturn', label: 'Total Return', type: 'number', prefix: '$' },
+  { key: 'statementDate', label: 'Statement Date', type: 'date' },
+];
+DOC_FIELDS['Robo-Adviser Account'] = BROKERAGE_FIELDS;
+DOC_FIELDS['Margin Account'] = [
+  ...BROKERAGE_FIELDS,
+  { key: 'marginBalance', label: 'Margin Balance', type: 'number', prefix: '$' },
+  { key: 'marginAvailable', label: 'Margin Available', type: 'number', prefix: '$' },
+  { key: 'marginInterestRate', label: 'Margin Rate (%)', type: 'number' },
+];
+DOC_FIELDS['Employee Stock Plan'] = [
+  { key: 'institution', label: 'Administrator' },
+  { key: 'employer', label: 'Employer' },
+  { key: 'planType', label: 'Plan Type (ESPP, RSU, ISO…)' },
+  { key: 'totalValue', label: 'Total Value', type: 'number', prefix: '$' },
+  { key: 'vestedValue', label: 'Vested Value', type: 'number', prefix: '$' },
+  { key: 'unvestedValue', label: 'Unvested Value', type: 'number', prefix: '$' },
+  { key: 'sharesVested', label: 'Vested Shares', type: 'number' },
+  { key: 'statementDate', label: 'Statement Date', type: 'date' },
+];
+
+// ── Retirement types — full detail ─────────────────────────────────────────
+const RETIREMENT_FIELDS_FULL = [
+  { key: 'institution', label: 'Provider / Administrator' },
+  { key: 'employer', label: 'Employer / Plan Sponsor' },
+  { key: 'planName', label: 'Plan Name' },
+  { key: 'lastFour', label: 'Last 4 Digits' },
+  { key: 'currentBalance', label: 'Total Balance', type: 'number', prefix: '$' },
+  { key: 'vestedBalance', label: 'Vested Balance', type: 'number', prefix: '$' },
+  { key: 'employeeContributionRate', label: 'My Contribution (%)', type: 'number' },
+  { key: 'rothContributionRate', label: 'Roth Contribution (%)', type: 'number' },
+  { key: 'employerMatchRate', label: 'Employer Match (%)', type: 'number' },
+  { key: 'employerMatchFormula', label: 'Match Formula' },
+  { key: 'employerMatchAmount', label: 'Employer Match $', type: 'number', prefix: '$' },
+  { key: 'employeeYtdContributions', label: 'My YTD Contributions', type: 'number', prefix: '$' },
+  { key: 'employerYtdContributions', label: 'Employer YTD Contributions', type: 'number', prefix: '$' },
+  { key: 'vestingPercent', label: 'Vesting %', type: 'number' },
+  { key: 'outstandingLoanBalance', label: 'Plan Loan Balance', type: 'number', prefix: '$' },
+  { key: 'statementDate', label: 'Statement Date', type: 'date' },
+];
+const IRA_FIELDS = [
+  { key: 'institution', label: 'Custodian' },
+  { key: 'accountType', label: 'Account Type' },
+  { key: 'lastFour', label: 'Last 4 Digits' },
+  { key: 'currentBalance', label: 'Total Balance', type: 'number', prefix: '$' },
+  { key: 'ytdContributions', label: 'YTD Contributions', type: 'number', prefix: '$' },
+  { key: 'contributionLimit', label: 'Annual Limit', type: 'number', prefix: '$' },
+  { key: 'statementDate', label: 'Statement Date', type: 'date' },
+];
+
+DOC_FIELDS['401(k)'] = RETIREMENT_FIELDS_FULL;
+DOC_FIELDS['Roth 401(k)'] = RETIREMENT_FIELDS_FULL;
+DOC_FIELDS['403(b)'] = RETIREMENT_FIELDS_FULL;
+DOC_FIELDS['457(b)'] = RETIREMENT_FIELDS_FULL;
+DOC_FIELDS['Thrift Savings Plan'] = RETIREMENT_FIELDS_FULL;
+DOC_FIELDS['Traditional IRA'] = IRA_FIELDS;
+DOC_FIELDS['Roth IRA'] = IRA_FIELDS;
+DOC_FIELDS['SEP IRA'] = IRA_FIELDS;
+DOC_FIELDS['SIMPLE IRA'] = IRA_FIELDS;
+DOC_FIELDS['Rollover IRA'] = IRA_FIELDS;
+DOC_FIELDS['Pension'] = [
+  { key: 'institution', label: 'Plan Administrator' },
+  { key: 'employer', label: 'Employer' },
+  { key: 'planName', label: 'Plan Name' },
+  { key: 'monthlyBenefit', label: 'Monthly Benefit', type: 'number', prefix: '$' },
+  { key: 'vestedBenefit', label: 'Vested Benefit', type: 'number', prefix: '$' },
+  { key: 'yearsOfService', label: 'Years of Service', type: 'number' },
+  { key: 'retirementAge', label: 'Retirement Age', type: 'number' },
+  { key: 'statementDate', label: 'Statement Date', type: 'date' },
+];
+DOC_FIELDS['HSA Investment Account'] = [
+  { key: 'institution', label: 'HSA Provider' },
+  { key: 'currentBalance', label: 'Total Balance', type: 'number', prefix: '$' },
+  { key: 'investedBalance', label: 'Invested Balance', type: 'number', prefix: '$' },
+  { key: 'cashBalance', label: 'Cash Balance', type: 'number', prefix: '$' },
+  { key: 'ytdContributions', label: 'YTD Contributions', type: 'number', prefix: '$' },
+  { key: 'contributionLimit', label: 'Annual Limit', type: 'number', prefix: '$' },
+  { key: 'statementDate', label: 'Statement Date', type: 'date' },
+];
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function ConfidenceBadge({ score }: { score: number }) {
@@ -205,6 +364,10 @@ interface ProcessedDoc {
   docType: string;
   fields: Record<string, { value: string; confidence: number }>;
   accepted: boolean;
+  // Institution info
+  institutionName: string;
+  institutionUnknown: boolean;
+  institutionCategory: string | null;
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -329,12 +492,21 @@ export default function Scanner() {
           fieldMap[k] = { value, confidence };
         }
       }
+      // Extract institution info returned by the server normalizer
+      const inst = result.institution;
+      const institutionName = inst?.normalizedName || inst?.rawName || '';
+      const institutionUnknown = !inst?.isKnownInstitution && !!institutionName;
+      const institutionCategory = inst?.institutionCategory ?? null;
+
       setDocs(prev => prev.map(d => d.id === docId ? {
         ...d,
         status: 'done',
         result,
         docType: result.docType ?? 'Unknown',
         fields: fieldMap,
+        institutionName,
+        institutionUnknown,
+        institutionCategory,
         error: undefined,
       } : d));
     } catch (err) {
@@ -366,6 +538,9 @@ export default function Scanner() {
       docType: 'Unknown',
       fields: {},
       accepted: true,
+      institutionName: '',
+      institutionUnknown: false,
+      institutionCategory: null,
     }));
     setDocs(initial);
 
@@ -401,6 +576,23 @@ export default function Scanner() {
 
   const updateDocType = (docId: string, docType: string) => {
     setDocs(prev => prev.map(d => d.id === docId ? { ...d, docType } : d));
+  };
+
+  const updateInstitution = (docId: string, name: string) => {
+    setDocs(prev => prev.map(d => d.id === docId ? { ...d, institutionName: name } : d));
+  };
+
+  // Save an unrecognized institution to localStorage for future reference
+  const saveCustomInstitution = (rawName: string, canonicalName: string) => {
+    try {
+      const key = 'bcf_custom_institutions';
+      const existing: Array<{ rawName: string; canonicalName: string; savedAt: string }> =
+        JSON.parse(localStorage.getItem(key) ?? '[]');
+      if (!existing.find(e => e.rawName === rawName)) {
+        existing.push({ rawName, canonicalName, savedAt: new Date().toISOString() });
+        localStorage.setItem(key, JSON.stringify(existing));
+      }
+    } catch { /* localStorage unavailable */ }
   };
 
   const toggleAccepted = (docId: string) => {
@@ -447,69 +639,115 @@ export default function Scanner() {
           }
           break;
 
+        // ── Banking → Cash ───────────────────────────────────────────────────
         case 'Checking Account':
         case 'Savings Account':
-        case 'Bank Statement':
-          if (n('currentBalance') > 0 || n('closingBalance') > 0) {
+        case 'High-Yield Savings':
+        case 'Money Market Account':
+        case 'Certificate of Deposit':
+        case 'Cash Management Account':
+        case 'Bank Statement': {
+          const bal = n('currentBalance') || n('closingBalance') || n('availableBalance');
+          if (bal > 0) {
             addAsset({
-              name: s('accountName') || s('institution') || doc.docType,
+              name: s('accountName') || doc.institutionName || s('institution') || doc.docType,
               type: 'Cash',
-              value: n('currentBalance') || n('closingBalance'),
+              value: bal,
             });
           }
           break;
+        }
 
+        // ── Credit / revolving → Debt ────────────────────────────────────────
         case 'Credit Card':
         case 'Credit Card Statement':
-          if (n('currentBalance') > 0 || n('closingBalance') > 0) {
+        case 'Line of Credit': {
+          const bal = n('currentBalance') || n('closingBalance') || n('statementBalance');
+          if (bal > 0) {
             addDebt({
-              name: s('accountName') || s('issuer') || 'Credit Card',
-              balance: n('currentBalance') || n('closingBalance'),
+              name: s('accountName') || s('issuer') || s('lender') || doc.institutionName || doc.docType,
+              balance: bal,
               interestRate: n('apr'),
               minimumPayment: n('minimumPayment'),
             });
           }
           break;
+        }
 
+        // ── Installment loans → Debt ─────────────────────────────────────────
         case 'Auto Loan':
         case 'Personal Loan':
+        case 'Student Loan':
           if (n('currentBalance') > 0) {
             addDebt({
-              name: s('loanName') || s('lender') || doc.docType,
+              name: s('loanName') || s('servicer') || s('lender') || doc.institutionName || doc.docType,
               balance: n('currentBalance'),
-              interestRate: n('apr'),
+              interestRate: n('apr') || n('interestRate'),
               minimumPayment: n('monthlyPayment'),
             });
           }
           break;
 
         case 'Mortgage':
-          if (n('principalBalance') > 0) {
+        case 'HELOC':
+          if (n('principalBalance') > 0 || n('currentBalance') > 0) {
+            const bal = n('principalBalance') || n('currentBalance');
             addDebt({
-              name: `Mortgage${s('lender') ? ` – ${s('lender')}` : ''}`,
-              balance: n('principalBalance'),
+              name: `${doc.docType}${doc.institutionName ? ` – ${doc.institutionName}` : s('lender') ? ` – ${s('lender')}` : ''}`,
+              balance: bal,
               interestRate: n('interestRate'),
               minimumPayment: n('monthlyPayment'),
             });
           }
           break;
 
+        // ── Brokerage / non-retirement investments → Investment ──────────────
         case 'Brokerage Account':
+        case 'Margin Account':
+        case 'Robo-Adviser Account':
+        case 'Employee Stock Plan':
         case 'Investment Statement':
           if (n('totalValue') > 0) {
             addAsset({
-              name: s('institution') || s('accountType') || 'Brokerage',
+              name: doc.institutionName || s('institution') || s('accountType') || doc.docType,
               type: 'Investment',
               value: n('totalValue'),
             });
           }
           break;
 
+        // ── Workplace retirement → Investment ────────────────────────────────
+        case '401(k)':
+        case 'Roth 401(k)':
+        case '403(b)':
+        case '457(b)':
+        case 'Thrift Savings Plan':
+        case 'Pension': {
+          const bal = n('currentBalance') || n('vestedBalance');
+          if (bal > 0) {
+            const planLabel = s('planName') || doc.docType;
+            const providerLabel = doc.institutionName || s('institution') || s('employer');
+            addAsset({
+              name: `${planLabel}${providerLabel ? ` – ${providerLabel}` : ''}`,
+              type: 'Investment',
+              value: bal,
+            });
+          }
+          break;
+        }
+
+        // ── IRA / HSA → Investment ───────────────────────────────────────────
+        case 'Traditional IRA':
+        case 'Roth IRA':
+        case 'SEP IRA':
+        case 'SIMPLE IRA':
+        case 'Rollover IRA':
+        case 'HSA Investment Account':
         case 'Retirement Account':
         case 'Retirement Statement':
           if (n('currentBalance') > 0) {
             addAsset({
-              name: `${s('accountType') || 'Retirement'} – ${s('institution') || 'Unknown'}`,
+              name: `${doc.docType} – ${doc.institutionName || s('institution') || 'Unknown'}`,
               type: 'Investment',
               value: n('currentBalance'),
             });
@@ -783,6 +1021,36 @@ export default function Scanner() {
                       )}
                     </div>
                     <div className="text-xs text-muted-foreground truncate mt-0.5">{doc.file.name}</div>
+
+                    {/* Institution row */}
+                    {doc.status === 'done' && (
+                      <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+                        <Input
+                          value={doc.institutionName}
+                          onChange={e => updateInstitution(doc.id, e.target.value)}
+                          placeholder="Institution (edit if incorrect)"
+                          className="h-7 text-xs flex-1 min-w-[140px] max-w-[220px] bg-background"
+                        />
+                        {doc.institutionCategory && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+                            {doc.institutionCategory}
+                          </span>
+                        )}
+                        {doc.institutionUnknown && doc.institutionName && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 flex items-center gap-1">
+                            <AlertTriangle className="w-2.5 h-2.5" /> Needs confirmation
+                          </span>
+                        )}
+                        {doc.institutionUnknown && doc.institutionName && (
+                          <button
+                            className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                            onClick={() => saveCustomInstitution(doc.result?.institution?.rawName ?? doc.institutionName, doc.institutionName)}
+                          >
+                            Save institution
+                          </button>
+                        )}
+                      </div>
+                    )}
 
                     {/* Type selector — only for successfully scanned docs */}
                     {doc.status !== 'error' && (

@@ -6,6 +6,7 @@ const _require = createRequire(import.meta.url);
 // pdf-parse v1 is CJS; use createRequire to avoid ESM default-export issue
 const pdfParse: (buf: Buffer) => Promise<{ text: string }> = _require("pdf-parse");
 import { logger } from "../lib/logger.js";
+import { normalizeInstitution } from "../lib/institution-registry.js";
 
 const router: IRouter = Router();
 
@@ -38,53 +39,86 @@ function detectMime(buffer: Buffer): string {
 
 // ─── Extraction prompt ────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are a financial document extraction AI for a blue-collar worker finance app.
+const SYSTEM_PROMPT = `You are a financial document extraction AI. Analyze the document and respond with ONLY valid JSON (no markdown, no code fences, no explanation).
 
-Analyze this financial document and respond with ONLY valid JSON (no markdown, no code fences, no explanation).
+STEP 1 — Classify docType as exactly one of:
+Paystub |
+Checking Account | Savings Account | High-Yield Savings | Money Market Account | Certificate of Deposit | Cash Management Account | Bank Statement |
+Credit Card | Credit Card Statement | Line of Credit |
+Auto Loan | Personal Loan | Mortgage | HELOC | Student Loan |
+Brokerage Account | Margin Account | Robo-Adviser Account | Employee Stock Plan |
+401(k) | Roth 401(k) | 403(b) | 457(b) | Traditional IRA | Roth IRA | SEP IRA | SIMPLE IRA | Rollover IRA | Pension | Thrift Savings Plan | HSA Investment Account |
+Monthly Bill | Utility Bill | Unknown
 
-STEP 1 — Classify as exactly one of:
-Paystub | Checking Account | Savings Account | Bank Statement | Credit Card | Credit Card Statement | Auto Loan | Personal Loan | Mortgage | Brokerage Account | Investment Statement | Retirement Account | Retirement Statement | Monthly Bill | Utility Bill | Unknown
+STEP 2 — Extract the institution. Look for bank name, brokerage name, plan administrator, servicer, employer plan sponsor, or credit union name. Capture the name exactly as printed. ANY institution name is valid including unknown ones — never reject for an unrecognized provider.
 
-STEP 2 — Extract fields. Return ONLY fields clearly visible in the document. Set any unclear field to null.
+STEP 3 — Extract document fields. Return ONLY fields clearly visible. Set unclear fields to null.
 
 CRITICAL RULES:
 - Never invent, estimate, or calculate. If not visible → null.
-- Confidence 90-100: clearly shown. 60-89: likely correct. Below 60 → null instead.
-- Numbers: return as plain number (no $, commas, %). Dates as YYYY-MM-DD. Percentages as number (e.g. 5.5 not "5.5%").
+- Confidence 90-100: clearly shown. 60-89: likely correct. Below 60 → null.
+- Numbers: plain number only (no $, commas, %). Dates: YYYY-MM-DD. Percentages: number (5.5 not "5.5%").
+- Do NOT confuse: employee contributions vs employer match | account value vs vested balance | buying power vs cash | 401(k) loan vs retirement balance | Roth 401(k) vs Roth IRA | brokerage cash vs checking cash.
+- Preserve any labeled field not in the list below in unknownFields.
 
-Respond with exactly this shape:
+Respond with this exact shape:
 {
-  "docType": "Paystub",
+  "docType": "401(k)",
   "classificationConfidence": 92,
+  "institution": {
+    "rawName": "Fidelity NetBenefits",
+    "isKnownInstitution": true
+  },
   "fields": {
-    "employer": { "value": "Acme Corp", "confidence": 95, "sourceText": "ACME CORP" },
-    "netPay": { "value": 1420.50, "confidence": 88, "sourceText": "Net Pay $1,420.50" }
-  }
+    "currentBalance": { "value": 48216.83, "confidence": 95, "sourceText": "Total Account Value $48,216.83" },
+    "employeeContributionRate": { "value": 6, "confidence": 88, "sourceText": "Your Contribution 6%" }
+  },
+  "unknownFields": [
+    { "label": "Vested Balance", "value": 38000.00, "confidence": 90 }
+  ]
 }
 
 Fields to extract by document type:
 
 PAYSTUB: employer, payDate, payPeriodStart, payPeriodEnd, hourlyRate, regularHours, overtimeHours, doubleTimeHours, perDiem, standbyPay, bonus, grossPay, federalTax, stateTax, socialSecurity, medicare, unionDues, insuranceDeductions, retirementContribution, retirementRate, otherDeductions, netPay
 
-CHECKING ACCOUNT / SAVINGS ACCOUNT: institution, accountType, accountName, lastFour, currentBalance, availableBalance, apy, statementDate
+CHECKING ACCOUNT / CASH MANAGEMENT ACCOUNT: institution, accountType, accountName, lastFour, currentBalance, availableBalance, pendingBalance, apy, interestEarned, statementDate, accountStatus
+
+SAVINGS ACCOUNT / HIGH-YIELD SAVINGS / MONEY MARKET ACCOUNT: institution, accountType, accountName, lastFour, currentBalance, availableBalance, apy, interestEarned, statementDate
+
+CERTIFICATE OF DEPOSIT: institution, accountName, lastFour, currentBalance, apy, maturityDate, termMonths, interestEarned, penaltyForEarlyWithdrawal
 
 BANK STATEMENT: institution, accountType, accountName, lastFour, statementStartDate, statementEndDate, openingBalance, closingBalance, totalDeposits, totalWithdrawals
 
-CREDIT CARD: issuer, accountName, lastFour, currentBalance, statementBalance, creditLimit, availableCredit, apr, minimumPayment, dueDate, autopay
+CREDIT CARD / CREDIT CARD STATEMENT: issuer, accountName, lastFour, currentBalance, statementBalance, creditLimit, availableCredit, apr, minimumPayment, dueDate, autopay
 
-CREDIT CARD STATEMENT: issuer, accountName, lastFour, statementDate, openingBalance, closingBalance, creditLimit, apr, minimumPayment, dueDate, totalCharges, totalPayments, totalFees
+LINE OF CREDIT: lender, accountName, lastFour, creditLimit, currentBalance, availableCredit, apr, minimumPayment, dueDate
 
-AUTO LOAN / PERSONAL LOAN: lender, loanName, lastFour, currentBalance, originalAmount, apr, monthlyPayment, remainingTermMonths, originalTermMonths, nextDueDate, payoffAmount
+AUTO LOAN / PERSONAL LOAN / SECURED LOAN: lender, loanName, lastFour, currentBalance, originalAmount, apr, monthlyPayment, remainingTermMonths, originalTermMonths, nextDueDate, payoffAmount
 
 MORTGAGE: lender, propertyAddress, principalBalance, originalLoanAmount, interestRate, monthlyPayment, principalAndInterest, escrowAmount, nextDueDate, remainingTermMonths, propertyValue
 
-BROKERAGE ACCOUNT: institution, accountType, totalValue, cashBalance, buyingPower, marginUsed, dailyReturn, totalReturn
+HELOC: lender, creditLimit, currentBalance, availableCredit, interestRate, monthlyPayment, drawPeriodEnd, repaymentPeriodMonths
 
-RETIREMENT ACCOUNT / RETIREMENT STATEMENT: institution, accountType, currentBalance, employeeContributionRate, employeeContributions, employerMatch, employerMatchRate, ytdContributions, vestingPercent
+STUDENT LOAN: servicer, loanType, lastFour, currentBalance, originalAmount, interestRate, monthlyPayment, remainingTermMonths, nextDueDate, repaymentPlan
 
-MONTHLY BILL / UTILITY BILL: provider, category, amountDue, dueDate, billingFrequency, autopay, lastFour
+BROKERAGE ACCOUNT / ROBO-ADVISER ACCOUNT: institution, accountType, lastFour, totalValue, securitiesValue, cashBalance, buyingPower, marginBalance, marginAvailable, marginInterestRate, dayChange, totalReturn, unrealizedGain, realizedGain, statementDate
 
-If the image contains multiple unrelated financial documents, set docType to "Multiple Documents" and fields to {}.`;
+MARGIN ACCOUNT: institution, accountType, lastFour, totalValue, securitiesValue, cashBalance, marginBalance, marginAvailable, marginInterestRate, buyingPower, unrealizedGain, statementDate
+
+EMPLOYEE STOCK PLAN: institution, employer, planType, totalValue, vestedValue, unvestedValue, sharesVested, sharesUnvested, grantDate, vestingSchedule, statementDate
+
+401(k) / ROTH 401(k) / 403(b) / 457(b) / THRIFT SAVINGS PLAN: institution, employer, planName, planType, lastFour, currentBalance, vestedBalance, employeeContributionRate, rothContributionRate, pretaxContributionRate, employeeYtdContributions, employerYtdContributions, employerMatchFormula, employerMatchAmount, vestingPercent, vestingSchedule, outstandingLoanBalance, loanPayment, statementDate
+
+TRADITIONAL IRA / ROTH IRA / SEP IRA / SIMPLE IRA / ROLLOVER IRA: institution, accountType, lastFour, currentBalance, ytdContributions, contributionLimit, statementDate
+
+PENSION: institution, employer, planName, monthlyBenefit, vestedBenefit, retirementAge, yearsOfService, statementDate
+
+HSA INVESTMENT ACCOUNT: institution, currentBalance, investedBalance, cashBalance, ytdContributions, contributionLimit, statementDate
+
+MONTHLY BILL / UTILITY BILL: provider, category, amountDue, dueDate, billingFrequency, billingPeriod, recurringFrequency, autopay, lastFour
+
+If the document contains multiple unrelated financial documents, set docType to "Multiple Documents" and fields to {}.`;
 
 // ─── Build messages for GPT ───────────────────────────────────────────────────
 
@@ -196,8 +230,17 @@ router.post("/scan-document", upload.single("file"), async (req, res) => {
     }
 
     const result = safeParseJson(rawJson);
-    logger.info({ docType: result.docType, file: originalname }, "scan complete");
-    res.json({ ...result, fileName: originalname, mimeType: mime });
+
+    // Normalize institution name server-side against the registry.
+    // Works for any institution — unknown ones pass through with isKnownInstitution=false.
+    const rawInstitutionName =
+      (result.institution as any)?.rawName ??
+      (result.fields as any)?.institution?.value ??
+      null;
+    const institution = normalizeInstitution(rawInstitutionName as string | null);
+
+    logger.info({ docType: result.docType, file: originalname, institution: institution.normalizedName }, "scan complete");
+    res.json({ ...result, institution, fileName: originalname, mimeType: mime });
   } catch (err) {
     logger.error({ err }, "scan failed");
     res.status(500).json({
