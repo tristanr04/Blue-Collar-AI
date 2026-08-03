@@ -1,5 +1,7 @@
 import { Router, type IRouter } from "express";
 import OpenAI from "openai";
+import { AskRequestSchema } from "@workspace/api-zod";
+import { validateBody } from "../lib/validate.js";
 import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
@@ -11,21 +13,21 @@ const openai = new OpenAI({
 
 // ─── POST /api/ai/ask ─────────────────────────────────────────────────────────
 
-router.post("/ai/ask", async (req, res) => {
-  const { question, financialProfile } = req.body as {
-    question?: string;
-    financialProfile?: Record<string, unknown>;
-  };
+router.post(
+  "/ai/ask",
+  validateBody(AskRequestSchema, "request_validation"),
+  async (req, res) => {
+    // req.body is validated and typed as AskRequest at this point.
+    // question is trimmed; financialProfile is depth- and size-checked.
+    const { question, financialProfile } = req.body as {
+      question: string;
+      financialProfile?: Record<string, unknown>;
+    };
 
-  if (!question?.trim()) {
-    res.status(400).json({ error: "Question is required." });
-    return;
-  }
+    const profile = financialProfile ?? {};
+    const profileJson = JSON.stringify(profile, null, 2);
 
-  const profile = financialProfile ?? {};
-  const profileJson = JSON.stringify(profile, null, 2);
-
-  const systemPrompt = `You are Blue Collar AI, a plain-speaking financial assistant for trades workers — electricians, plumbers, welders, construction workers, drivers, and similar tradespeople.
+    const systemPrompt = `You are Blue Collar AI, a plain-speaking financial assistant for trades workers — electricians, plumbers, welders, construction workers, drivers, and similar tradespeople.
 
 CONFIRMED FINANCIAL DATA (use ONLY this — never invent):
 ${profileJson}
@@ -50,39 +52,40 @@ CALCULATION TOOLS you can use:
 
 At the end of every response, add one line: "⚠️ I am not a licensed financial adviser. This is educational guidance, not financial advice."`;
 
-  try {
-    const stream = await openai.chat.completions.create({
-      model: "gpt-5.6-terra",
-      max_completion_tokens: 1500,
-      stream: true,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: question },
-      ],
-    });
+    try {
+      const stream = await openai.chat.completions.create({
+        model: "gpt-5.6-terra",
+        max_completion_tokens: 1500,
+        stream: true,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: question },
+        ],
+      });
 
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
 
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta?.content ?? "";
-      if (delta) {
-        res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content ?? "";
+        if (delta) {
+          res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+        }
+      }
+      res.write("data: [DONE]\n\n");
+      res.end();
+    } catch (err) {
+      logger.error({ err }, "ai/ask failed");
+      if (!res.headersSent) {
+        res.status(500).json({ error: "AI assistant is temporarily unavailable." });
+      } else {
+        res.write(`data: ${JSON.stringify({ error: "Stream error." })}\n\n`);
+        res.end();
       }
     }
-    res.write("data: [DONE]\n\n");
-    res.end();
-  } catch (err) {
-    logger.error({ err }, "ai/ask failed");
-    if (!res.headersSent) {
-      res.status(500).json({ error: "AI assistant is temporarily unavailable." });
-    } else {
-      res.write(`data: ${JSON.stringify({ error: "Stream error." })}\n\n`);
-      res.end();
-    }
-  }
-});
+  },
+);
 
 // ─── GET /api/capabilities ────────────────────────────────────────────────────
 

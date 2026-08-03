@@ -5,6 +5,8 @@ import { createRequire } from "node:module";
 const _require = createRequire(import.meta.url);
 // pdf-parse v1 is CJS; use createRequire to avoid ESM default-export issue
 const pdfParse: (buf: Buffer) => Promise<{ text: string }> = _require("pdf-parse");
+import { AiExtractionOutputSchema } from "@workspace/api-zod";
+import { validateValue } from "../lib/validate.js";
 import { logger } from "../lib/logger.js";
 import { normalizeInstitution } from "../lib/institution-registry.js";
 
@@ -154,17 +156,20 @@ async function extractFromText(text: string, pageHint?: string) {
   return response.choices[0]?.message?.content ?? "{}";
 }
 
-function safeParseJson(raw: string): Record<string, unknown> {
+function safeParseJson(raw: string): { data: Record<string, unknown>; parseError: boolean } {
   try {
     // Strip markdown code fences if present
     const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-    return JSON.parse(cleaned);
+    return { data: JSON.parse(cleaned) as Record<string, unknown>, parseError: false };
   } catch {
-    return { docType: "Unknown", classificationConfidence: 0, fields: {}, parseError: true };
+    return {
+      data: { docType: "Unknown", classificationConfidence: 0, fields: {} },
+      parseError: true,
+    };
   }
 }
 
-// ─── POST /api/scan ───────────────────────────────────────────────────────────
+// ─── POST /api/scan-document ──────────────────────────────────────────────────
 
 // Route registered at POST /api/scan-document (via app.use("/api", router))
 router.post("/scan-document", upload.single("file"), async (req, res) => {
@@ -229,18 +234,61 @@ router.post("/scan-document", upload.single("file"), async (req, res) => {
       rawJson = await extractFromImage(buffer, mime);
     }
 
-    const result = safeParseJson(rawJson);
+    // ── Parse JSON from raw AI text ───────────────────────────────────────────
+    const { data: rawParsed, parseError } = safeParseJson(rawJson);
 
-    // Normalize institution name server-side against the registry.
-    // Works for any institution — unknown ones pass through with isKnownInstitution=false.
-    const rawInstitutionName =
-      (result.institution as any)?.rawName ??
-      (result.fields as any)?.institution?.value ??
-      null;
-    const institution = normalizeInstitution(rawInstitutionName as string | null);
+    if (parseError) {
+      logger.warn({ file: originalname }, "AI returned non-JSON response");
+      res.status(422).json({
+        stage: "ai_json_parse",
+        error: "AI returned an unreadable response. Please try again.",
+      });
+      return;
+    }
 
-    logger.info({ docType: result.docType, file: originalname, institution: institution.normalizedName }, "scan complete");
-    res.json({ ...result, institution, fileName: originalname, mimeType: mime });
+    // ── Validate AI output shape with Zod ─────────────────────────────────────
+    // Unknown docTypes coerce to "Unknown". Malformed numeric fields (NaN,
+    // Infinity, wrong type) cause rejection. Missing optional fields get defaults.
+    const validation = validateValue(
+      AiExtractionOutputSchema,
+      rawParsed,
+      "ai_output_validation",
+    );
+
+    if (!validation.success) {
+      logger.warn(
+        { file: originalname, fieldErrors: validation.body.fieldErrors },
+        "AI output failed schema validation",
+      );
+      res.status(422).json({
+        ...validation.body,
+        error: "AI returned an unrecognized response format. Please try again.",
+      });
+      return;
+    }
+
+    const data = validation.data;
+
+    // ── Normalize institution name server-side against the registry ───────────
+    // Fall back to the institution field value if the top-level institution
+    // object was absent in the AI output.
+    // Use `?? {}` to satisfy strict-null checks — data.fields has a Zod
+    // default({}) so it is always present at runtime, but the TypeScript
+    // inference of ZodEffects.default() can appear optional.
+    const fieldsMap = data.fields ?? {};
+    const fieldInstitutionValue = fieldsMap.institution?.value;
+    const rawInstitutionName: string | null =
+      data.institution?.rawName ??
+      (typeof fieldInstitutionValue === "string" ? fieldInstitutionValue : null);
+
+    const institution = normalizeInstitution(rawInstitutionName);
+
+    logger.info(
+      { docType: data.docType, file: originalname, institution: institution.normalizedName },
+      "scan complete",
+    );
+
+    res.json({ ...data, institution, fileName: originalname, mimeType: mime });
   } catch (err) {
     logger.error({ err }, "scan failed");
     res.status(500).json({
