@@ -1,3 +1,4 @@
+import { clerkMiddleware } from "@clerk/express";
 import express, { type Express } from "express";
 import pinoHttp from "pino-http";
 import router from "./routes/index.js";
@@ -5,15 +6,16 @@ import { logger } from "./lib/logger.js";
 import { makeCors } from "./middlewares/cors.js";
 import { generalLimiter } from "./middlewares/rate-limit.js";
 import { aiKillSwitch, aiGlobalSemaphore } from "./middlewares/ai-guard.js";
+import { requireAuthenticatedUser } from "./middlewares/auth.js";
 
 const app: Express = express();
 
 // Replit and most production hosts terminate HTTPS behind a reverse proxy.
-// Trust exactly one proxy hop so req.ip reflects the real client instead of the
-// shared proxy address. Without this, all users can share one rate-limit bucket.
 app.set("trust proxy", 1);
 
-// ─── Request logging ──────────────────────────────────────────────────────────
+// Clerk verifies session cookies / bearer tokens and attaches auth state.
+// CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY must be configured in Replit.
+app.use(clerkMiddleware());
 
 app.use(
   pinoHttp({
@@ -35,19 +37,13 @@ app.use(
   }),
 );
 
-// ─── CORS ─────────────────────────────────────────────────────────────────────
-
 app.use(makeCors());
-
-// ─── Body parsing ─────────────────────────────────────────────────────────────
 
 app.use(express.json({ limit: "250kb" }));
 app.use(express.urlencoded({ extended: true, limit: "250kb" }));
 
-// Return a structured response for oversized JSON/form requests instead of an
-// HTML Express error page.
 app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
-  const bodyError = err as { type?: string; status?: number; message?: string };
+  const bodyError = err as { type?: string; status?: number };
   if (bodyError.type === "entity.too.large" || bodyError.status === 413) {
     res.status(413).json({
       stage: "request_size_limit",
@@ -58,14 +54,22 @@ app.use((err: unknown, _req: express.Request, res: express.Response, next: expre
   next(err);
 });
 
-// ─── General rate limiter (100 req / 15 min per IP) ───────────────────────────
-
 app.use("/api", generalLimiter);
 
-// Both scan and chat consume paid AI capacity. Keep the global kill switch and
-// global concurrency ceiling in front of both endpoints. The chat route also
-// retains its endpoint-specific controls; the scan route has its own per-IP
-// semaphore and hourly limiter inside the route module.
+// Paid and sensitive financial endpoints require a verified user session.
+app.use("/api", (req, res, next) => {
+  const protectedPath =
+    req.path === "/auth/me" ||
+    (req.method === "POST" && (req.path === "/scan-document" || req.path === "/ai/ask"));
+
+  if (protectedPath) {
+    requireAuthenticatedUser(req, res, next);
+    return;
+  }
+  next();
+});
+
+// Both scan and chat consume paid AI capacity.
 app.use("/api", (req, res, next) => {
   if (req.method === "POST" && (req.path === "/scan-document" || req.path === "/ai/ask")) {
     aiKillSwitch(req, res, next);
@@ -76,9 +80,6 @@ app.use("/api", (req, res, next) => {
 
 const globalAiConcurrency = aiGlobalSemaphore.middleware();
 app.use("/api", (req, res, next) => {
-  // ai/ask already applies this semaphore inside its route. Apply it here only
-  // to scanning so one shared global ceiling covers all paid AI work without
-  // double-counting chat requests.
   if (req.method === "POST" && req.path === "/scan-document") {
     globalAiConcurrency(req, res, next);
     return;
@@ -86,11 +87,7 @@ app.use("/api", (req, res, next) => {
   next();
 });
 
-// ─── Routes ───────────────────────────────────────────────────────────────────
-
 app.use("/api", router);
-
-// ─── Structured 404 ───────────────────────────────────────────────────────────
 
 app.use("/api", (req, res) => {
   res.status(404).json({
