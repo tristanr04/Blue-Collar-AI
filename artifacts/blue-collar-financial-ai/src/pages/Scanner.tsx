@@ -278,17 +278,55 @@ export default function Scanner() {
     return { stage: 'unknown', message: String(err) };
   };
 
+  // ── Null-safe field value extractor ───────────────────────────────────────
+  // The AI can return fields in three shapes:
+  //   { value: ..., confidence: ... }   ← normal
+  //   null                              ← field not found (crashes on .value)
+  //   "string" | number | boolean       ← flat value without wrapper
+  // This helper normalises all three without ever throwing.
+
+  const getFieldValue = (raw: unknown): { value: string | null; confidence: number } => {
+    if (raw == null) return { value: null, confidence: 0 };
+    if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
+      return { value: String(raw), confidence: 70 };
+    }
+    if (typeof raw === 'object' && 'value' in (raw as object)) {
+      const obj = raw as { value?: unknown; confidence?: unknown };
+      const v = obj.value;
+      return {
+        value: v != null ? String(v) : null,
+        confidence: typeof obj.confidence === 'number' ? obj.confidence : 70,
+      };
+    }
+    return { value: null, confidence: 0 };
+  };
+
   // ── Process a single file and update its doc entry ─────────────────────────
 
   const processDoc = async (docId: string, file: File) => {
     setDocs(prev => prev.map(d => d.id === docId ? { ...d, status: 'processing', error: undefined } : d));
     try {
       const result = await scanFile(file);
+
+      // Dev-mode logging for bill documents so the raw AI shape is visible
+      // in the browser console without exposing image data or account numbers.
+      if (import.meta.env.DEV) {
+        const dt = (result.docType ?? '').toLowerCase();
+        if (dt.includes('bill') || dt.includes('utility')) {
+          console.group(`[Scanner] Raw bill extraction — ${file.name}`);
+          console.log('docType:', result.docType);
+          console.log('classificationConfidence:', result.classificationConfidence);
+          console.log('fields (raw):', JSON.stringify(result.fields ?? {}, null, 2));
+          console.groupEnd();
+        }
+      }
+
       const fieldMap: Record<string, { value: string; confidence: number }> = {};
       for (const [k, v] of Object.entries(result.fields ?? {})) {
-        const fv = v as ScanFieldValue;
-        if (fv.value != null) {
-          fieldMap[k] = { value: String(fv.value), confidence: fv.confidence ?? 80 };
+        // Use getFieldValue so null fields and flat values never crash
+        const { value, confidence } = getFieldValue(v);
+        if (value != null) {
+          fieldMap[k] = { value, confidence };
         }
       }
       setDocs(prev => prev.map(d => d.id === docId ? {

@@ -1,0 +1,124 @@
+Fix only the bill-document extraction crash. Do not modify the working upload pipeline, paystubs, debts, banking, investments, or other document types.
+
+Current bill error:
+
+null is not an object (evaluating 'fv.value')
+
+This means the bill review or parser code assumes every extracted field object exists.
+
+Required fix:
+
+1. Find every bill-processing location that reads:
+   fv.value
+   field.value
+   extractedField.value
+
+2. Identify the exact file and line throwing the error.
+
+3. Make bill-field parsing null-safe.
+
+Use logic equivalent to:
+
+function getFieldValue(field) {
+  if (field == null) return null;
+
+  if (typeof field === "string" || typeof field === "number") {
+    return field;
+  }
+
+  if (typeof field === "object" && "value" in field) {
+    return field.value ?? null;
+  }
+
+  return null;
+}
+
+4. Never access `.value` unless the object exists.
+
+Replace unsafe code such as:
+
+const amount = fv.value;
+
+with:
+
+const amount = fv?.value ?? null;
+
+or preferably use the shared getFieldValue helper.
+
+5. Normalize the AI response before rendering.
+
+Expected bill schema:
+
+{
+  documentType: "bill",
+  provider: {
+    value: string | null,
+    confidence: number | null
+  },
+  category: {
+    value: string | null,
+    confidence: number | null
+  },
+  amountDue: {
+    value: number | null,
+    confidence: number | null
+  },
+  dueDate: {
+    value: string | null,
+    confidence: number | null
+  },
+  billingPeriod: {
+    value: string | null,
+    confidence: number | null
+  },
+  recurringFrequency: {
+    value: string | null,
+    confidence: number | null
+  },
+  autopay: {
+    value: boolean | null,
+    confidence: number | null
+  }
+}
+
+6. If the AI returns a flat value instead of a field object, normalize it:
+
+amountDue: {
+  value: raw.amountDue?.value ?? raw.amountDue ?? null,
+  confidence: raw.amountDue?.confidence ?? null
+}
+
+7. If any bill field is missing:
+- leave it blank
+- mark it Low confidence or Needs review
+- do not crash
+- do not reject the whole document
+
+8. Add error boundaries around each bill review card so one malformed field cannot crash the entire import.
+
+9. Add development logging showing the raw bill extraction JSON before normalization, but do not log the uploaded image or sensitive account data.
+
+10. Test using the PSO bill image.
+
+Expected extraction:
+- document type: Utility bill
+- provider: PSO / Public Service Company of Oklahoma
+- category: Electric
+- amount due: 164.38
+- due date: 2024-06-12
+- billing period: 2024-04-24 through 2024-05-23
+- recurring frequency: Monthly
+
+Success criteria:
+- The bill reaches the review screen.
+- No “fv.value” error occurs.
+- Missing fields appear blank instead of crashing.
+- Confirming the bill adds or updates the Bills section.
+- Monthly expenses and dashboard totals recalculate.
+- All currently working document types remain unchanged.
+
+After fixing it, report:
+- exact file and line causing the crash
+- raw AI response shape
+- normalization code added
+- result of the PSO bill regression test
