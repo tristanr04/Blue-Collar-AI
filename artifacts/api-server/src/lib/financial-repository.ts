@@ -112,25 +112,71 @@ export async function createAsset(userId: string, rawInput: unknown) {
   return created;
 }
 
+async function softDeletePaystub(userId: string, recordId: string): Promise<boolean> {
+  const now = new Date();
+  const rows = await db
+    .update(paystubsTable)
+    .set({ deletedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(paystubsTable.id, recordId),
+        eq(paystubsTable.userId, userId),
+        isNull(paystubsTable.deletedAt),
+      ),
+    )
+    .returning({ id: paystubsTable.id });
+  return rows.length > 0;
+}
+
+async function softDeleteDebt(userId: string, recordId: string): Promise<boolean> {
+  const now = new Date();
+  const rows = await db
+    .update(debtsTable)
+    .set({ deletedAt: now, updatedAt: now })
+    .where(
+      and(eq(debtsTable.id, recordId), eq(debtsTable.userId, userId), isNull(debtsTable.deletedAt)),
+    )
+    .returning({ id: debtsTable.id });
+  return rows.length > 0;
+}
+
+async function softDeleteBill(userId: string, recordId: string): Promise<boolean> {
+  const now = new Date();
+  const rows = await db
+    .update(billsTable)
+    .set({ deletedAt: now, updatedAt: now })
+    .where(
+      and(eq(billsTable.id, recordId), eq(billsTable.userId, userId), isNull(billsTable.deletedAt)),
+    )
+    .returning({ id: billsTable.id });
+  return rows.length > 0;
+}
+
+async function softDeleteAsset(userId: string, recordId: string): Promise<boolean> {
+  const now = new Date();
+  const rows = await db
+    .update(assetsTable)
+    .set({ deletedAt: now, updatedAt: now })
+    .where(
+      and(eq(assetsTable.id, recordId), eq(assetsTable.userId, userId), isNull(assetsTable.deletedAt)),
+    )
+    .returning({ id: assetsTable.id });
+  return rows.length > 0;
+}
+
 export async function softDeleteFinancialRecord(
   userId: string,
   section: "paystubs" | "debts" | "bills" | "assets",
   recordId: string,
 ): Promise<boolean> {
-  const deletedAt = new Date();
-  const tables = {
-    paystubs: paystubsTable,
-    debts: debtsTable,
-    bills: billsTable,
-    assets: assetsTable,
-  } as const;
-  const table = tables[section];
-
-  const rows = await db
-    .update(table)
-    .set({ deletedAt, updatedAt: deletedAt })
-    .where(and(eq(table.id, recordId), eq(table.userId, userId), isNull(table.deletedAt)))
-    .returning({ id: table.id });
-
-  return rows.length > 0;
+  switch (section) {
+    case "paystubs":
+      return softDeletePaystub(userId, recordId);
+    case "debts":
+      return softDeleteDebt(userId, recordId);
+    case "bills":
+      return softDeleteBill(userId, recordId);
+    case "assets":
+      return softDeleteAsset(userId, recordId);
+  }
 }
