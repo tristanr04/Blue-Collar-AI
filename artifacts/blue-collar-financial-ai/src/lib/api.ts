@@ -49,8 +49,83 @@ function waitForPaint(): Promise<void> {
   });
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateScanResult(value: unknown, fallbackFileName: string): ScanResult {
+  if (!isRecord(value)) {
+    throw new Error(JSON.stringify({
+      stage: "response_validation",
+      message: "The scanner returned an invalid response.",
+      filename: fallbackFileName,
+    }));
+  }
+
+  const docType = typeof value.docType === "string" && value.docType.trim()
+    ? value.docType.trim()
+    : "Unknown";
+  const classificationConfidence = typeof value.classificationConfidence === "number"
+    && Number.isFinite(value.classificationConfidence)
+    ? value.classificationConfidence
+    : 0;
+  const fields = isRecord(value.fields)
+    ? value.fields as Record<string, ScanFieldValue>
+    : {};
+
+  // A parse failure from the backend must be surfaced as a failed document,
+  // not accepted as a blank successful review card.
+  if (value.parseError === true) {
+    throw new Error(JSON.stringify({
+      stage: "response_validation",
+      message: "The AI returned malformed extraction data. Retry this document.",
+      filename: fallbackFileName,
+    }));
+  }
+
+  return {
+    ...value,
+    docType,
+    classificationConfidence,
+    fields,
+    fileName: typeof value.fileName === "string" && value.fileName
+      ? value.fileName
+      : fallbackFileName,
+    mimeType: typeof value.mimeType === "string" ? value.mimeType : "",
+  } as ScanResult;
+}
+
+async function readJsonResponse(res: Response, fileName: string): Promise<unknown> {
+  const raw = await res.text();
+  if (!raw.trim()) {
+    throw new Error(JSON.stringify({
+      stage: "response_validation",
+      message: `Scanner returned an empty response (HTTP ${res.status}).`,
+      filename: fileName,
+    }));
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(JSON.stringify({
+      stage: "response_validation",
+      message: `Scanner returned non-JSON data (HTTP ${res.status}).`,
+      filename: fileName,
+    }));
+  }
+}
+
 /** Upload a single file and get AI extraction results. */
 export async function scanFile(file: File): Promise<ScanResult> {
+  if (!(file instanceof File) || file.size === 0) {
+    throw new Error(JSON.stringify({
+      stage: "file_validation",
+      message: "This file is empty or unreadable.",
+      filename: file?.name ?? "unknown",
+    }));
+  }
+
   // Scanner.tsx marks the document as processing immediately before this call.
   // Yielding one frame prevents React's state updates from remaining batched while
   // the first network request is pending, which previously left every card shown
@@ -60,7 +135,7 @@ export async function scanFile(file: File): Promise<ScanResult> {
   const form = new FormData();
   // Always pass the filename explicitly so multer receives originalname correctly
   // even when the browser omits it (common on iOS Safari).
-  form.append("file", file, file.name);
+  form.append("file", file, file.name || "document");
 
   const controller = new AbortController();
   const timeoutMs = 60_000;
@@ -91,21 +166,23 @@ export async function scanFile(file: File): Promise<ScanResult> {
     clearTimeout(timeout);
   }
 
-  const json = await res.json().catch(() => ({
-    stage: "unknown",
-    message: `Upload failed with HTTP ${res.status}`,
-  }));
+  const json = await readJsonResponse(res, file.name);
 
   if (!res.ok) {
+    const errorJson = isRecord(json) ? json : {};
     throw new Error(
       JSON.stringify({
-        stage: (json as any).stage ?? "backend_receipt",
-        message: (json as any).error ?? (json as any).message ?? `Upload failed with HTTP ${res.status}`,
+        stage: typeof errorJson.stage === "string" ? errorJson.stage : "backend_receipt",
+        message:
+          (typeof errorJson.error === "string" && errorJson.error) ||
+          (typeof errorJson.message === "string" && errorJson.message) ||
+          `Upload failed with HTTP ${res.status}`,
         filename: file.name,
       })
     );
   }
-  return json as ScanResult;
+
+  return validateScanResult(json, file.name);
 }
 
 /** Check whether the AI backend is available. */
