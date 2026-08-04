@@ -435,83 +435,84 @@ function mergeUniqueFiles(current: File[], incoming: File[]): File[] {
 
 // ─── Rate-limit retry helpers ─────────────────────────────────────────────────
 
-/** Exponential back-off delays for 429 retries (ms): ~2 s, ~4 s, ~8 s. */
-const RETRY_DELAYS_MS = [2000, 4000, 8000] as const;
+/** Exponential back-off delays (ms): 2 s, 4 s, 8 s. */
+const RETRY_DELAYS_MS = [2_000, 4_000, 8_000] as const;
 const MAX_RATE_LIMIT_RETRIES = 3;
+/** Retry delays are clamped to this window so a bad Retry-After can't stall the batch. */
+const CLAMP_MIN_MS = 1_000;
+const CLAMP_MAX_MS = 30_000;
+
+function clampRetryMs(ms: number): number {
+  return Math.max(CLAMP_MIN_MS, Math.min(CLAMP_MAX_MS, Math.round(ms)));
+}
 
 /**
- * Returns retry metadata when `err` represents an HTTP 429 / rate-limit,
- * or `null` for all other errors.
- * `retryAfterMs` is 0 when no Retry-After header was present (use back-off table).
+ * Detect whether `err` represents an HTTP 429 / rate-limit response and
+ * return the raw retry-hint values.  Returns null for all other errors.
  */
-function is429Error(err: unknown): { retryAfterMs: number } | null {
+function is429Error(err: unknown): {
+  retryAfterHeader: string | null;
+  retryAfterBodyMs: number | undefined;
+} | null {
   if (!(err instanceof Error)) return null;
   try {
     const parsed = JSON.parse(err.message) as Record<string, unknown>;
     const status = parsed.httpStatus;
     const msg = typeof parsed.message === 'string' ? parsed.message.toLowerCase() : '';
     if (status === 429 || msg.includes('too many requests') || msg.includes('rate limit')) {
-      const retryAfterSec = typeof parsed.retryAfter === 'number' ? parsed.retryAfter : 0;
-      return { retryAfterMs: retryAfterSec > 0 ? retryAfterSec * 1000 : 0 };
+      return {
+        retryAfterHeader:
+          typeof parsed.retryAfterHeader === 'string' ? parsed.retryAfterHeader : null,
+        retryAfterBodyMs:
+          typeof parsed.retryAfterBodyMs === 'number' ? parsed.retryAfterBodyMs : undefined,
+      };
     }
-  } catch { /* not JSON — fall through to string check */ }
+  } catch { /* not JSON — fall through to raw-string check */ }
   const raw = err.message.toLowerCase();
   if (raw.includes('429') || raw.includes('too many requests') || raw.includes('rate limit')) {
-    return { retryAfterMs: 0 };
+    return { retryAfterHeader: null, retryAfterBodyMs: undefined };
   }
   return null;
 }
 
 /**
- * Scan a single file, automatically retrying up to MAX_RATE_LIMIT_RETRIES times
- * on HTTP 429 responses.  Honors the Retry-After header when present; otherwise
- * uses the RETRY_DELAYS_MS exponential back-off table.
+ * Compute the retry wait in milliseconds, clamped to [CLAMP_MIN_MS, CLAMP_MAX_MS].
  *
- * @param onRetrying  Called at the start of each retry wait with the 1-based
- *                    attempt number and the actual wait duration in ms.
+ * Priority:
+ * 1. retryAfterBodyMs  — milliseconds from the JSON body
+ * 2. retryAfterHeader  as a numeric second count
+ * 3. retryAfterHeader  as an HTTP-date string
+ * 4. Exponential back-off from RETRY_DELAYS_MS
+ *
+ * @param attempt  0-indexed attempt count, used to index RETRY_DELAYS_MS.
  */
-async function scanWithRetry(
-  file: File,
-  token: string | null,
-  onRetrying: (attempt: number, waitMs: number) => void,
-): Promise<ScanResult> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await scanFile(file, token);
-    } catch (err) {
-      const rl = is429Error(err);
-      if (rl === null || attempt >= MAX_RATE_LIMIT_RETRIES) throw err;
-      const waitMs = rl.retryAfterMs > 0
-        ? rl.retryAfterMs
-        : (RETRY_DELAYS_MS[attempt] ?? 8000);
-      onRetrying(attempt + 1, waitMs); // 1-based for UI display
-      await new Promise<void>(resolve => setTimeout(resolve, waitMs));
-    }
+function parseRetryDelay(
+  retryAfterHeader: string | null,
+  retryAfterBodyMs: number | undefined,
+  attempt: number,
+): number {
+  // 1. Body milliseconds
+  if (retryAfterBodyMs !== undefined && retryAfterBodyMs > 0) {
+    return clampRetryMs(retryAfterBodyMs);
   }
-}
 
-/**
- * Run `worker` over every item with at most `limit` running simultaneously.
- * Each worker is expected to catch its own errors — a worker that throws
- * propagates through Promise.all and cancels remaining work.  processDoc
- * never throws (it catches internally), so batch failures are always isolated.
- */
-async function runWithConcurrency<T>(
-  items: T[],
-  limit: number,
-  worker: (item: T, index: number) => Promise<void>,
-): Promise<void> {
-  let nextIndex = 0;
-  async function runWorker(): Promise<void> {
-    while (true) {
-      const index = nextIndex;
-      nextIndex += 1;
-      if (index >= items.length) return;
-      await worker(items[index], index);
+  if (retryAfterHeader) {
+    // 2. Numeric seconds ("5", "30", "1550", …)
+    const trimmed = retryAfterHeader.trim();
+    const numSec = Number(trimmed);
+    if (!isNaN(numSec) && trimmed !== '') {
+      return clampRetryMs(numSec * 1_000);
+    }
+
+    // 3. HTTP-date (e.g. "Thu, 04 Aug 2026 19:00:00 GMT")
+    const dateMs = new Date(retryAfterHeader).getTime();
+    if (!isNaN(dateMs)) {
+      return clampRetryMs(dateMs - Date.now());
     }
   }
-  const workers = Array.from({ length: Math.min(limit, items.length) }, () => runWorker());
-  await Promise.all(workers);
+
+  // 4. Exponential back-off
+  return RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
 }
 
 /**
@@ -614,21 +615,49 @@ export default function Scanner() {
   const [matchChoices, setMatchChoices] = useState<Record<string, MatchChoice>>({});
   const [lastImportDocId, setLastImportDocId] = useState<string | null>(null);
 
-  // ── Refs for preview URL cleanup on unmount ────────────────────────────────
+  // ── Refs: preview cleanup, queue management, lifecycle ────────────────────
 
-  const previewsRef = useRef<string[]>([]);
-  const docsRef = useRef<BatchDocument[]>([]);
+  const previewsRef      = useRef<string[]>([]);
+  const docsRef          = useRef<BatchDocument[]>([]);
+  /** IDs waiting for a free slot. */
+  const queueRef         = useRef<string[]>([]);
+  /** Number of API calls in flight right now (0–SCAN_CONCURRENCY). */
+  const activeCountRef   = useRef(0);
+  /** Per-doc retry setTimeout handles — cancelled on remove / reset / unmount. */
+  const retryTimersRef   = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  /** Per-doc retry attempt count — reset when user manually retries. */
+  const retryAttemptsRef = useRef(new Map<string, number>());
+  /**
+   * Stable pointer to the latest render's dispatchNext so setTimeout callbacks
+   * always call the up-to-date version without capturing a stale closure.
+   */
+  const dispatchNextRef  = useRef<() => void>(() => {});
+  const isMountedRef     = useRef(true);
 
   useEffect(() => { previewsRef.current = previews; }, [previews]);
   useEffect(() => { docsRef.current = docs; }, [docs]);
 
-  // Revoke all preview object URLs when the component unmounts.
+  // Cancel all retry timers and revoke object URLs on unmount.
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
+      retryTimersRef.current.forEach(t => clearTimeout(t));
+      retryTimersRef.current.clear();
       previewsRef.current.forEach(url => { if (url) try { URL.revokeObjectURL(url); } catch {} });
       docsRef.current.forEach(doc => { if (doc.preview) try { URL.revokeObjectURL(doc.preview); } catch {} });
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Advance to the review step automatically once every doc reaches a terminal
+  // state (done or error).  The queue dispatcher does NOT call setStep directly
+  // so that retrying docs (with pending timers) don't prematurely flip the step.
+  useEffect(() => {
+    if (step !== 'processing' || docs.length === 0) return;
+    if (docs.every(d => d.status === 'done' || d.status === 'error')) {
+      setStep('review');
+    }
+  }, [docs, step]);
 
   // ── Progress counts (derived from docs state) ──────────────────────────────
 
@@ -692,25 +721,52 @@ export default function Scanner() {
     setPreviews(prev => prev.filter((_, idx) => idx !== i));
   };
 
-  // ── Process a single file and update its doc entry ─────────────────────────
+  // ── Concurrency-limited queue processor ───────────────────────────────────
+  //
+  // dispatchNext() and runOneScan() are plain function declarations so they are
+  // hoisted and can reference each other.  dispatchNextRef.current is updated
+  // on every render so setTimeout callbacks always call the latest closure.
+  //
+  // Key invariant: a retrying doc RELEASES its slot before its timer fires, so
+  // another queued doc can start immediately rather than waiting out the delay.
 
-  const processDoc = async (docId: string, file: File) => {
+  function dispatchNext(): void {
+    if (!isMountedRef.current) return;
+    while (activeCountRef.current < SCAN_CONCURRENCY && queueRef.current.length > 0) {
+      const docId = queueRef.current.shift()!;
+      activeCountRef.current++;
+      // .finally() releases the slot unconditionally — success, fatal error,
+      // AND the 429-release path all flow through here.
+      runOneScan(docId).finally(() => {
+        activeCountRef.current--;
+        dispatchNextRef.current();
+      });
+    }
+  }
+  dispatchNextRef.current = dispatchNext;
+
+  async function runOneScan(docId: string): Promise<void> {
+    if (!isMountedRef.current) return;
+    const doc = docsRef.current.find(d => d.id === docId);
+    if (!doc) return; // Doc was removed while waiting in the queue
+
     setDocs(prev => prev.map(d =>
       d.id === docId
-        ? { ...d, status: 'processing', error: undefined, errorStage: undefined, retryAttempt: undefined, retryWaitMs: undefined }
+        ? { ...d, status: 'processing', error: undefined, errorStage: undefined,
+            retryAttempt: undefined, retryWaitMs: undefined }
         : d,
     ));
+
     try {
       const token = await getToken().catch(() => null);
-      const result = await scanWithRetry(file, token, (attempt, waitMs) => {
-        setDocs(prev => prev.map(d =>
-          d.id === docId
-            ? { ...d, status: 'retrying', retryAttempt: attempt, retryWaitMs: waitMs }
-            : d,
-        ));
-      });
-      const { resolvedDocType, fieldMap, institutionName, institutionUnknown, institutionCategory } =
-        normalizeScanResult(result);
+      if (!isMountedRef.current) return;
+      const result = await scanFile(doc.file, token);
+      if (!isMountedRef.current) return;
+
+      const {
+        resolvedDocType, fieldMap,
+        institutionName, institutionUnknown, institutionCategory,
+      } = normalizeScanResult(result);
 
       setDocs(prev => prev.map(d =>
         d.id === docId
@@ -732,6 +788,38 @@ export default function Scanner() {
           : d,
       ));
     } catch (err) {
+      if (!isMountedRef.current) return;
+      const rl = is429Error(err);
+      const attempts = retryAttemptsRef.current.get(docId) ?? 0;
+
+      if (rl !== null && attempts < MAX_RATE_LIMIT_RETRIES) {
+        // ── Rate-limited: release this slot NOW, re-queue after delay ──────
+        const waitMs = parseRetryDelay(rl.retryAfterHeader, rl.retryAfterBodyMs, attempts);
+        retryAttemptsRef.current.set(docId, attempts + 1);
+
+        setDocs(prev => prev.map(d =>
+          d.id === docId
+            ? { ...d, status: 'retrying', retryAttempt: attempts + 1, retryWaitMs: waitMs }
+            : d,
+        ));
+
+        // Guard against duplicate timers for the same doc.
+        const stale = retryTimersRef.current.get(docId);
+        if (stale !== undefined) clearTimeout(stale);
+
+        const timer = setTimeout(() => {
+          if (!isMountedRef.current) return;
+          retryTimersRef.current.delete(docId);
+          queueRef.current.unshift(docId); // front — retry ASAP
+          dispatchNextRef.current();
+        }, waitMs);
+        retryTimersRef.current.set(docId, timer);
+
+        // Return normally so .finally() in dispatchNext frees the active slot.
+        return;
+      }
+
+      // Non-429 or all retries exhausted — terminal failure.
       const { stage, message } = parseApiError(err);
       setDocs(prev => prev.map(d =>
         d.id === docId
@@ -749,7 +837,7 @@ export default function Scanner() {
           : d,
       ));
     }
-  };
+  }
 
   // ── Start processing ───────────────────────────────────────────────────────
 
@@ -814,48 +902,70 @@ export default function Scanner() {
          (fingerprintCounts.get(doc.fingerprint!) ?? 0) > 1),
     }));
 
-    setDocs(preparedDocs);
-
-    await runWithConcurrency(
-      preparedDocs,
-      SCAN_CONCURRENCY,
-      async (doc) => {
-        if (doc.isDuplicate) {
-          setDocs(prev => prev.map(item =>
-            item.id === doc.id
-              ? {
-                  ...item,
-                  status: 'error',
-                  accepted: false,
-                  errorStage: 'duplicate_document',
-                  error: 'This document appears to be a duplicate of one you have already imported.',
-                }
-              : item,
-          ));
-          return;
-        }
-        await processDoc(doc.id, doc.file);
-      },
+    // Mark duplicates as errors immediately; only queue the rest.
+    const docsWithDupErrors = preparedDocs.map(doc =>
+      doc.isDuplicate
+        ? {
+            ...doc,
+            status: 'error' as const,
+            accepted: false,
+            errorStage: 'duplicate_document',
+            error: 'This document appears to be a duplicate of one you have already imported.',
+          }
+        : doc,
     );
 
-    setStep('review');
+    // Reset all queue state from any previous batch.
+    retryTimersRef.current.forEach(t => clearTimeout(t));
+    retryTimersRef.current.clear();
+    retryAttemptsRef.current.clear();
+    activeCountRef.current = 0;
+
+    setDocs(docsWithDupErrors);
+    queueRef.current = docsWithDupErrors
+      .filter(d => d.status === 'pending')
+      .map(d => d.id);
+
+    dispatchNext();
+    // Step transition to 'review' is handled by the batch-completion useEffect.
   };
 
   // ── Retry a failed doc ─────────────────────────────────────────────────────
 
-  const retryDoc = async (docId: string) => {
-    const doc = docs.find(d => d.id === docId);
-    if (!doc) return;
-    // Reset duplicate / rejected state before re-scanning
-    setDocs(prev => prev.map(item =>
-      item.id === docId ? { ...item, accepted: true, isDuplicate: false } : item,
+  const retryDoc = (docId: string) => {
+    // Cancel any pending retry timer so we don't get a duplicate scan.
+    const existing = retryTimersRef.current.get(docId);
+    if (existing !== undefined) {
+      clearTimeout(existing);
+      retryTimersRef.current.delete(docId);
+    }
+    // Clear attempt count — this is a fresh user-initiated retry.
+    retryAttemptsRef.current.delete(docId);
+
+    setDocs(prev => prev.map(d =>
+      d.id === docId
+        ? { ...d, status: 'pending', accepted: true, isDuplicate: false,
+            error: undefined, errorStage: undefined,
+            retryAttempt: undefined, retryWaitMs: undefined }
+        : d,
     ));
-    await processDoc(doc.id, doc.file);
+
+    queueRef.current.push(docId);
+    dispatchNext();
   };
 
   // ── Remove a doc from the list ─────────────────────────────────────────────
 
   const removeDoc = (docId: string) => {
+    // Cancel any pending retry timer and scrub from the queue.
+    const existing = retryTimersRef.current.get(docId);
+    if (existing !== undefined) {
+      clearTimeout(existing);
+      retryTimersRef.current.delete(docId);
+    }
+    retryAttemptsRef.current.delete(docId);
+    queueRef.current = queueRef.current.filter(id => id !== docId);
+
     setDocs(prev => {
       const removed = prev.find(d => d.id === docId);
       if (removed?.preview) try { URL.revokeObjectURL(removed.preview); } catch {}
@@ -1620,12 +1730,12 @@ export default function Scanner() {
               className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
               disabled={
                 savableDocuments.length === 0 ||
-                docs.some(d => d.status === 'processing' || d.status === 'retrying')
+                docs.some(d => d.status === 'processing' || d.status === 'retrying' || d.status === 'pending')
               }
               onClick={confirmAndSave}
             >
               <CheckCircle2 className="w-5 h-5 mr-2" />
-              {docs.some(d => d.status === 'processing' || d.status === 'retrying')
+              {docs.some(d => d.status === 'processing' || d.status === 'retrying' || d.status === 'pending')
                 ? 'Scanning in progress…'
                 : `Confirm & Save ${savableDocuments.length} Document${savableDocuments.length !== 1 ? 's' : ''}`
               }

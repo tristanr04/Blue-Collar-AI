@@ -1,1 +1,2 @@
 - [BCFAI Architecture](bcfai-architecture.md) — frontend-only localStorage app + API server for AI scan/chat; key routing and integration details.
+- [BCFAI Scanner Queue Refactor](bcfai-scanner-queue.md) — slot-releasing 429 queue, parseRetryDelay clamping, api.ts error shape; all complete as of 2026-08-04.

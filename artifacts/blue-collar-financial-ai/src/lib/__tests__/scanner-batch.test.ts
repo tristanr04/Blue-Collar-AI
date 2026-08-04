@@ -1,9 +1,9 @@
 /**
  * Unit tests for scanner batch-processing helpers.
  *
- * These tests cover mergeUniqueFiles, runWithConcurrency, duplicate detection,
- * document filtering, progress counts, preview URL cleanup patterns, and
- * rate-limit (429) retry logic.
+ * These tests cover mergeUniqueFiles, duplicate detection, document filtering,
+ * progress counts, preview URL cleanup patterns, and rate-limit (429) retry
+ * logic (is429Error, parseRetryDelay, clampRetryMs, simulateQueue).
  * Pure functions are replicated here because they are not exported from
  * Scanner.tsx.  Keep in sync with changes to those functions.
  */
@@ -15,60 +15,143 @@ import { describe, it, expect, vi } from 'vitest';
 const MAX_BATCH_FILES = 20;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const SCAN_CONCURRENCY = 2;
-const RETRY_DELAYS_MS = [2000, 4000, 8000] as const;
+const RETRY_DELAYS_MS = [2_000, 4_000, 8_000] as const;
 const MAX_RATE_LIMIT_RETRIES = 3;
+const CLAMP_MIN_MS = 1_000;
+const CLAMP_MAX_MS = 30_000;
 
 // ─── Rate-limit helpers (keep in sync with Scanner.tsx) ───────────────────────
 
-function is429Error(err: unknown): { retryAfterMs: number } | null {
+function clampRetryMs(ms: number): number {
+  return Math.max(CLAMP_MIN_MS, Math.min(CLAMP_MAX_MS, Math.round(ms)));
+}
+
+function is429Error(err: unknown): {
+  retryAfterHeader: string | null;
+  retryAfterBodyMs: number | undefined;
+} | null {
   if (!(err instanceof Error)) return null;
   try {
     const parsed = JSON.parse(err.message) as Record<string, unknown>;
     const status = parsed.httpStatus;
     const msg = typeof parsed.message === 'string' ? parsed.message.toLowerCase() : '';
     if (status === 429 || msg.includes('too many requests') || msg.includes('rate limit')) {
-      const retryAfterSec = typeof parsed.retryAfter === 'number' ? parsed.retryAfter : 0;
-      return { retryAfterMs: retryAfterSec > 0 ? retryAfterSec * 1000 : 0 };
+      return {
+        retryAfterHeader:
+          typeof parsed.retryAfterHeader === 'string' ? parsed.retryAfterHeader : null,
+        retryAfterBodyMs:
+          typeof parsed.retryAfterBodyMs === 'number' ? parsed.retryAfterBodyMs : undefined,
+      };
     }
   } catch { /* not JSON */ }
   const raw = err.message.toLowerCase();
   if (raw.includes('429') || raw.includes('too many requests') || raw.includes('rate limit')) {
-    return { retryAfterMs: 0 };
+    return { retryAfterHeader: null, retryAfterBodyMs: undefined };
   }
   return null;
 }
 
-type ScanResult = { docType: string };
-
-async function scanWithRetry(
-  _file: unknown,
-  _token: string | null,
-  onRetrying: (attempt: number, waitMs: number) => void,
-  scanFn: () => Promise<ScanResult>,
-): Promise<ScanResult> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await scanFn();
-    } catch (err) {
-      const rl = is429Error(err);
-      if (rl === null || attempt >= MAX_RATE_LIMIT_RETRIES) throw err;
-      const waitMs = rl.retryAfterMs > 0
-        ? rl.retryAfterMs
-        : (RETRY_DELAYS_MS[attempt] ?? 8000);
-      onRetrying(attempt + 1, waitMs);
-      await new Promise<void>(resolve => setTimeout(resolve, 1)); // use 1ms in tests
+function parseRetryDelay(
+  retryAfterHeader: string | null,
+  retryAfterBodyMs: number | undefined,
+  attempt: number,
+): number {
+  if (retryAfterBodyMs !== undefined && retryAfterBodyMs > 0) {
+    return clampRetryMs(retryAfterBodyMs);
+  }
+  if (retryAfterHeader) {
+    const trimmed = retryAfterHeader.trim();
+    const numSec = Number(trimmed);
+    if (!isNaN(numSec) && trimmed !== '') {
+      return clampRetryMs(numSec * 1_000);
+    }
+    const dateMs = new Date(retryAfterHeader).getTime();
+    if (!isNaN(dateMs)) {
+      return clampRetryMs(dateMs - Date.now());
     }
   }
+  return RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
 }
 
-function make429Error(opts?: { retryAfter?: number; message?: string }): Error {
+function make429Error(opts?: {
+  retryAfterHeader?: string;
+  retryAfterBodyMs?: number;
+  message?: string;
+}): Error {
   return new Error(JSON.stringify({
     stage: 'backend_receipt',
     httpStatus: 429,
     message: opts?.message ?? 'Too Many Requests',
     filename: 'test.jpg',
-    ...(opts?.retryAfter !== undefined ? { retryAfter: opts.retryAfter } : {}),
+    ...(opts?.retryAfterHeader !== undefined ? { retryAfterHeader: opts.retryAfterHeader } : {}),
+    ...(opts?.retryAfterBodyMs !== undefined ? { retryAfterBodyMs: opts.retryAfterBodyMs } : {}),
   }));
+}
+
+/**
+ * Simulates the queue dispatcher from Scanner.tsx.  Runs at most `concurrency`
+ * workers in parallel; each worker processes a single doc ID.  On a 429 the
+ * worker IMMEDIATELY returns (simulating slot-release), and the doc is
+ * rescheduled with a 0ms delay (fast test); the retry attempt count is tracked.
+ *
+ * @param docIds   IDs to process.
+ * @param scanFn   Async function that may throw a 429 error.
+ * @returns        Map of docId → total call count.
+ */
+async function simulateQueue(
+  docIds: string[],
+  concurrency: number,
+  scanFn: (id: string, attempt: number) => Promise<void>,
+): Promise<Map<string, number>> {
+  const callCounts = new Map<string, number>(docIds.map(id => [id, 0]));
+  const retryAttempts = new Map<string, number>(docIds.map(id => [id, 0]));
+  const queue = [...docIds];
+  let active = 0;
+  /** Tracks setTimeout handles scheduled for retried docs — prevents early resolve. */
+  let pendingRetries = 0;
+
+  const settle = (resolve: () => void) => {
+    if (queue.length === 0 && active === 0 && pendingRetries === 0) resolve();
+  };
+
+  await new Promise<void>(resolve => {
+    if (docIds.length === 0) { resolve(); return; }
+
+    function dispatchNext(): void {
+      while (active < concurrency && queue.length > 0) {
+        const id = queue.shift()!;
+        active++;
+        const attempt = retryAttempts.get(id) ?? 0;
+        callCounts.set(id, (callCounts.get(id) ?? 0) + 1);
+
+        scanFn(id, attempt)
+          .then(() => { /* terminal success */ })
+          .catch(err => {
+            const rl = is429Error(err);
+            if (rl && attempt < MAX_RATE_LIMIT_RETRIES) {
+              // Release slot immediately; re-queue after a microtick.
+              retryAttempts.set(id, attempt + 1);
+              pendingRetries++;
+              setTimeout(() => {
+                pendingRetries--;
+                queue.unshift(id);
+                dispatchNext();
+                settle(resolve);
+              }, 0);
+            }
+            // fatal or exhausted — drop it
+          })
+          .finally(() => {
+            active--;
+            settle(resolve);
+            dispatchNext();
+          });
+      }
+    }
+    dispatchNext();
+  });
+
+  return callCounts;
 }
 
 function mergeUniqueFiles(current: File[], incoming: File[]): File[] {
@@ -82,24 +165,6 @@ function mergeUniqueFiles(current: File[], incoming: File[]): File[] {
     }
   }
   return merged.slice(0, MAX_BATCH_FILES);
-}
-
-async function runWithConcurrency<T>(
-  items: T[],
-  limit: number,
-  worker: (item: T, index: number) => Promise<void>,
-): Promise<void> {
-  let nextIndex = 0;
-  async function runWorker(): Promise<void> {
-    while (true) {
-      const index = nextIndex;
-      nextIndex += 1;
-      if (index >= items.length) return;
-      await worker(items[index], index);
-    }
-  }
-  const workers = Array.from({ length: Math.min(limit, items.length) }, () => runWorker());
-  await Promise.all(workers);
 }
 
 /** Create a fake File with controlled size. */
@@ -137,9 +202,9 @@ describe('scanner batch', () => {
   it('never processes more than two documents simultaneously', async () => {
     let active = 0;
     let maxActive = 0;
-    const items = Array.from({ length: 6 }, (_, i) => i);
+    const ids = Array.from({ length: 6 }, (_, i) => String(i));
 
-    await runWithConcurrency(items, SCAN_CONCURRENCY, async () => {
+    await simulateQueue(ids, SCAN_CONCURRENCY, async () => {
       active++;
       maxActive = Math.max(maxActive, active);
       await new Promise(r => setTimeout(r, 15));
@@ -152,26 +217,22 @@ describe('scanner batch', () => {
 
   // 4. One failed document does not stop the others
   it('one failing item does not prevent the rest from completing', async () => {
-    const completed: number[] = [];
-    const items = [0, 1, 2, 3, 4];
+    const completed: string[] = [];
+    const ids = ['0', '1', '2', '3', '4'];
 
-    // Production pattern: processDoc self-catches, so the worker never throws
-    await runWithConcurrency(items, 2, async (item) => {
-      try {
-        if (item === 2) throw new Error('simulated scan failure');
-        await new Promise(r => setTimeout(r, 5));
-        completed.push(item);
-      } catch {
-        // Worker self-catches — batch continues
-      }
+    // A non-429 error is terminal; the queue continues with the rest.
+    await simulateQueue(ids, 2, async (id) => {
+      if (id === '2') throw new Error('simulated scan failure');
+      await new Promise(r => setTimeout(r, 5));
+      completed.push(id);
     });
 
     expect(completed).toHaveLength(4);
-    expect(completed).not.toContain(2);
-    expect(completed).toContain(0);
-    expect(completed).toContain(1);
-    expect(completed).toContain(3);
-    expect(completed).toContain(4);
+    expect(completed).not.toContain('2');
+    expect(completed).toContain('0');
+    expect(completed).toContain('1');
+    expect(completed).toContain('3');
+    expect(completed).toContain('4');
   });
 
   // 5. Retrying only one failed document
@@ -369,22 +430,30 @@ describe('scanner batch', () => {
 
 // ─── Rate-limit (429) regression tests ────────────────────────────────────────
 
-describe('rate-limit retry (is429Error + scanWithRetry)', () => {
+describe('rate-limit helpers (is429Error, clampRetryMs, parseRetryDelay)', () => {
 
   // 16. is429Error recognizes httpStatus:429
   it('is429Error detects httpStatus 429 in structured JSON error', () => {
-    expect(is429Error(make429Error())).not.toBeNull();
-    expect(is429Error(make429Error())).toMatchObject({ retryAfterMs: 0 });
-  });
-
-  // 17. is429Error reads Retry-After header value
-  it('is429Error converts retryAfter seconds to milliseconds', () => {
-    const result = is429Error(make429Error({ retryAfter: 5 }));
+    const result = is429Error(make429Error());
     expect(result).not.toBeNull();
-    expect(result!.retryAfterMs).toBe(5000);
+    expect(result).toMatchObject({ retryAfterHeader: null, retryAfterBodyMs: undefined });
   });
 
-  // 18. is429Error is null for non-rate-limit errors
+  // 17. is429Error reads retryAfterHeader
+  it('is429Error passes through retryAfterHeader string', () => {
+    const result = is429Error(make429Error({ retryAfterHeader: '10' }));
+    expect(result).not.toBeNull();
+    expect(result!.retryAfterHeader).toBe('10');
+  });
+
+  // 18. is429Error reads retryAfterBodyMs
+  it('is429Error passes through retryAfterBodyMs number', () => {
+    const result = is429Error(make429Error({ retryAfterBodyMs: 5000 }));
+    expect(result).not.toBeNull();
+    expect(result!.retryAfterBodyMs).toBe(5000);
+  });
+
+  // 19. is429Error returns null for non-rate-limit errors
   it('is429Error returns null for non-429 errors', () => {
     expect(is429Error(new Error('Network error'))).toBeNull();
     expect(is429Error(new Error(JSON.stringify({ httpStatus: 500, message: 'Server error' })))).toBeNull();
@@ -393,120 +462,96 @@ describe('rate-limit retry (is429Error + scanWithRetry)', () => {
     expect(is429Error(null)).toBeNull();
   });
 
-  // 19. is429Error catches bare "too many requests" string errors
+  // 20. is429Error catches bare "too many requests" string errors
   it('is429Error detects bare "too many requests" message', () => {
     expect(is429Error(new Error('too many requests'))).not.toBeNull();
     expect(is429Error(new Error('HTTP 429 rate limit exceeded'))).not.toBeNull();
   });
 
-  // 20. scanWithRetry succeeds immediately when no 429
-  it('scanWithRetry returns on first attempt when no rate limit', async () => {
-    const calls: number[] = [];
-    const retries: number[] = [];
-    const result = await scanWithRetry(null, null, (attempt) => retries.push(attempt), async () => {
-      calls.push(1);
-      return { docType: 'Paystub' };
-    });
-    expect(result.docType).toBe('Paystub');
-    expect(calls).toHaveLength(1);
-    expect(retries).toHaveLength(0);
+  // 21. clampRetryMs enforces bounds
+  it('clampRetryMs clamps below CLAMP_MIN_MS and above CLAMP_MAX_MS', () => {
+    expect(clampRetryMs(0)).toBe(CLAMP_MIN_MS);
+    expect(clampRetryMs(500)).toBe(CLAMP_MIN_MS);
+    expect(clampRetryMs(5_000)).toBe(5_000);
+    expect(clampRetryMs(30_000)).toBe(CLAMP_MAX_MS);
+    expect(clampRetryMs(60_000)).toBe(CLAMP_MAX_MS);
+    expect(clampRetryMs(1_550_000)).toBe(CLAMP_MAX_MS); // the "1550 seconds" bug
   });
 
-  // 21. scanWithRetry retries on 429 and succeeds on 2nd attempt
-  it('scanWithRetry retries once after a 429 and succeeds', async () => {
-    let callCount = 0;
-    const retries: Array<{ attempt: number; waitMs: number }> = [];
-
-    const result = await scanWithRetry(null, null,
-      (attempt, waitMs) => retries.push({ attempt, waitMs }),
-      async () => {
-        callCount++;
-        if (callCount === 1) throw make429Error();
-        return { docType: 'Checking Account' };
-      },
-    );
-
-    expect(result.docType).toBe('Checking Account');
-    expect(callCount).toBe(2);
-    expect(retries).toHaveLength(1);
-    expect(retries[0].attempt).toBe(1);
-    expect(retries[0].waitMs).toBe(RETRY_DELAYS_MS[0]); // exponential back-off
+  // 22. parseRetryDelay priority: bodyMs first
+  it('parseRetryDelay prefers retryAfterBodyMs over header', () => {
+    const delay = parseRetryDelay('60', 5_000, 0);
+    expect(delay).toBe(5_000); // body 5000ms wins over header 60s=60000ms
   });
 
-  // 22. scanWithRetry honors Retry-After header over back-off table
-  it('scanWithRetry uses Retry-After value instead of exponential back-off', async () => {
-    let callCount = 0;
-    const retries: Array<{ attempt: number; waitMs: number }> = [];
-
-    await scanWithRetry(null, null,
-      (attempt, waitMs) => retries.push({ attempt, waitMs }),
-      async () => {
-        callCount++;
-        if (callCount === 1) throw make429Error({ retryAfter: 7 }); // 7-second header
-        return { docType: 'Credit Card' };
-      },
-    );
-
-    expect(retries[0].waitMs).toBe(7000); // Retry-After 7s → 7000ms
+  // 23. parseRetryDelay: numeric header (seconds)
+  it('parseRetryDelay converts numeric header string from seconds to ms', () => {
+    const delay = parseRetryDelay('7', undefined, 0);
+    expect(delay).toBe(7_000);
   });
 
-  // 23. scanWithRetry exhausts 3 retries then throws
-  it('scanWithRetry gives up after MAX_RATE_LIMIT_RETRIES and throws', async () => {
-    let callCount = 0;
-    const retries: number[] = [];
-
-    await expect(
-      scanWithRetry(null, null,
-        (attempt) => retries.push(attempt),
-        async () => {
-          callCount++;
-          throw make429Error();
-        },
-      ),
-    ).rejects.toThrow();
-
-    // Initial call + 3 retries = 4 total calls
-    expect(callCount).toBe(MAX_RATE_LIMIT_RETRIES + 1);
-    expect(retries).toHaveLength(MAX_RATE_LIMIT_RETRIES);
-    expect(retries).toEqual([1, 2, 3]);
+  // 24. parseRetryDelay: numeric header clamped above 30 s
+  it('parseRetryDelay clamps a 1550-second numeric header to CLAMP_MAX_MS', () => {
+    const delay = parseRetryDelay('1550', undefined, 0);
+    expect(delay).toBe(CLAMP_MAX_MS); // the "1550 seconds" display bug fixed
   });
 
-  // 24. 429 on one doc in a 12-doc batch does not affect completed docs
-  it('12-doc batch: 429 on 2 docs does not block the other 10', async () => {
+  // 25. parseRetryDelay: HTTP-date header
+  it('parseRetryDelay parses an HTTP-date Retry-After header', () => {
+    // Set a date 10 seconds in the future
+    const futureDate = new Date(Date.now() + 10_000).toUTCString();
+    const delay = parseRetryDelay(futureDate, undefined, 0);
+    // Should be ~10s, clamped to [1000, 30000]
+    expect(delay).toBeGreaterThanOrEqual(CLAMP_MIN_MS);
+    expect(delay).toBeLessThanOrEqual(CLAMP_MAX_MS);
+  });
+
+  // 26. parseRetryDelay: HTTP-date far in future clamped
+  it('parseRetryDelay clamps a far-future HTTP-date to CLAMP_MAX_MS', () => {
+    const farFuture = new Date(Date.now() + 600_000).toUTCString(); // 10 min
+    const delay = parseRetryDelay(farFuture, undefined, 0);
+    expect(delay).toBe(CLAMP_MAX_MS);
+  });
+
+  // 27. parseRetryDelay: falls back to exponential back-off
+  it('parseRetryDelay falls back to RETRY_DELAYS_MS when no header or body', () => {
+    expect(parseRetryDelay(null, undefined, 0)).toBe(RETRY_DELAYS_MS[0]);
+    expect(parseRetryDelay(null, undefined, 1)).toBe(RETRY_DELAYS_MS[1]);
+    expect(parseRetryDelay(null, undefined, 2)).toBe(RETRY_DELAYS_MS[2]);
+    expect(parseRetryDelay(null, undefined, 99)).toBe(RETRY_DELAYS_MS[2]); // capped at last
+  });
+
+  // 28. 12-doc batch: slot released on 429, other docs not blocked
+  it('12-doc batch: 429 on 2 docs releases slots so the other 10 run freely', async () => {
     const TOTAL = 12;
-    const RATE_LIMITED_IDS = new Set([2, 7]); // docs that get one 429 each
-    const completed: number[] = [];
-    const retriedIds: number[] = [];
-    const callCounts = new Array(TOTAL).fill(0);
+    const RATE_LIMITED = new Set(['2', '7']);
+    const completed: string[] = [];
 
-    const items = Array.from({ length: TOTAL }, (_, i) => i);
-
-    await runWithConcurrency(items, SCAN_CONCURRENCY, async (id) => {
-      await scanWithRetry(null, null,
-        () => retriedIds.push(id),
-        async () => {
-          callCounts[id]++;
-          if (RATE_LIMITED_IDS.has(id) && callCounts[id] === 1) {
-            throw make429Error();
-          }
-          completed.push(id);
-        },
-      );
-    });
+    const callCounts = await simulateQueue(
+      Array.from({ length: TOTAL }, (_, i) => String(i)),
+      SCAN_CONCURRENCY,
+      async (id, attempt) => {
+        if (RATE_LIMITED.has(id) && attempt === 0) throw make429Error();
+        completed.push(id);
+      },
+    );
 
     expect(completed).toHaveLength(TOTAL); // all 12 complete
-    expect(retriedIds.sort()).toEqual([2, 7]); // exactly the two rate-limited docs retried
-    // Rate-limited docs needed 2 scanFile calls; others needed 1
-    RATE_LIMITED_IDS.forEach(id => expect(callCounts[id]).toBe(2));
-    items.filter(i => !RATE_LIMITED_IDS.has(i)).forEach(id => expect(callCounts[id]).toBe(1));
+    RATE_LIMITED.forEach(id => expect(callCounts.get(id)).toBe(2));
+    Array.from({ length: TOTAL }, (_, i) => String(i))
+      .filter(id => !RATE_LIMITED.has(id))
+      .forEach(id => expect(callCounts.get(id)).toBe(1));
   });
 
-  // 25. Confirm disabled while docs are processing or retrying
-  it('Confirm is disabled when any doc is processing or retrying', () => {
+  // 29. Confirm disabled while any doc is processing, retrying, or pending
+  it('Confirm is disabled when any doc is processing, retrying, or pending', () => {
     type DocStatus = 'pending' | 'processing' | 'retrying' | 'done' | 'error';
     const isConfirmDisabled = (docs: Array<{ status: DocStatus; accepted: boolean }>) => {
       const savable = docs.filter(d => d.status === 'done' && d.accepted);
-      return savable.length === 0 || docs.some(d => d.status === 'processing' || d.status === 'retrying');
+      return (
+        savable.length === 0 ||
+        docs.some(d => d.status === 'processing' || d.status === 'retrying' || d.status === 'pending')
+      );
     };
 
     // All done and accepted → enabled
@@ -527,13 +572,19 @@ describe('rate-limit retry (is429Error + scanWithRetry)', () => {
       { status: 'retrying', accepted: true },
     ])).toBe(true);
 
+    // One pending → disabled (new condition)
+    expect(isConfirmDisabled([
+      { status: 'done', accepted: true },
+      { status: 'pending', accepted: true },
+    ])).toBe(true);
+
     // All done but none accepted → disabled
     expect(isConfirmDisabled([
       { status: 'done', accepted: false },
     ])).toBe(true);
   });
 
-  // 26. retryingCount is accurate in progress counts
+  // 30. retryingCount is separate from processingCount in progress totals
   it('retryingCount is derived correctly from document statuses', () => {
     type DocStatus = 'pending' | 'processing' | 'retrying' | 'done' | 'error';
     const docs: Array<{ status: DocStatus }> = [
@@ -559,10 +610,10 @@ describe('rate-limit retry (is429Error + scanWithRetry)', () => {
     expect(activeCount).toBe(4);    // processing + retrying + pending
   });
 
-  // 27. Exponential back-off table: 2 s, 4 s, 8 s
-  it('back-off delays are approximately 2, 4, 8 seconds', () => {
-    expect(RETRY_DELAYS_MS[0]).toBe(2000);
-    expect(RETRY_DELAYS_MS[1]).toBe(4000);
-    expect(RETRY_DELAYS_MS[2]).toBe(8000);
+  // 31. Exponential back-off table: 2 s, 4 s, 8 s
+  it('back-off delays are 2000, 4000, 8000 ms', () => {
+    expect(RETRY_DELAYS_MS[0]).toBe(2_000);
+    expect(RETRY_DELAYS_MS[1]).toBe(4_000);
+    expect(RETRY_DELAYS_MS[2]).toBe(8_000);
   });
 });

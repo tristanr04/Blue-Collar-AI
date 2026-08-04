@@ -150,8 +150,12 @@ export async function scanFile(
   // ── End instrumentation ────────────────────────────────────────────────────
 
   if (!res.ok) {
-    const retryAfterRaw = res.headers.get("retry-after");
-    const retryAfterSec = retryAfterRaw !== null ? parseInt(retryAfterRaw, 10) : undefined;
+    const retryAfterHeader = res.headers.get("retry-after");
+    // Some APIs return retryAfterMs (milliseconds) in the JSON body.
+    const retryAfterBodyMs =
+      typeof (json as any)?.retryAfterMs === "number"
+        ? ((json as any).retryAfterMs as number)
+        : undefined;
     throw new Error(
       JSON.stringify({
         stage: (json as any).stage ?? "backend_receipt",
@@ -161,9 +165,8 @@ export async function scanFile(
           `Upload failed with HTTP ${res.status}`,
         filename: file.name,
         httpStatus: res.status,
-        ...(retryAfterSec !== undefined && !Number.isNaN(retryAfterSec)
-          ? { retryAfter: retryAfterSec }
-          : {}),
+        ...(retryAfterHeader !== null ? { retryAfterHeader } : {}),
+        ...(retryAfterBodyMs !== undefined ? { retryAfterBodyMs } : {}),
       }),
     );
   }
