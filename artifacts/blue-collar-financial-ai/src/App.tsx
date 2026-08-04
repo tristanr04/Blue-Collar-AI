@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
+import '@/scanner-command.css';
 
 import { StoreProvider } from '@/lib/store';
 import { JobQueueProvider } from '@/lib/jobQueue';
