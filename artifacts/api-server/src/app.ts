@@ -9,6 +9,7 @@ import { aiKillSwitch, aiGlobalSemaphore } from "./middlewares/ai-guard.js";
 import { requireAuthenticatedUser } from "./middlewares/auth.js";
 
 const app: Express = express();
+const MAX_SCAN_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 // Replit and most production hosts terminate HTTPS behind a reverse proxy.
 app.set("trust proxy", 1);
@@ -38,6 +39,31 @@ app.use(
 );
 
 app.use(makeCors());
+
+// Reject obviously oversized multipart scans before Multer buffers the entire
+// request in memory. Multer retains its own file-size limit as a second line of
+// defense because Content-Length can be omitted or falsified.
+app.use("/api/scan-document", (req, res, next) => {
+  if (req.method !== "POST") {
+    next();
+    return;
+  }
+
+  const contentLength = Number(req.headers["content-length"] ?? 0);
+  if (Number.isFinite(contentLength) && contentLength > MAX_SCAN_UPLOAD_BYTES) {
+    logger.warn(
+      { contentLength, maxBytes: MAX_SCAN_UPLOAD_BYTES, ip: req.ip },
+      "scanner upload rejected before buffering",
+    );
+    res.status(413).json({
+      stage: "upload_size_limit",
+      error: "Document is too large. Maximum upload size is 10 MB.",
+    });
+    return;
+  }
+
+  next();
+});
 
 app.use(express.json({ limit: "250kb" }));
 app.use(express.urlencoded({ extended: true, limit: "250kb" }));
