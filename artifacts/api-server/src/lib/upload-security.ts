@@ -1,5 +1,5 @@
 import { fileTypeFromBuffer } from "file-type";
-import sharp from "sharp";
+import sharp, { type Metadata as SharpMetadata } from "sharp";
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_IMAGE_PIXELS = 25_000_000;
@@ -72,7 +72,7 @@ export interface NormalizedImage {
  * Relabeling HEIC bytes as JPEG is never allowed.
  */
 export async function normalizeImage(buffer: Buffer): Promise<NormalizedImage> {
-  let metadata: sharp.Metadata;
+  let metadata: SharpMetadata;
 
   try {
     metadata = await sharp(buffer, {

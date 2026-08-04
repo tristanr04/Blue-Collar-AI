@@ -83,7 +83,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
             Settings
           </Link>
           <div className="flex items-center gap-3 px-3 py-2">
-            <UserButton afterSignOutUrl="/welcome" />
+            <UserButton />
             <span className="text-sm text-slate-600 dark:text-slate-400">Account</span>
           </div>
         </div>
@@ -105,7 +105,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
             <Link href="/ask-ai" className="p-2 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-lg">
               <Sparkles className="w-5 h-5" />
             </Link>
-            <UserButton afterSignOutUrl="/welcome" />
+            <UserButton />
           </div>
         </header>
 
