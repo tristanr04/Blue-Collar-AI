@@ -1,121 +1,95 @@
 import React, { useEffect } from 'react';
 import { useLocation } from 'wouter';
-import { Plus, ArrowRight, TrendingUp, PiggyBank, Target, UploadCloud, Sparkles, AlertTriangle } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import {
+  ArrowRight, Banknote, Bell, Bot, BriefcaseBusiness, CalendarClock,
+  CircleDollarSign, CreditCard, FileScan, Gauge, Home, Landmark,
+  PiggyBank, ShieldCheck, Sparkles, TrendingUp, WalletCards,
+} from 'lucide-react';
 import { useStore } from '@/lib/store';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
-// ─── Financial Health Score ───────────────────────────────────────────────────
+const money = (value: number) => {
+  const abs = Math.abs(value || 0);
+  const formatted = abs.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return value < 0 ? `-$${formatted}` : `$${formatted}`;
+};
 
-interface ScoreBreakdown {
+function MetricCard({
+  label,
+  value,
+  icon: Icon,
+  tone,
+  detail,
+  onClick,
+}: {
   label: string;
-  score: number;
-  max: number;
-  tip: string;
-}
-
-function calcHealthScore(data: {
-  monthlyNet: number;
-  totalBills: number;
-  totalDebtMins: number;
-  liquidCash: number;
-  totalDebt: number;
-  debts: { interestRate: number; balance: number }[];
-  assets: { type: string; value: number }[];
-  paystubCount: number;
-  retirementValue: number;
-}): { score: number; breakdown: ScoreBreakdown[] } {
-  const { monthlyNet, totalBills, totalDebtMins, liquidCash, totalDebt, debts, retirementValue, paystubCount } = data;
-  const freeCash = monthlyNet - totalBills - totalDebtMins;
-  const monthlyExpenses = totalBills + totalDebtMins;
-  const breakdown: ScoreBreakdown[] = [];
-
-  // Only score categories where we have data
-  if (paystubCount > 0 && monthlyNet > 0) {
-    // 1. Positive cash flow (20 pts)
-    let cfScore = 0;
-    if (freeCash > monthlyNet * 0.2) cfScore = 20;
-    else if (freeCash > 0) cfScore = Math.round((freeCash / (monthlyNet * 0.2)) * 20);
-    else cfScore = 0;
-    breakdown.push({ label: 'Cash Flow', score: cfScore, max: 20, tip: cfScore < 20 ? 'Aim for 20%+ of take-home as free cash.' : 'Great cash flow!' });
-
-    // 2. Emergency fund (20 pts)
-    const emMonths = monthlyExpenses > 0 ? liquidCash / monthlyExpenses : 0;
-    let efScore = 0;
-    if (emMonths >= 6) efScore = 20;
-    else if (emMonths >= 3) efScore = 14;
-    else if (emMonths >= 1) efScore = 7;
-    breakdown.push({ label: 'Emergency Fund', score: efScore, max: 20, tip: efScore < 20 ? `You have ${emMonths.toFixed(1)} months — aim for 6.` : '6+ months saved!' });
-
-    // 3. Credit utilization (15 pts) — only if credit card data exists
-    const ccDebts = debts.filter(d => d.interestRate > 10);
-    const totalCcBalance = ccDebts.reduce((s, d) => s + d.balance, 0);
-    if (totalCcBalance > 0) {
-      // Approximate: >$5k high-interest = bad
-      const util = Math.min(totalCcBalance / 10000, 1);
-      let utilScore = util < 0.3 ? 15 : util < 0.6 ? 8 : 0;
-      breakdown.push({ label: 'Credit Use', score: utilScore, max: 15, tip: utilScore < 15 ? 'High-interest balances dragging your score.' : 'Low revolving debt — great!' });
-    }
-
-    // 4. Debt-to-income (15 pts)
-    const dti = monthlyNet > 0 ? totalDebtMins / monthlyNet : 0;
-    let dtiScore = 0;
-    if (dti <= 0.15) dtiScore = 15;
-    else if (dti <= 0.28) dtiScore = 10;
-    else if (dti <= 0.36) dtiScore = 5;
-    breakdown.push({ label: 'Debt-to-Income', score: dtiScore, max: 15, tip: dtiScore < 15 ? `Min payments are ${Math.round(dti * 100)}% of income.` : 'Debt payments well under control.' });
-
-    // 5. High-interest debt (10 pts)
-    const highInt = debts.filter(d => d.interestRate > 15);
-    let hiScore = highInt.length === 0 ? 10 : highInt.length === 1 ? 4 : 0;
-    if (highInt.length > 0) {
-      breakdown.push({ label: 'High-Interest Debt', score: hiScore, max: 10, tip: `${highInt.length} debt${highInt.length > 1 ? 's' : ''} above 15% APR — priority payoff.` });
-    } else {
-      breakdown.push({ label: 'High-Interest Debt', score: 10, max: 10, tip: 'No high-interest debt — excellent!' });
-    }
-
-    // 6. Retirement (10 pts)
-    let retScore = retirementValue > 0 ? 10 : 0;
-    breakdown.push({ label: 'Retirement', score: retScore, max: 10, tip: retScore === 0 ? 'Start contributing to a 401k or IRA.' : 'Contributing to retirement.' });
-  }
-
-  const totalMax = breakdown.reduce((s, b) => s + b.max, 0) || 100;
-  const totalScore = breakdown.reduce((s, b) => s + b.score, 0);
-  const score = totalMax > 0 ? Math.round((totalScore / totalMax) * 100) : 0;
-
-  return { score, breakdown };
-}
-
-function ScoreRing({ score }: { score: number }) {
-  const r = 44;
-  const circ = 2 * Math.PI * r;
-  const dash = (score / 100) * circ;
-  const color = score >= 70 ? '#10b981' : score >= 45 ? '#f59e0b' : '#ef4444';
-  const label = score >= 70 ? 'Good' : score >= 45 ? 'Fair' : 'Needs Work';
+  value: string;
+  icon: React.ComponentType<{ className?: string }>;
+  tone: 'blue' | 'green' | 'purple' | 'red';
+  detail?: string;
+  onClick?: () => void;
+}) {
+  const tones = {
+    blue: 'border-blue-500/20 bg-blue-500/10 text-blue-300',
+    green: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300',
+    purple: 'border-violet-500/20 bg-violet-500/10 text-violet-300',
+    red: 'border-rose-500/20 bg-rose-500/10 text-rose-300',
+  };
 
   return (
-    <div className="flex flex-col items-center justify-center">
-      <svg width="110" height="110" viewBox="0 0 110 110">
-        <circle cx="55" cy="55" r={r} fill="none" stroke="currentColor" strokeWidth="10" className="text-muted/20" />
-        <circle
-          cx="55" cy="55" r={r} fill="none" stroke={color} strokeWidth="10"
-          strokeDasharray={`${dash} ${circ}`}
-          strokeLinecap="round"
-          transform="rotate(-90 55 55)"
-          style={{ transition: 'stroke-dasharray 0.8s ease' }}
-        />
-        <text x="55" y="50" textAnchor="middle" className="text-2xl font-bold" fill={color} style={{ fontSize: 22, fontWeight: 700 }}>{score}</text>
-        <text x="55" y="68" textAnchor="middle" fill="currentColor" style={{ fontSize: 11, opacity: 0.6 }}>{label}</text>
-      </svg>
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-2xl border border-white/8 bg-white/[0.035] p-4 text-left transition hover:border-blue-400/30 hover:bg-white/[0.06]"
+    >
+      <div className={`mb-3 inline-flex h-9 w-9 items-center justify-center rounded-xl border ${tones[tone]}`}>
+        <Icon className="h-4 w-4" />
+      </div>
+      <div className="text-xs font-medium uppercase tracking-[0.13em] text-slate-500">{label}</div>
+      <div className="mt-1 text-xl font-semibold text-white">{value}</div>
+      {detail && <div className="mt-1 text-xs text-slate-500">{detail}</div>}
+    </button>
   );
 }
 
-// ─── Dashboard ────────────────────────────────────────────────────────────────
+function QuickAction({
+  label,
+  detail,
+  icon: Icon,
+  onClick,
+  primary,
+}: {
+  label: string;
+  detail: string;
+  icon: React.ComponentType<{ className?: string }>;
+  onClick: () => void;
+  primary?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={primary
+        ? 'group flex min-h-24 flex-col justify-between rounded-2xl border border-blue-400/40 bg-blue-600 p-4 text-left shadow-[0_14px_40px_rgba(37,99,235,0.24)] transition hover:bg-blue-500'
+        : 'group flex min-h-24 flex-col justify-between rounded-2xl border border-white/8 bg-white/[0.035] p-4 text-left transition hover:border-blue-400/30 hover:bg-white/[0.06]'}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <span className={primary
+          ? 'inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white/15 text-white'
+          : 'inline-flex h-10 w-10 items-center justify-center rounded-xl bg-slate-800 text-blue-300'}>
+          <Icon className="h-5 w-5" />
+        </span>
+        <ArrowRight className="h-4 w-4 text-white/50 transition group-hover:translate-x-1" />
+      </div>
+      <div>
+        <div className="font-semibold text-white">{label}</div>
+        <div className={primary ? 'mt-0.5 text-xs text-blue-100' : 'mt-0.5 text-xs text-slate-500'}>{detail}</div>
+      </div>
+    </button>
+  );
+}
 
 export default function Dashboard() {
-  const [_, setLocation] = useLocation();
+  const [, setLocation] = useLocation();
   const { profile, paystubs, bills, debts, assets } = useStore();
 
   useEffect(() => {
@@ -124,255 +98,226 @@ export default function Dashboard() {
 
   if (!profile) return null;
 
-  const freq = profile.payFrequency;
-  const multiplier = freq === 'Weekly' ? 4.33 : freq === 'Bi-Weekly' ? 2.17 : freq === 'Semi-Monthly' ? 2 : 1;
-  const latestStub = paystubs[0];
-  const weeklyNet = latestStub?.netPay ?? 0;
-  const weeklyGross = latestStub?.grossPay ?? 0;
-  const monthlyNet = Math.round(weeklyNet * multiplier);
-  const monthlyGross = Math.round(weeklyGross * multiplier);
+  const latestPaystub = paystubs[0];
+  const multiplier = profile.payFrequency === 'Weekly'
+    ? 4.33
+    : profile.payFrequency === 'Bi-Weekly'
+      ? 2.17
+      : profile.payFrequency === 'Semi-Monthly'
+        ? 2
+        : 1;
 
-  const totalBills = bills.reduce((s, b) => s + b.amount, 0);
-  const totalDebtMins = debts.reduce((s, d) => s + d.minimumPayment, 0);
-  const freeCashFlow = monthlyNet - totalBills - totalDebtMins;
+  const monthlyIncome = (latestPaystub?.netPay ?? 0) * multiplier;
+  const monthlyBills = bills.reduce((sum, bill) => sum + (bill.amount || 0), 0);
+  const monthlyDebtPayments = debts.reduce((sum, debt) => sum + (debt.minimumPayment || 0), 0);
+  const freeCash = monthlyIncome - monthlyBills - monthlyDebtPayments;
+  const totalDebt = debts.reduce((sum, debt) => sum + (debt.balance || 0), 0);
+  const cash = assets.filter(asset => asset.type === 'Cash').reduce((sum, asset) => sum + (asset.value || 0), 0);
+  const investments = assets.filter(asset => asset.type === 'Investment').reduce((sum, asset) => sum + (asset.value || 0), 0);
+  const homeEquity = assets
+    .filter(asset => /home|house|property|real estate/i.test(asset.name || ''))
+    .reduce((sum, asset) => sum + (asset.value || 0), 0);
+  const netWorth = assets.reduce((sum, asset) => sum + (asset.value || 0), 0) - totalDebt;
+  const emergencyMonths = monthlyBills + monthlyDebtPayments > 0
+    ? cash / (monthlyBills + monthlyDebtPayments)
+    : 0;
 
-  const cashAssets = assets.filter(a => a.type === 'Cash');
-  const investAssets = assets.filter(a => a.type === 'Investment');
-  const liquidCash = cashAssets.reduce((s, a) => s + a.value, 0);
-  const totalInvestments = investAssets.reduce((s, a) => s + a.value, 0);
-  const totalDebt = debts.reduce((s, d) => s + d.balance, 0);
-  const netWorth = assets.reduce((s, a) => s + a.value, 0) - totalDebt;
-
-  const retirementValue = assets.filter(a => a.type === 'Investment' && /401|ira|retirement/i.test(a.name)).reduce((s, a) => s + a.value, 0);
-  const monthlyExpenses = totalBills + totalDebtMins;
-  const emergencyMonths = monthlyExpenses > 0 ? +(liquidCash / monthlyExpenses).toFixed(1) : 0;
-
-  const { score, breakdown } = calcHealthScore({
-    monthlyNet, totalBills, totalDebtMins, liquidCash, totalDebt,
-    debts, assets, retirementValue, paystubCount: paystubs.length,
-  });
-
-  // Bar chart data
-  const chartData = [
-    { name: 'Gross Pay', value: monthlyGross, color: '#64748b' },
-    { name: 'Take Home', value: monthlyNet, color: '#10b981' },
-    { name: 'Bills', value: totalBills, color: '#f59e0b' },
-    { name: 'Debt Pmts', value: totalDebtMins, color: '#ef4444' },
-    { name: 'Free Cash', value: Math.max(0, freeCashFlow), color: '#6366f1' },
+  const scoreParts = [
+    monthlyIncome > 0 ? 20 : 0,
+    freeCash > 0 ? Math.min(20, Math.round((freeCash / Math.max(monthlyIncome, 1)) * 100)) : 0,
+    emergencyMonths >= 6 ? 20 : emergencyMonths >= 3 ? 14 : emergencyMonths >= 1 ? 7 : 0,
+    investments > 0 ? 20 : 0,
+    totalDebt === 0 ? 20 : totalDebt < monthlyIncome * 12 ? 14 : 7,
   ];
+  const healthScore = scoreParts.reduce((sum, value) => sum + value, 0);
+  const progress = Math.max(0, Math.min(100, Math.round((freeCash / Math.max(monthlyIncome, 1)) * 100)));
 
-  const fmt = (n: number) => n < 0
-    ? `-$${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
-    : `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  const priorities = [
+    bills[0] && {
+      icon: CalendarClock,
+      title: bills[0].name,
+      detail: bills[0].dueDate ? `Due ${bills[0].dueDate}` : 'Upcoming bill',
+      value: money(bills[0].amount || 0),
+      color: 'text-amber-300 bg-amber-500/10 border-amber-500/20',
+    },
+    debts[0] && {
+      icon: CreditCard,
+      title: debts[0].name,
+      detail: 'Minimum payment',
+      value: money(debts[0].minimumPayment || 0),
+      color: 'text-rose-300 bg-rose-500/10 border-rose-500/20',
+    },
+    investments > 0 && {
+      icon: TrendingUp,
+      title: 'Investment progress',
+      detail: `${assets.filter(asset => asset.type === 'Investment').length} linked accounts`,
+      value: money(investments),
+      color: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20',
+    },
+  ].filter(Boolean) as Array<{
+    icon: React.ComponentType<{ className?: string }>;
+    title: string;
+    detail: string;
+    value: string;
+    color: string;
+  }>;
 
   return (
-    <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-white">Hey, {profile.name}</h1>
-          <p className="text-slate-500 dark:text-slate-400 mt-1">Financial Command Center</p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" className="bg-white dark:bg-slate-900" onClick={() => setLocation('/scanner')}>
-            <UploadCloud className="w-4 h-4 mr-2" /> Scan Docs
-          </Button>
-          <Button className="bg-emerald-600 hover:bg-emerald-700 text-white" onClick={() => setLocation('/ask-ai')}>
-            <Sparkles className="w-4 h-4 mr-2" /> Ask AI
-          </Button>
-        </div>
-      </div>
+    <div className="min-h-full bg-[#050b15] text-white">
+      <div className="mx-auto max-w-6xl px-4 pb-28 pt-5 md:px-8 md:pb-10 md:pt-8">
+        <header className="mb-6 flex items-start justify-between gap-4">
+          <div>
+            <div className="mb-1 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-blue-400">
+              <ShieldCheck className="h-4 w-4" /> Financial Command Center
+            </div>
+            <h1 className="text-2xl font-semibold md:text-3xl">Good afternoon, {profile.name}</h1>
+            <p className="mt-1 text-sm text-slate-500">Here is the complete picture of your money today.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setLocation('/bills')}
+            aria-label="View bills"
+            className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/8 bg-white/[0.035] text-slate-300"
+          >
+            <Bell className="h-5 w-5" />
+          </button>
+        </header>
 
-      {/* Top metric strip */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {[
-          { label: 'Monthly Take-Home', value: fmt(monthlyNet), sub: `${freq} × ${multiplier}`, accent: false },
-          { label: 'Free Cash Flow', value: fmt(freeCashFlow), sub: 'After bills & min payments', accent: freeCashFlow > 0 },
-          { label: 'Liquid Cash', value: fmt(liquidCash), sub: `${emergencyMonths} months covered`, accent: false },
-          { label: 'Net Worth', value: fmt(netWorth), sub: 'Assets minus all debts', accent: false },
-        ].map((m) => (
-          <Card key={m.label} className="bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 shadow-sm">
-            <CardContent className="pt-4">
-              <div className="text-xs text-slate-500 dark:text-slate-400 mb-1">{m.label}</div>
-              <div className={`text-2xl font-bold ${m.accent ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-900 dark:text-white'}`}>
-                {m.value}
+        <section className="overflow-hidden rounded-3xl border border-emerald-400/25 bg-[radial-gradient(circle_at_top_right,rgba(34,197,94,0.16),transparent_40%),linear-gradient(145deg,rgba(9,24,33,0.98),rgba(6,15,27,0.98))] p-5 md:p-7">
+          <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
+            <div>
+              <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">Total net worth</div>
+              <div className="mt-2 text-4xl font-semibold tracking-tight md:text-5xl">{money(netWorth)}</div>
+              <div className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-300">
+                <TrendingUp className="h-3.5 w-3.5" /> Live from your confirmed accounts
               </div>
-              <div className="text-xs text-slate-400 mt-0.5">{m.sub}</div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      {/* Second row: Health Score + Chart */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Health Score */}
-        <Card className="bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Target className="w-4 h-4 text-emerald-600" /> Financial Health Score
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {paystubs.length === 0 ? (
-              <div className="text-center py-4 text-slate-500 text-sm">
-                <div className="mb-2">Add a paystub or scan documents to calculate your score.</div>
-                <Button variant="link" className="text-emerald-600 p-0" onClick={() => setLocation('/scanner')}>Scan documents →</Button>
+            </div>
+            <div className="grid grid-cols-2 gap-3 md:min-w-80">
+              <div className="rounded-2xl border border-white/8 bg-black/20 p-3">
+                <div className="text-xs text-slate-500">Monthly income</div>
+                <div className="mt-1 text-lg font-semibold">{money(monthlyIncome)}</div>
               </div>
-            ) : (
-              <div className="flex gap-4 items-start">
-                <ScoreRing score={score} />
-                <div className="flex-1 space-y-1.5">
-                  {breakdown.map((b) => (
-                    <div key={b.label}>
-                      <div className="flex justify-between items-center text-xs mb-0.5">
-                        <span className="text-slate-600 dark:text-slate-400">{b.label}</span>
-                        <span className="font-medium text-slate-900 dark:text-white">{b.score}/{b.max}</span>
-                      </div>
-                      <div className="h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full">
-                        <div
-                          className="h-full rounded-full bg-emerald-500 transition-all"
-                          style={{ width: `${(b.score / b.max) * 100}%` }}
-                        />
-                      </div>
-                      {b.score < b.max && (
-                        <div className="text-[10px] text-slate-400 mt-0.5">{b.tip}</div>
-                      )}
-                    </div>
-                  ))}
+              <div className="rounded-2xl border border-white/8 bg-black/20 p-3">
+                <div className="text-xs text-slate-500">Free cash</div>
+                <div className={freeCash >= 0 ? 'mt-1 text-lg font-semibold text-emerald-300' : 'mt-1 text-lg font-semibold text-rose-300'}>
+                  {money(freeCash)}
                 </div>
               </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Monthly Cash Flow Chart */}
-        <Card className="bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <TrendingUp className="w-4 h-4 text-emerald-600" /> Monthly Cash Flow
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {monthlyNet === 0 ? (
-              <div className="text-center py-4 text-slate-500 text-sm">Add paystub data to see your cash flow chart.</div>
-            ) : (
-              <ResponsiveContainer width="100%" height={160}>
-                <BarChart data={chartData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
-                  <YAxis tick={{ fontSize: 10 }} tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} tickLine={false} axisLine={false} />
-                  <Tooltip formatter={(v: number) => `$${v.toLocaleString()}`} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
-                  <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                    {chartData.map((entry, idx) => (
-                      <Cell key={idx} fill={entry.color} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Expanded metrics */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {[
-          { label: 'Total Debt', value: fmt(totalDebt), warn: totalDebt > monthlyNet * 6 },
-          { label: 'Investments', value: fmt(totalInvestments), warn: false },
-          { label: 'Monthly Bills', value: fmt(totalBills), warn: false },
-          { label: 'Emergency Fund', value: `${emergencyMonths} mo`, warn: emergencyMonths < 3 },
-        ].map(m => (
-          <div key={m.label} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 shadow-sm">
-            <div className="text-xs text-slate-500 dark:text-slate-400 mb-1 flex items-center gap-1">
-              {m.warn && <AlertTriangle className="w-3 h-3 text-amber-500" />}
-              {m.label}
             </div>
-            <div className="text-xl font-bold text-slate-900 dark:text-white">{m.value}</div>
           </div>
-        ))}
-      </div>
+        </section>
 
-      {/* Recent paystubs + next moves */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <Card className="bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 shadow-sm">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Target className="w-5 h-5 text-emerald-600" />
-              Recommended Next Moves
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ul className="space-y-4">
-              {breakdown.filter(b => b.score < b.max).slice(0, 3).map((b, i) => (
-                <li key={b.label} className="flex gap-3 items-start">
-                  <div className="w-7 h-7 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center text-amber-700 dark:text-amber-400 text-xs font-bold flex-shrink-0 mt-0.5">
-                    {i + 1}
+        <section className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+          <MetricCard label="Cash" value={money(cash)} icon={Banknote} tone="green" detail={`${emergencyMonths.toFixed(1)} months covered`} onClick={() => setLocation('/banking')} />
+          <MetricCard label="Investments" value={money(investments)} icon={TrendingUp} tone="blue" detail="Brokerage + retirement" onClick={() => setLocation('/investments')} />
+          <MetricCard label="Home equity" value={money(homeEquity)} icon={Home} tone="purple" detail="Tracked property value" />
+          <MetricCard label="Debt" value={money(-totalDebt)} icon={CreditCard} tone="red" detail={`${debts.length} active accounts`} onClick={() => setLocation('/debts')} />
+        </section>
+
+        <section className="mt-6">
+          <div className="mb-3 flex items-end justify-between">
+            <div>
+              <h2 className="font-semibold">Quick actions</h2>
+              <p className="text-xs text-slate-500">Keep your financial picture current.</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <QuickAction primary label="Scan documents" detail="Update everything with AI" icon={FileScan} onClick={() => setLocation('/scanner')} />
+            <QuickAction label="Ask Blue Collar AI" detail="Get a personalized answer" icon={Bot} onClick={() => setLocation('/ask-ai')} />
+            <QuickAction label="Run a scenario" detail="Test your next move" icon={Gauge} onClick={() => setLocation('/scenario')} />
+            <QuickAction label="View accounts" detail="Cash, debt and investing" icon={WalletCards} onClick={() => setLocation('/banking')} />
+          </div>
+        </section>
+
+        <div className="mt-6 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+          <section className="rounded-3xl border border-white/8 bg-white/[0.035] p-5">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="font-semibold">Monthly cash flow</h2>
+                <p className="text-xs text-slate-500">What remains after bills and minimum debt payments.</p>
+              </div>
+              <CircleDollarSign className="h-5 w-5 text-blue-300" />
+            </div>
+
+            <div className="mt-5 grid grid-cols-3 gap-3">
+              <div>
+                <div className="text-xs text-slate-500">Income</div>
+                <div className="mt-1 font-semibold text-emerald-300">{money(monthlyIncome)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500">Bills + debt</div>
+                <div className="mt-1 font-semibold text-rose-300">{money(monthlyBills + monthlyDebtPayments)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500">Available</div>
+                <div className="mt-1 font-semibold text-blue-300">{money(freeCash)}</div>
+              </div>
+            </div>
+
+            <div className="mt-5 h-2.5 overflow-hidden rounded-full bg-slate-800">
+              <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-emerald-400" style={{ width: `${progress}%` }} />
+            </div>
+            <div className="mt-2 flex justify-between text-xs text-slate-500">
+              <span>{progress}% of take-home remains</span>
+              <span>{money(monthlyBills)} in bills</span>
+            </div>
+          </section>
+
+          <section className="rounded-3xl border border-white/8 bg-white/[0.035] p-5">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="font-semibold">Financial health</h2>
+                <p className="text-xs text-slate-500">Built from the information you confirmed.</p>
+              </div>
+              <Sparkles className="h-5 w-5 text-emerald-300" />
+            </div>
+            <div className="mt-5 flex items-center gap-5">
+              <div className="relative h-28 w-28 shrink-0 rounded-full" style={{ background: `conic-gradient(#22c55e ${healthScore * 3.6}deg, #172033 0deg)` }}>
+                <div className="absolute inset-3 flex flex-col items-center justify-center rounded-full bg-[#09111e]">
+                  <div className="text-2xl font-semibold">{healthScore}</div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500">out of 100</div>
+                </div>
+              </div>
+              <div className="space-y-2 text-sm">
+                <div className="flex items-center gap-2 text-slate-300"><PiggyBank className="h-4 w-4 text-emerald-300" /> Emergency fund: {emergencyMonths.toFixed(1)} months</div>
+                <div className="flex items-center gap-2 text-slate-300"><BriefcaseBusiness className="h-4 w-4 text-blue-300" /> Investments: {money(investments)}</div>
+                <div className="flex items-center gap-2 text-slate-300"><Landmark className="h-4 w-4 text-violet-300" /> Net worth: {money(netWorth)}</div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <section className="mt-6 rounded-3xl border border-white/8 bg-white/[0.035] p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <h2 className="font-semibold">Today&apos;s priorities</h2>
+              <p className="text-xs text-slate-500">The next items that deserve your attention.</p>
+            </div>
+            <button type="button" onClick={() => setLocation('/bills')} className="text-xs font-medium text-blue-300">View all</button>
+          </div>
+
+          {priorities.length > 0 ? (
+            <div className="divide-y divide-white/5">
+              {priorities.map(({ icon: Icon, title, detail, value, color }) => (
+                <div key={`${title}-${detail}`} className="flex items-center gap-3 py-3 first:pt-1 last:pb-0">
+                  <div className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${color}`}>
+                    <Icon className="h-4 w-4" />
                   </div>
-                  <div>
-                    <div className="font-semibold text-slate-900 dark:text-slate-100 text-sm">{b.label}</div>
-                    <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{b.tip}</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-slate-100">{title}</div>
+                    <div className="truncate text-xs text-slate-500">{detail}</div>
                   </div>
-                </li>
+                  <div className="text-sm font-semibold text-slate-200">{value}</div>
+                </div>
               ))}
-              {breakdown.filter(b => b.score < b.max).length === 0 && paystubs.length > 0 && (
-                <li className="text-sm text-slate-500 dark:text-slate-400">
-                  Your finances are in great shape! Keep it up.
-                </li>
-              )}
-              {paystubs.length === 0 && (
-                <>
-                  {[
-                    { label: 'Scan your paystub', tip: 'Get accurate take-home estimates and health score.' },
-                    { label: 'Add remaining debts', tip: 'See your full debt picture and payoff timeline.' },
-                    { label: 'Run an overtime scenario', tip: 'See how extra shifts impact debt payoff.' },
-                  ].map((m, i) => (
-                    <li key={m.label} className="flex gap-3 items-start">
-                      <div className="w-7 h-7 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-400 text-xs font-bold flex-shrink-0 mt-0.5">
-                        {i + 1}
-                      </div>
-                      <div>
-                        <div className="font-semibold text-slate-900 dark:text-slate-100 text-sm">{m.label}</div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{m.tip}</div>
-                      </div>
-                    </li>
-                  ))}
-                </>
-              )}
-            </ul>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 shadow-sm">
-          <CardHeader>
-            <CardTitle>Recent Paystubs</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {paystubs.length === 0 ? (
-              <div className="text-center py-8 text-slate-500">
-                <PiggyBank className="w-12 h-12 mx-auto text-slate-300 dark:text-slate-700 mb-3" />
-                <p className="text-sm">No paystubs yet.</p>
-                <Button variant="link" className="text-emerald-600 text-sm" onClick={() => setLocation('/scanner')}>Scan one now →</Button>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {paystubs.slice(0, 4).map(stub => (
-                  <div key={stub.id} className="flex items-center justify-between p-3 rounded-lg border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-                    <div>
-                      <div className="font-medium text-slate-900 dark:text-slate-100 text-sm">{stub.employer}</div>
-                      <div className="text-xs text-slate-500">{new Date(stub.date).toLocaleDateString()}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-bold text-emerald-600 dark:text-emerald-400">{fmt(stub.netPay)}</div>
-                      <div className="text-[10px] text-slate-400">Net · {fmt(stub.grossPay)} gross</div>
-                    </div>
-                  </div>
-                ))}
-                <Button variant="outline" className="w-full mt-1 text-sm" onClick={() => setLocation('/paystubs')}>
-                  View All Paystubs
-                </Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-white/10 px-4 py-8 text-center">
+              <p className="text-sm text-slate-400">Scan your documents to build today&apos;s priority list.</p>
+              <button type="button" onClick={() => setLocation('/scanner')} className="mt-3 text-sm font-medium text-blue-300">Start a scan →</button>
+            </div>
+          )}
+        </section>
       </div>
     </div>
   );
