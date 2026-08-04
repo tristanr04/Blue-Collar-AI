@@ -637,13 +637,15 @@ export default function Scanner() {
   useEffect(() => { previewsRef.current = previews; }, [previews]);
   useEffect(() => { docsRef.current = docs; }, [docs]);
 
-  // Cancel all retry timers and revoke object URLs on unmount.
+  // Cancel all retry timers, in-flight scan signals, and revoke object URLs on unmount.
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
       retryTimersRef.current.forEach(t => clearTimeout(t));
       retryTimersRef.current.clear();
+      scanSignalsRef.current.forEach(c => c.abort());
+      scanSignalsRef.current.clear();
       previewsRef.current.forEach(url => { if (url) try { URL.revokeObjectURL(url); } catch {} });
       docsRef.current.forEach(doc => { if (doc.preview) try { URL.revokeObjectURL(doc.preview); } catch {} });
     };
@@ -655,6 +657,12 @@ export default function Scanner() {
   useEffect(() => {
     if (step !== 'processing' || docs.length === 0) return;
     if (docs.every(d => d.status === 'done' || d.status === 'error')) {
+      const doneCount  = docs.filter(d => d.status === 'done').length;
+      const errorCount = docs.filter(d => d.status === 'error').length;
+      console.log(
+        `[BCFAI] batch complete — ${doneCount} succeeded, ${errorCount} failed ` +
+        `(total ${docs.length})`,
+      );
       setStep('review');
     }
   }, [docs, step]);
@@ -735,6 +743,10 @@ export default function Scanner() {
     while (activeCountRef.current < SCAN_CONCURRENCY && queueRef.current.length > 0) {
       const docId = queueRef.current.shift()!;
       activeCountRef.current++;
+      console.log(
+        `[BCFAI] queue — dispatching slot ${activeCountRef.current}/${SCAN_CONCURRENCY} ` +
+        `docId=${docId} pending=${queueRef.current.length}`,
+      );
       // .finally() releases the slot unconditionally — success, fatal error,
       // AND the 429-release path all flow through here.
       runOneScan(docId).finally(() => {
@@ -745,10 +757,15 @@ export default function Scanner() {
   }
   dispatchNextRef.current = dispatchNext;
 
+  /** Per-doc AbortControllers for the 60-second fetch timeout. */
+  const scanSignalsRef = useRef(new Map<string, AbortController>());
+
   async function runOneScan(docId: string): Promise<void> {
     if (!isMountedRef.current) return;
     const doc = docsRef.current.find(d => d.id === docId);
     if (!doc) return; // Doc was removed while waiting in the queue
+
+    console.log(`[BCFAI] processing started — "${doc.file.name}" (id=${docId})`);
 
     setDocs(prev => prev.map(d =>
       d.id === docId
@@ -757,16 +774,32 @@ export default function Scanner() {
         : d,
     ));
 
+    // 60-second per-document timeout.
+    const abortCtrl = new AbortController();
+    const timeoutId = setTimeout(() => {
+      console.warn(`[BCFAI] timeout triggered — "${doc.file.name}" (60 s)`);
+      abortCtrl.abort();
+    }, 60_000);
+    scanSignalsRef.current.set(docId, abortCtrl);
+
     try {
       const token = await getToken().catch(() => null);
-      if (!isMountedRef.current) return;
-      const result = await scanFile(doc.file, token);
+      if (!isMountedRef.current) { clearTimeout(timeoutId); return; }
+
+      const result = await scanFile(doc.file, token, abortCtrl.signal);
+      clearTimeout(timeoutId);
+      scanSignalsRef.current.delete(docId);
       if (!isMountedRef.current) return;
 
       const {
         resolvedDocType, fieldMap,
         institutionName, institutionUnknown, institutionCategory,
       } = normalizeScanResult(result);
+
+      console.log(
+        `[BCFAI] extraction complete — "${doc.file.name}": docType=${resolvedDocType}` +
+        (institutionName ? ` institution="${institutionName}"` : ''),
+      );
 
       setDocs(prev => prev.map(d =>
         d.id === docId
@@ -788,7 +821,10 @@ export default function Scanner() {
           : d,
       ));
     } catch (err) {
+      clearTimeout(timeoutId);
+      scanSignalsRef.current.delete(docId);
       if (!isMountedRef.current) return;
+
       const rl = is429Error(err);
       const attempts = retryAttemptsRef.current.get(docId) ?? 0;
 
@@ -796,6 +832,10 @@ export default function Scanner() {
         // ── Rate-limited: release this slot NOW, re-queue after delay ──────
         const waitMs = parseRetryDelay(rl.retryAfterHeader, rl.retryAfterBodyMs, attempts);
         retryAttemptsRef.current.set(docId, attempts + 1);
+        console.warn(
+          `[BCFAI] rate-limited — "${doc.file.name}": waiting ${waitMs}ms ` +
+          `(attempt ${attempts + 1}/${MAX_RATE_LIMIT_RETRIES})`,
+        );
 
         setDocs(prev => prev.map(d =>
           d.id === docId
@@ -821,6 +861,9 @@ export default function Scanner() {
 
       // Non-429 or all retries exhausted — terminal failure.
       const { stage, message } = parseApiError(err);
+      console.error(
+        `[BCFAI] document failed — "${doc.file.name}": stage=${stage} — ${message}`,
+      );
       setDocs(prev => prev.map(d =>
         d.id === docId
           ? {
@@ -915,16 +958,34 @@ export default function Scanner() {
         : doc,
     );
 
+    console.log(
+      `[BCFAI] files selected: ${files.length} file(s): ` +
+      files.map(f => `${f.name} (${(f.size / 1024).toFixed(1)} KB)`).join(', '),
+    );
+
     // Reset all queue state from any previous batch.
     retryTimersRef.current.forEach(t => clearTimeout(t));
     retryTimersRef.current.clear();
+    scanSignalsRef.current.forEach(c => c.abort());
+    scanSignalsRef.current.clear();
     retryAttemptsRef.current.clear();
     activeCountRef.current = 0;
 
     setDocs(docsWithDupErrors);
+    // docsRef is normally synced by a useEffect, but that runs AFTER the next
+    // render — too late for dispatchNext() which fires synchronously below.
+    // Eagerly update the ref so runOneScan can look up doc.file immediately.
+    docsRef.current = docsWithDupErrors;
+
     queueRef.current = docsWithDupErrors
       .filter(d => d.status === 'pending')
       .map(d => d.id);
+
+    const dupCount = docsWithDupErrors.filter(d => d.status === 'error' && d.errorStage === 'duplicate_document').length;
+    console.log(
+      `[BCFAI] queue created: ${queueRef.current.length} doc(s) to process` +
+      (dupCount > 0 ? `, ${dupCount} duplicate(s) skipped` : ''),
+    );
 
     dispatchNext();
     // Step transition to 'review' is handled by the batch-completion useEffect.
@@ -957,12 +1018,14 @@ export default function Scanner() {
   // ── Remove a doc from the list ─────────────────────────────────────────────
 
   const removeDoc = (docId: string) => {
-    // Cancel any pending retry timer and scrub from the queue.
+    // Cancel any pending retry timer, in-flight fetch, and scrub from the queue.
     const existing = retryTimersRef.current.get(docId);
     if (existing !== undefined) {
       clearTimeout(existing);
       retryTimersRef.current.delete(docId);
     }
+    scanSignalsRef.current.get(docId)?.abort();
+    scanSignalsRef.current.delete(docId);
     retryAttemptsRef.current.delete(docId);
     queueRef.current = queueRef.current.filter(id => id !== docId);
 

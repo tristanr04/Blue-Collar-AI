@@ -91,11 +91,17 @@ function authedHeaders(
 export async function scanFile(
   file: File,
   token?: string | null,
+  signal?: AbortSignal,
 ): Promise<ScanResult> {
   const form = new FormData();
   // Always pass filename explicitly so multer receives originalname correctly
   // even when the browser omits it (common on iOS Safari).
   form.append("file", file, file.name);
+
+  console.log(
+    `[BCFAI] API request sent — ${file.name} ` +
+    `(${(file.size / 1024).toFixed(1)} KB, type="${file.type || "unknown"}")`,
+  );
 
   let res: Response;
   try {
@@ -104,41 +110,46 @@ export async function scanFile(
       method: "POST",
       body: form,
       headers: authedHeaders(token),
+      signal,
     });
   } catch (err) {
+    const isTimeout =
+      err instanceof DOMException && err.name === "TimeoutError";
+    const isAbort =
+      err instanceof DOMException && err.name === "AbortError";
+    if (isTimeout || isAbort) {
+      console.warn(
+        `[BCFAI] ${isTimeout ? "timeout" : "abort"} — ${file.name}`,
+      );
+    }
     throw new Error(
       JSON.stringify({
-        stage: "upload_request",
-        message:
-          err instanceof Error
-            ? err.message
-            : "Network error — check your connection",
+        stage: isTimeout || isAbort ? "scan_timeout" : "upload_request",
+        message: isTimeout
+          ? "Document analysis timed out after 60 seconds. Please try a smaller or clearer document."
+          : isAbort
+          ? "Scan was cancelled."
+          : err instanceof Error
+          ? err.message
+          : "Network error — check your connection",
         filename: file.name,
       }),
     );
   }
 
-  // ── Instrumentation ────────────────────────────────────────────────────────
-  console.log("RAW API RESPONSE");
-  console.dir(
-    {
-      status: res.status,
-      statusText: res.statusText,
-      headers: Object.fromEntries(res.headers.entries()),
-      url: res.url,
-    },
-    { depth: null },
+  console.log(
+    `[BCFAI] API response received — ${file.name} — HTTP ${res.status}`,
   );
 
   let json: unknown;
   try {
     json = await res.clone().json();
-    console.log("RAW RESPONSE JSON");
-    console.dir(json, { depth: null });
   } catch (parseErr) {
     const rawText = await res.text().catch(() => "<could not read body>");
-    console.log("RAW RESPONSE JSON — JSON parse threw:", parseErr);
-    console.log("RAW RESPONSE BODY TEXT:", rawText);
+    console.warn(
+      `[BCFAI] JSON parse error — ${file.name}: ${parseErr}`,
+      "body:", rawText.slice(0, 500),
+    );
     throw new Error(
       JSON.stringify({
         stage: "json_parse",
@@ -147,7 +158,6 @@ export async function scanFile(
       }),
     );
   }
-  // ── End instrumentation ────────────────────────────────────────────────────
 
   if (!res.ok) {
     const retryAfterHeader = res.headers.get("retry-after");

@@ -658,7 +658,7 @@ function isEncryptedPdfError(error: unknown): boolean {
 //   2. requireAuthenticatedUser — Clerk session required → 401
 //   3. scanSemaphore            — 3 concurrent/IP  → 429
 //   4. upload.single            — multer file parse
-//   5. handler                  — 90-second AbortController timeout
+//   5. handler                  — 60-second AbortController timeout
 
 router.post(
   "/scan-document",
@@ -667,7 +667,7 @@ router.post(
   scanSemaphore.middleware(),
   upload.single("file"),
   async (req, res) => {
-    const abort = makeAbortController(res, 90_000);
+    const abort = makeAbortController(res, 60_000);
 
     if (!req.file) {
       abort.clearTimeout();
@@ -680,6 +680,11 @@ router.post(
 
     const { buffer, originalname } = req.file;
     const userId = (req as AuthenticatedRequest).authenticatedUserId!;
+
+    logger.info(
+      { file: originalname, size: buffer.length, userId },
+      "[BCFAI] backend file received",
+    );
 
     try {
       // ── Fingerprint / duplicate-document check ─────────────────────────────
@@ -743,6 +748,7 @@ router.post(
           );
         }
 
+        logger.info({ file: originalname, kind: "pdf" }, "[BCFAI] AI request started");
         aiResponse = await extractFromText(pdfText, abort.signal);
       } else {
         const normalized = await normalizeImage(buffer);
@@ -751,40 +757,26 @@ router.post(
           width: normalized.width,
           height: normalized.height,
         };
+        logger.info(
+          { file: originalname, kind: "image", mime: responseMime,
+            width: normalized.width, height: normalized.height },
+          "[BCFAI] AI request started",
+        );
         aiResponse = await extractFromImage(normalized.buffer, abort.signal);
       }
 
+      logger.info({ file: originalname }, "[BCFAI] AI response received");
+
       // ── Parse AI response ─────────────────────────────────────────────────
-      console.log("=== FULL AI RESPONSE ===");
-      console.dir(aiResponse, { depth: null });
-
       const modelOutput = getModelOutput(aiResponse);
-
-      console.log("=== MODEL OUTPUT ===");
-      console.dir(modelOutput, { depth: null });
-
       const rawExtraction = unwrapDocumentResponse(modelOutput);
 
-      console.log(
-        "=== RAW EXTRACTION ===",
-        JSON.stringify(rawExtraction, null, 2),
-      );
-
       if (!rawExtraction) {
-        logger.warn({ file: originalname }, "Unable to parse document processor response");
-        console.log(
-          "Expected:\n{ type, data }\n\nReceived:\n" +
-          (typeof modelOutput === "string"
-            ? (modelOutput as string).slice(0, 1000)
-            : JSON.stringify(modelOutput).slice(0, 1000)),
-        );
-        const _body422a = {
+        logger.warn({ file: originalname }, "[BCFAI] document failed — AI returned unreadable response");
+        res.status(422).json({
           stage: "ai_json_parse",
           error: "The document processor returned an unreadable response. Please try again.",
-        };
-        console.log("RETURNING TO FRONTEND:");
-        console.dir(_body422a, { depth: null });
-        res.status(422).json(_body422a);
+        });
         return;
       }
 
@@ -794,14 +786,9 @@ router.post(
       if (looksLikeVehicleLoan(rawExtraction)) {
         const normalizedExtraction = normalizeVehicleLoanExtraction(rawExtraction);
 
-        console.log(
-          "=== NORMALIZED EXTRACTION ===",
-          JSON.stringify(normalizedExtraction, null, 2),
-        );
-
         logger.info(
           { docType: "Auto Loan", file: originalname, mimeType: responseMime },
-          "secure scan complete (vehicle loan)",
+          "[BCFAI] extraction completed",
         );
 
         createScannedDocument(userId, {
@@ -816,7 +803,7 @@ router.post(
           status: "Processed",
         }).catch(err => logger.warn({ err }, "Failed to persist scanned document record"));
 
-        const _body200vl = {
+        res.status(200).json({
           success: true,
           documentType: "vehicleLoan",
           type: "vehicleLoan",
@@ -829,10 +816,7 @@ router.post(
           mimeType: responseMime,
           normalizedDimensions,
           securityWarnings,
-        };
-        console.log("RETURNING TO FRONTEND:");
-        console.dir(_body200vl, { depth: null });
-        res.status(200).json(_body200vl);
+        });
         return;
       }
 
@@ -840,14 +824,9 @@ router.post(
       if (looksLikeBankStatement(rawExtraction)) {
         const normalizedExtraction = normalizeBankStatementExtraction(rawExtraction);
 
-        console.log(
-          "=== NORMALIZED BANK STATEMENT EXTRACTION ===",
-          JSON.stringify(normalizedExtraction, null, 2),
-        );
-
         logger.info(
           { docType: "Bank Statement", file: originalname, mimeType: responseMime },
-          "secure scan complete (bank statement)",
+          "[BCFAI] extraction completed",
         );
 
         createScannedDocument(userId, {
@@ -860,7 +839,7 @@ router.post(
           status: "Processed",
         }).catch(err => logger.warn({ err }, "Failed to persist scanned document record"));
 
-        const _body200bs = {
+        res.status(200).json({
           success: true,
           documentType: "bankStatement",
           type: "bankStatement",
@@ -872,10 +851,7 @@ router.post(
           mimeType: responseMime,
           normalizedDimensions,
           securityWarnings,
-        };
-        console.log("RETURNING TO FRONTEND:");
-        console.dir(_body200bs, { depth: null });
-        res.status(200).json(_body200bs);
+        });
         return;
       }
 
@@ -889,22 +865,13 @@ router.post(
       if (!validation.success) {
         logger.warn(
           { file: originalname, fieldErrors: validation.body.fieldErrors },
-          "AI scanner output failed schema validation",
+          "[BCFAI] document failed — AI output failed schema validation",
         );
-        console.log(
-          "Expected:\n{ type, data }\n\nReceived:\n" +
-          JSON.stringify(rawExtraction, null, 2).slice(0, 1000),
-        );
-        console.log("Validation field errors:", JSON.stringify(validation.body.fieldErrors, null, 2));
-        // ↓ THIS IS THE LINE THAT RETURNS "unrecognized response format"
-        const _body422b = {
+        res.status(422).json({
           ...validation.body,
           error: "The document processor returned an unrecognized response format. Please try again.",
           detail: validation.body.fieldErrors,
-        };
-        console.log("RETURNING TO FRONTEND:");
-        console.dir(_body422b, { depth: null });
-        res.status(422).json(_body422b);
+        });
         return;
       }
 
@@ -923,7 +890,7 @@ router.post(
           mimeType: responseMime,
           institution: institution.normalizedName,
         },
-        "secure scan complete",
+        "[BCFAI] extraction completed",
       );
 
       // ── Persist document record (fire-and-forget; never fail the scan) ─────
@@ -937,17 +904,14 @@ router.post(
         status: "Processed",
       }).catch(err => logger.warn({ err }, "Failed to persist scanned document record"));
 
-      const _body200generic = {
+      res.json({
         ...data,
         institution,
         fileName: originalname,
         mimeType: responseMime,
         normalizedDimensions,
         securityWarnings,
-      };
-      console.log("RETURNING TO FRONTEND:");
-      console.dir(_body200generic, { depth: null });
-      res.json(_body200generic);
+      });
     } catch (error) {
       const isAbort =
         abort.signal.aborted ||
@@ -955,6 +919,10 @@ router.post(
           (error.name === "AbortError" || error.message.toLowerCase().includes("abort")));
 
       if (isAbort) {
+        logger.warn(
+          { file: originalname },
+          "[BCFAI] timeout triggered — document analysis exceeded 60 s",
+        );
         if (!res.headersSent) {
           res.status(504).json({
             stage: "scan_timeout",
@@ -965,12 +933,20 @@ router.post(
       }
 
       if (error instanceof UploadValidationError) {
+        logger.warn(
+          { file: originalname, stage: error.stage, message: error.message },
+          "[BCFAI] document failed — upload validation",
+        );
         res.status(error.status).json({ stage: error.stage, error: error.message });
         return;
       }
 
       if (error instanceof multer.MulterError) {
         const tooLarge = error.code === "LIMIT_FILE_SIZE";
+        logger.warn(
+          { file: originalname, code: error.code },
+          "[BCFAI] document failed — multer error",
+        );
         res.status(tooLarge ? 413 : 400).json({
           stage: tooLarge ? "file_size_limit" : "multipart_validation",
           error: tooLarge
@@ -980,7 +956,7 @@ router.post(
         return;
       }
 
-      logger.error({ error }, "secure scan failed");
+      logger.error({ file: originalname, error }, "[BCFAI] document failed — unexpected error");
       if (!res.headersSent) {
         res.status(500).json({
           stage: "ai_request",
