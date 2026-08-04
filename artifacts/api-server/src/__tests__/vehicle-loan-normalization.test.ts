@@ -1,7 +1,8 @@
 /**
  * Unit tests for vehicle-loan extraction normalization (Phase 11 test spec).
  *
- * These are white-box tests of the normalizeVehicleLoanExtraction logic.
+ * These are white-box tests of the normalizeVehicleLoanExtraction,
+ * flattenWrappedFields, and looksLikeVehicleLoan logic.
  * We replicate the functions here because they are not exported from scan.ts.
  * Any change to the normalization logic must be reflected here too.
  */
@@ -47,7 +48,140 @@ function getLast4(value: unknown): string | null {
   return cleaned.length >= 4 ? cleaned.slice(-4) : cleaned || null;
 }
 
-function normalizeVehicleLoanExtraction(raw: Record<string, unknown>) {
+function unwrapFieldValue(value: unknown): unknown {
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "value" in value
+  ) {
+    return (value as { value?: unknown }).value ?? null;
+  }
+  return value;
+}
+
+function flattenWrappedFields(
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
+  const nestedFields =
+    raw.fields !== null &&
+    typeof raw.fields === "object" &&
+    !Array.isArray(raw.fields)
+      ? (raw.fields as Record<string, unknown>)
+      : {};
+
+  const flat: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(nestedFields)) {
+    flat[key] = unwrapFieldValue(value);
+  }
+
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === "fields") continue;
+    flat[key] = unwrapFieldValue(value);
+  }
+
+  const institution =
+    raw.institution !== null &&
+    typeof raw.institution === "object" &&
+    !Array.isArray(raw.institution)
+      ? (raw.institution as Record<string, unknown>)
+      : null;
+
+  if (!flat.loanName && institution) {
+    flat.loanName =
+      institution.rawName ??
+      institution.normalizedName ??
+      institution.name ??
+      null;
+  }
+
+  return flat;
+}
+
+function normalizeDocumentType(value: unknown): string {
+  if (typeof value !== "string") return "";
+
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function looksLikeVehicleLoan(
+  rawInput: Record<string, unknown>,
+): boolean {
+  const raw = flattenWrappedFields(rawInput);
+
+  const type = normalizeDocumentType(
+    raw.docType ??
+      raw.documentType ??
+      raw.type ??
+      raw.accountType,
+  );
+
+  const autoLoanType =
+    type === "auto loan" ||
+    type === "vehicle loan" ||
+    type === "car loan" ||
+    type === "automobile loan" ||
+    type.includes("auto loan") ||
+    type.includes("vehicle loan") ||
+    type.includes("car payment") ||
+    type.includes("vehicle payment");
+
+  if (autoLoanType) return true;
+
+  const vehicleFieldKeys = [
+    "balanceOwed",
+    "remainingBalance",
+    "originalAmount",
+    "originalLoanAmount",
+    "amountFinanced",
+    "monthlyPayment",
+    "regularMonthlyPayment",
+    "loanTerm",
+    "paymentsMade",
+    "monthsRemaining",
+    "accountNumber",
+    "nextDueDate",
+  ];
+
+  const matchedFields = vehicleFieldKeys.filter(
+    (key) =>
+      raw[key] !== undefined &&
+      raw[key] !== null &&
+      raw[key] !== "",
+  ).length;
+
+  return matchedFields >= 3;
+}
+
+function normalizeVehicleLoanExtraction(rawInput: Record<string, unknown>) {
+  const raw = flattenWrappedFields(rawInput);
+
+  const originalTerm = parseInteger(
+    firstDefined(raw.loanTerm, raw.termMonths, raw.originalTerm),
+  );
+  const paymentsMade = parseInteger(
+    firstDefined(raw.paymentsMade, raw.numberOfPaymentsMade),
+  );
+
+  let monthsRemaining = parseInteger(
+    firstDefined(
+      raw.monthsRemaining, raw.remainingMonths, raw.remainingTerm,
+      raw.paymentsRemaining, raw.monthsLeft,
+    ),
+  );
+
+  if (monthsRemaining === null && originalTerm !== null && paymentsMade !== null) {
+    monthsRemaining = Math.max(originalTerm - paymentsMade, 0);
+  }
+  if (monthsRemaining === null && originalTerm !== null) {
+    monthsRemaining = originalTerm;
+  }
+
   return {
     loanName: firstDefined(
       raw.loanName, raw.lenderName, raw.lender, raw.creditor,
@@ -78,10 +212,7 @@ function normalizeVehicleLoanExtraction(raw: Record<string, unknown>) {
       raw.paymentAmount, raw.amountDue,
     )),
 
-    monthsRemaining: parseInteger(firstDefined(
-      raw.monthsRemaining, raw.remainingMonths, raw.remainingTerm,
-      raw.paymentsRemaining, raw.monthsLeft,
-    )),
+    monthsRemaining,
 
     nextDueDate: firstDefined(
       raw.nextDueDate, raw.paymentDueDate, raw.nextPaymentDate, raw.dueDate,
@@ -95,11 +226,8 @@ function normalizeVehicleLoanExtraction(raw: Record<string, unknown>) {
 
 describe("vehicle-loan normalisation", () => {
   // ── Phase-11 acceptance document ─────────────────────────────────────────
-  // Simulates a document that uses alternate labels (the exact test spec
-  // from the task file).
   it("Phase-11: maps alternate labels to canonical keys", () => {
     const raw: Record<string, unknown> = {
-      // AI used alternate label names for this document
       lender: "Vehicle Payment Test Form",
       accountId: "TEST-VEH-0042",
       remainingBalance: "$19,432.58",
@@ -147,7 +275,7 @@ describe("vehicle-loan normalisation", () => {
     assert.equal(result.nextDueDate, "2026-09-01");
   });
 
-  // ── All fields absent → all null (no silent zeroes) ──────────────────────
+  // ── All fields absent → all null ──────────────────────────────────────────
   it("missing fields stay null — never default to zero", () => {
     const result = normalizeVehicleLoanExtraction({});
 
@@ -166,7 +294,7 @@ describe("vehicle-loan normalisation", () => {
     assert.equal(getLast4("TEST-VEH-0042"), "0042");
     assert.equal(getLast4("ACC-9876-5432"), "5432");
     assert.equal(getLast4("1234"), "1234");
-    assert.equal(getLast4("12"), "12"); // shorter than 4 → return as-is
+    assert.equal(getLast4("12"), "12");
     assert.equal(getLast4(null), null);
     assert.equal(getLast4(undefined), null);
   });
@@ -193,7 +321,7 @@ describe("vehicle-loan normalisation", () => {
   // ── parseInteger rounds floats ────────────────────────────────────────────
   it("parseInteger rounds float months and parses string months", () => {
     assert.equal(parseInteger("72"), 72);
-    assert.equal(parseInteger(72.9), 73); // round
+    assert.equal(parseInteger(72.9), 73);
     assert.equal(parseInteger("48 months"), 48);
     assert.equal(parseInteger(null), null);
   });
@@ -202,12 +330,120 @@ describe("vehicle-loan normalisation", () => {
   it("canonical key takes priority over fallback aliases", () => {
     const raw: Record<string, unknown> = {
       balanceOwed: 5000,
-      currentBalance: 9999, // should be ignored — balanceOwed is present
+      currentBalance: 9999,
       apr: 4.5,
-      interestRate: 9.9,    // should be ignored — apr is present
+      interestRate: 9.9,
     };
     const result = normalizeVehicleLoanExtraction(raw);
     assert.equal(result.balanceOwed, 5000);
     assert.equal(result.apr, 4.5);
+  });
+
+  // ─── New tests ────────────────────────────────────────────────────────────
+
+  // 1. Flat Auto Loan output ─────────────────────────────────────────────────
+  it("flat Auto Loan output: looksLikeVehicleLoan detects it and fields normalize", () => {
+    const raw: Record<string, unknown> = {
+      docType: "Auto Loan",
+      loanName: "Pioneer Auto Finance",
+      accountNumber: "xxxx4922",
+      balanceOwed: 16843.72,
+      originalAmount: 28750,
+      apr: 7.24,
+      monthlyPayment: 478.56,
+      monthsRemaining: 44,
+      nextDueDate: "2025-08-05",
+    };
+
+    assert.equal(looksLikeVehicleLoan(raw), true);
+
+    const result = normalizeVehicleLoanExtraction(raw);
+    assert.equal(result.loanName, "Pioneer Auto Finance");
+    assert.equal(result.accountLast4, "4922");
+    assert.equal(result.balanceOwed, 16843.72);
+    assert.equal(result.originalAmount, 28750);
+    assert.equal(result.apr, 7.24);
+    assert.equal(result.monthlyPayment, 478.56);
+    assert.equal(result.monthsRemaining, 44);
+    assert.equal(result.nextDueDate, "2025-08-05");
+  });
+
+  // 2. Auto Loan values nested under fields (wrapped { value, confidence }) ──
+  it("Auto Loan nested under fields: looksLikeVehicleLoan detects it and fields normalize", () => {
+    const raw: Record<string, unknown> = {
+      docType: "Auto Loan",
+      fields: {
+        loanName:       { value: "Pioneer Auto Finance", confidence: 95 },
+        accountNumber:  { value: "xxxx4922",             confidence: 90 },
+        balanceOwed:    { value: 16843.72,               confidence: 88 },
+        originalAmount: { value: 28750,                  confidence: 92 },
+        apr:            { value: 7.24,                   confidence: 91 },
+        monthlyPayment: { value: 478.56,                 confidence: 89 },
+        monthsRemaining:{ value: 44,                     confidence: 85 },
+        nextDueDate:    { value: "2025-08-05",           confidence: 90 },
+      },
+    };
+
+    assert.equal(looksLikeVehicleLoan(raw), true);
+
+    const result = normalizeVehicleLoanExtraction(raw);
+    assert.equal(result.loanName, "Pioneer Auto Finance");
+    assert.equal(result.accountLast4, "4922");
+    assert.equal(result.balanceOwed, 16843.72);
+    assert.equal(result.originalAmount, 28750);
+    assert.equal(result.apr, 7.24);
+    assert.equal(result.monthlyPayment, 478.56);
+    assert.equal(result.monthsRemaining, 44);
+    assert.equal(result.nextDueDate, "2025-08-05");
+  });
+
+  // 3. docType "Vehicle Loan" ────────────────────────────────────────────────
+  it('docType "Vehicle Loan" is detected as a vehicle loan', () => {
+    const raw: Record<string, unknown> = {
+      docType: "Vehicle Loan",
+      balanceOwed: 22000,
+      monthlyPayment: 399,
+      nextDueDate: "2025-09-01",
+    };
+
+    assert.equal(looksLikeVehicleLoan(raw), true);
+  });
+
+  // 4. docType "Auto Loan Payment Statement" ────────────────────────────────
+  it('docType "Auto Loan Payment Statement" is detected as a vehicle loan', () => {
+    const raw: Record<string, unknown> = {
+      docType: "Auto Loan Payment Statement",
+      balanceOwed: 9800,
+      monthlyPayment: 312,
+      nextDueDate: "2025-10-01",
+    };
+
+    assert.equal(looksLikeVehicleLoan(raw), true);
+  });
+
+  // 5. Missing docType with three or more vehicle-loan fields ────────────────
+  it("missing docType with 3+ vehicle-loan fields is detected as a vehicle loan", () => {
+    const raw: Record<string, unknown> = {
+      // No docType at all
+      balanceOwed: 14500,
+      originalAmount: 27000,
+      monthlyPayment: 425.0,
+    };
+
+    assert.equal(looksLikeVehicleLoan(raw), true);
+  });
+
+  // 6. Normal utility bill must NOT be classified as an Auto Loan ─────────────
+  it("utility bill is NOT detected as a vehicle loan", () => {
+    const raw: Record<string, unknown> = {
+      docType: "Utility Bill",
+      providerName: "City Power & Water",
+      accountNumber: "78901234",
+      amountDue: 134.22,
+      dueDate: "2025-08-15",
+      billingPeriod: "July 2025",
+    };
+
+    assert.equal(looksLikeVehicleLoan(raw), false);
   });
 });

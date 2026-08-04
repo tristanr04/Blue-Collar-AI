@@ -330,23 +330,115 @@ function normalizeDate(value: unknown): string | null {
   return text; // return as-is if unrecognised
 }
 
-/**
- * If the AI returned fields in the wrapped { value, confidence } format,
- * flatten them to raw values before normalising.
- */
-function flattenWrappedFields(raw: Record<string, unknown>): Record<string, unknown> {
-  const flat: Record<string, unknown> = { ...raw };
-  for (const [k, v] of Object.entries(raw)) {
-    if (
-      v !== null &&
-      typeof v === "object" &&
-      !Array.isArray(v) &&
-      "value" in (v as object)
-    ) {
-      flat[k] = (v as { value: unknown }).value;
-    }
+function unwrapFieldValue(value: unknown): unknown {
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "value" in value
+  ) {
+    return (value as { value?: unknown }).value ?? null;
   }
+
+  return value;
+}
+
+function flattenWrappedFields(
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
+  const nestedFields =
+    raw.fields !== null &&
+    typeof raw.fields === "object" &&
+    !Array.isArray(raw.fields)
+      ? (raw.fields as Record<string, unknown>)
+      : {};
+
+  const flat: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(nestedFields)) {
+    flat[key] = unwrapFieldValue(value);
+  }
+
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === "fields") continue;
+    flat[key] = unwrapFieldValue(value);
+  }
+
+  const institution =
+    raw.institution !== null &&
+    typeof raw.institution === "object" &&
+    !Array.isArray(raw.institution)
+      ? (raw.institution as Record<string, unknown>)
+      : null;
+
+  if (!flat.loanName && institution) {
+    flat.loanName =
+      institution.rawName ??
+      institution.normalizedName ??
+      institution.name ??
+      null;
+  }
+
   return flat;
+}
+
+function normalizeDocumentType(value: unknown): string {
+  if (typeof value !== "string") return "";
+
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function looksLikeVehicleLoan(
+  rawInput: Record<string, unknown>,
+): boolean {
+  const raw = flattenWrappedFields(rawInput);
+
+  const type = normalizeDocumentType(
+    raw.docType ??
+      raw.documentType ??
+      raw.type ??
+      raw.accountType,
+  );
+
+  const autoLoanType =
+    type === "auto loan" ||
+    type === "vehicle loan" ||
+    type === "car loan" ||
+    type === "automobile loan" ||
+    type.includes("auto loan") ||
+    type.includes("vehicle loan") ||
+    type.includes("car payment") ||
+    type.includes("vehicle payment");
+
+  if (autoLoanType) return true;
+
+  const vehicleFieldKeys = [
+    "balanceOwed",
+    "remainingBalance",
+    "originalAmount",
+    "originalLoanAmount",
+    "amountFinanced",
+    "monthlyPayment",
+    "regularMonthlyPayment",
+    "loanTerm",
+    "paymentsMade",
+    "monthsRemaining",
+    "accountNumber",
+    "nextDueDate",
+  ];
+
+  const matchedFields = vehicleFieldKeys.filter(
+    (key) =>
+      raw[key] !== undefined &&
+      raw[key] !== null &&
+      raw[key] !== "",
+  ).length;
+
+  return matchedFields >= 3;
 }
 
 function normalizeVehicleLoanExtraction(rawInput: Record<string, unknown>) {
@@ -561,15 +653,7 @@ router.post(
       // ── Vehicle-loan fast path ──────────────────────────────────────────────
       // Auto Loan documents bypass Zod validation and are normalized directly
       // from the flat extraction the new prompt returns.
-      const isAutoLoan =
-        (rawExtraction as any).docType === "Auto Loan" ||
-        // Fallback: detect flat vehicle-loan response that omitted docType
-        (!(rawExtraction as any).docType &&
-          ((rawExtraction as any).balanceOwed !== undefined ||
-           (rawExtraction as any).loanTerm !== undefined ||
-           (rawExtraction as any).paymentsMade !== undefined));
-
-      if (isAutoLoan) {
+      if (looksLikeVehicleLoan(rawExtraction)) {
         const normalizedExtraction = normalizeVehicleLoanExtraction(rawExtraction);
 
         console.log(
