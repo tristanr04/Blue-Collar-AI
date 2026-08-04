@@ -10,6 +10,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  varchar,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema, createSelectSchema } from "drizzle-zod";
@@ -259,6 +260,63 @@ export const userPreferencesTable = pgTable(
   },
   (table) => [uniqueIndex("user_preferences_user_unique").on(table.userId)],
 );
+
+// ─── Migration Jobs (idempotency) ─────────────────────────────────────────────
+//
+// Each row represents one bulk-migration attempt.  The UNIQUE constraint on
+// (user_id, idempotency_key) ensures a client-generated UUID cannot produce
+// duplicate records even on network retries.
+//
+// Status lifecycle:
+//   pending → committed  (all records created in a DB transaction)
+//   pending → failed     (transaction rolled back; row updated by the catch path)
+//
+// A 'pending' row that is older than 10 minutes is considered stale (server
+// crashed during the migration). The status endpoint surfaces isStale=true so
+// the client can offer a fresh retry.
+
+export const migrationJobsTable = pgTable(
+  "migration_jobs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    idempotencyKey: varchar("idempotency_key", { length: 64 }).notNull(),
+    status: text("status").notNull().default("pending"), // 'pending' | 'committed' | 'failed'
+    result: jsonb("result").$type<MigrationResult | null>().default(null),
+    errorMessage: text("error_message"),
+    recordCounts: jsonb("record_counts")
+      .$type<Record<string, number>>()
+      .default({}),
+    committedAt: timestamp("committed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("migration_jobs_user_key_unique").on(
+      table.userId,
+      table.idempotencyKey,
+    ),
+    index("migration_jobs_user_status_idx").on(table.userId, table.status),
+  ],
+);
+
+export interface MigrationIdMap {
+  clientId: string;
+  serverId: string;
+}
+
+export interface MigrationResult {
+  paystubs: MigrationIdMap[];
+  debts: MigrationIdMap[];
+  bills: MigrationIdMap[];
+  assets: MigrationIdMap[];
+}
 
 export const aiUsageRecordsTable = pgTable(
   "ai_usage_records",

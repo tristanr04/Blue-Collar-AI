@@ -183,6 +183,88 @@ export async function askAI(
   }
 }
 
+// ─── Migration (idempotent bulk import) ───────────────────────────────────────
+
+export interface MigrationIdMap {
+  clientId: string;
+  serverId: string;
+}
+
+export interface MigrationResult {
+  paystubs: MigrationIdMap[];
+  debts: MigrationIdMap[];
+  bills: MigrationIdMap[];
+  assets: MigrationIdMap[];
+}
+
+export type MigrationStatus = "pending" | "committed" | "failed";
+
+export interface MigrationJobResponse {
+  idempotencyKey: string;
+  status: MigrationStatus;
+  result?: MigrationResult;
+  errorMessage?: string;
+  committedAt?: string;
+  createdAt?: string;
+}
+
+/**
+ * POST /api/migrate — submit a bulk local→server migration.
+ * Idempotent: re-submitting the same idempotencyKey returns the original result.
+ */
+export async function startMigration(
+  token: string,
+  payload: {
+    idempotencyKey: string;
+    profile?: Record<string, unknown>;
+    paystubs: Array<{ clientId: string } & Record<string, unknown>>;
+    debts: Array<{ clientId: string } & Record<string, unknown>>;
+    bills: Array<{ clientId: string } & Record<string, unknown>>;
+    assets: Array<{ clientId: string } & Record<string, unknown>>;
+  },
+): Promise<MigrationJobResponse> {
+  const res = await financialFetch("/migrate", token, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(
+      (json as any).error ?? `Migration failed (${res.status})`,
+    );
+  }
+  return res.json();
+}
+
+/**
+ * GET /api/migrate/status/:key — poll for migration result.
+ * Call this after a disconnect to check whether the server committed.
+ * Returns a MigrationJobResponse with status 'failed' if the key is not found.
+ */
+export async function getMigrationStatus(
+  token: string,
+  idempotencyKey: string,
+): Promise<MigrationJobResponse> {
+  const res = await financialFetch(
+    `/migrate/status/${encodeURIComponent(idempotencyKey)}`,
+    token,
+  );
+  if (res.status === 404) {
+    return {
+      idempotencyKey,
+      status: "failed",
+      errorMessage: "Migration not found. Please try again.",
+    };
+  }
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(
+      (json as any).error ?? `Status check failed (${res.status})`,
+    );
+  }
+  return res.json();
+}
+
 // ─── Financial API ─────────────────────────────────────────────────────────────
 // All financial endpoints require a verified Clerk session token.
 

@@ -7,6 +7,8 @@ import {
   createRecord,
   updateRecord,
   deleteRecord,
+  startMigration,
+  getMigrationStatus,
   type FinancialSnapshot,
 } from './api';
 
@@ -456,19 +458,89 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, [isLoaded, isSignedIn, serverSynced, getToken]);
 
-  // ─── Migration ─────────────────────────────────────────────────────────────
+  // ─── Migration (idempotent) ────────────────────────────────────────────────
+  //
+  // The idempotency key is a UUID generated once and persisted in localStorage
+  // (MIGRATION_IDEM_KEY) separately from the main state blob.  This key survives
+  // page refreshes and disconnects, so a retry always reuses the same key and the
+  // server can return the original result without creating duplicates.
+  //
+  // Flow:
+  //   1. Check if an existing key committed while offline → apply result and done.
+  //   2. Generate a new key if none exists, persist to localStorage.
+  //   3. POST /api/migrate — server runs everything in one DB transaction.
+  //   4. Poll GET /api/migrate/status/:key every 2 s until committed or failed.
+  //   5. On committed: clear key, clear pending UUID map, reload from server.
+  //   6. On failed: clear key (next call generates a fresh one), throw error.
+
+  const MIGRATION_IDEM_KEY = 'bcf_migration_idem_key';
 
   const migrateLocalToServer = useCallback(async () => {
     const token = tokenRef.current;
-    if (!token) throw new Error('Not signed in');
+    if (!token) throw new Error('Not signed in — please reload and try again.');
+
+    // ── Step 1: check if a prior migration already committed while we were offline ──
+    let idempotencyKey = localStorage.getItem(MIGRATION_IDEM_KEY);
+    if (idempotencyKey) {
+      try {
+        const existing = await getMigrationStatus(token, idempotencyKey);
+        if (existing.status === 'committed') {
+          // Already done — just reload server data.
+          localStorage.removeItem(MIGRATION_IDEM_KEY);
+          idPendingMap.current.clear();
+          setMigrationPending(false);
+          setServerSynced(false);
+          return;
+        }
+        if (existing.status === 'failed') {
+          // Previous attempt failed cleanly — generate a fresh key below.
+          localStorage.removeItem(MIGRATION_IDEM_KEY);
+          idempotencyKey = null;
+        }
+        // 'pending' → re-POST with the same key; server serialises concurrent requests.
+      } catch {
+        // Status check failed (network error, 404) — proceed with the existing key.
+      }
+    }
+
+    // ── Step 2: mint a key if we don't have one ───────────────────────────────
+    if (!idempotencyKey) {
+      idempotencyKey = crypto.randomUUID();
+      localStorage.setItem(MIGRATION_IDEM_KEY, idempotencyKey);
+    }
+
+    // ── Step 3: build payload and submit ─────────────────────────────────────
     const cur = stateRef.current;
-    if (cur.profile) await saveProfile(token, profileToApi(cur.profile));
-    for (const p of cur.paystubs) await createRecord(token, 'paystubs', paystubToApi(p));
-    for (const d of cur.debts) await createRecord(token, 'debts', debtToApi(d));
-    for (const b of cur.bills) await createRecord(token, 'bills', billToApi(b));
-    for (const a of cur.assets) await createRecord(token, 'assets', assetToApi(a));
+    const payload = {
+      idempotencyKey,
+      profile: cur.profile ? profileToApi(cur.profile) : undefined,
+      paystubs: cur.paystubs.map(p => ({ clientId: p.id, ...paystubToApi(p) })),
+      debts:    cur.debts.map(d    => ({ clientId: d.id, ...debtToApi(d) })),
+      bills:    cur.bills.map(b    => ({ clientId: b.id, ...billToApi(b) })),
+      assets:   cur.assets.map(a   => ({ clientId: a.id, ...assetToApi(a) })),
+    };
+
+    let response = await startMigration(token, payload);
+
+    // ── Step 4: poll until committed or failed (handles disconnect after submit) ──
+    const MAX_POLLS = 60; // 2 min at 2-second intervals
+    for (let i = 0; i < MAX_POLLS && response.status === 'pending'; i++) {
+      await new Promise<void>(resolve => setTimeout(resolve, 2000));
+      response = await getMigrationStatus(token, idempotencyKey);
+    }
+
+    // ── Step 5 / 6: apply result or surface failure ───────────────────────────
+    if (response.status !== 'committed') {
+      localStorage.removeItem(MIGRATION_IDEM_KEY);
+      throw new Error(
+        response.errorMessage ?? 'Migration timed out. Please try again.',
+      );
+    }
+
+    localStorage.removeItem(MIGRATION_IDEM_KEY);
+    idPendingMap.current.clear();
     setMigrationPending(false);
-    setServerSynced(false); // reload to unify IDs
+    setServerSynced(false); // triggers full snapshot reload, replacing local IDs with server IDs
   }, []);
 
   const dismissMigration = useCallback(() => setMigrationPending(false), []);

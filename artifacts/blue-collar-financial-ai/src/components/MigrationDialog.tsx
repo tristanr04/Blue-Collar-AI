@@ -6,9 +6,14 @@
  * before any data is sent. Nothing is migrated automatically.
  *
  * States: confirm → uploading → done | error
+ *
+ * Idempotency: the store's migrateLocalToServer generates a UUID key stored in
+ * localStorage so that retries (from "Try again" or a page refresh mid-upload)
+ * re-use the same key — the server returns the original result rather than
+ * creating duplicate records.
  */
 import React, { useState } from 'react';
-import { Cloud, CheckCircle2, AlertTriangle, Loader2, Database } from 'lucide-react';
+import { Cloud, CheckCircle2, AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useStore } from '@/lib/store';
 
@@ -23,21 +28,22 @@ export default function MigrationDialog() {
   const [phase, setPhase] = useState<Phase>('confirm');
   const [errorMsg, setErrorMsg] = useState('');
 
-  if (!migrationPending && phase === 'confirm') return null;
-  // Keep the modal visible during uploading / done / error even if store flag clears.
+  // Keep the modal visible during uploading / done / error even if the store
+  // flag clears mid-flight.
   if (!migrationPending && phase === 'confirm') return null;
 
   const counts = [
     { label: 'Paystubs', count: paystubs.length, icon: '💵' },
-    { label: 'Debts', count: debts.length, icon: '💳' },
-    { label: 'Bills', count: bills.length, icon: '📄' },
-    { label: 'Assets', count: assets.length, icon: '🏦' },
+    { label: 'Debts',    count: debts.length,    icon: '💳' },
+    { label: 'Bills',    count: bills.length,     icon: '📄' },
+    { label: 'Assets',   count: assets.length,    icon: '🏦' },
   ].filter(c => c.count > 0);
 
   const totalRecords = paystubs.length + debts.length + bills.length + assets.length;
 
   async function handleUpload() {
     setPhase('uploading');
+    setErrorMsg('');
     try {
       await migrateLocalToServer();
       setPhase('done');
@@ -56,6 +62,13 @@ export default function MigrationDialog() {
     setPhase('confirm');
   }
 
+  function handleRetry() {
+    // The store already cleared the failed idempotency key, so the next
+    // handleUpload call will generate a fresh one.
+    setPhase('confirm');
+    setErrorMsg('');
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -65,6 +78,7 @@ export default function MigrationDialog() {
       aria-labelledby="migration-title"
     >
       <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+
         {/* Header */}
         <div className="px-6 pt-6 pb-4 border-b border-slate-800">
           <div className="flex items-center gap-3">
@@ -84,6 +98,8 @@ export default function MigrationDialog() {
 
         {/* Body */}
         <div className="px-6 py-5">
+
+          {/* ── Confirm ── */}
           {phase === 'confirm' && (
             <>
               <p className="text-sm text-slate-300 mb-4">
@@ -91,8 +107,7 @@ export default function MigrationDialog() {
                 data is available everywhere and backed up securely.
               </p>
 
-              {/* What will migrate */}
-              <div className="bg-slate-800 rounded-xl p-4 mb-5 space-y-2">
+              <div className="bg-slate-800 rounded-xl p-4 mb-4 space-y-2">
                 {counts.length === 0 ? (
                   <p className="text-sm text-slate-400">No records to upload.</p>
                 ) : (
@@ -117,8 +132,7 @@ export default function MigrationDialog() {
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
                 <span>
                   Your data is encrypted in transit and stored securely. Only you can
-                  access it. This cannot be undone, but you can delete records individually
-                  at any time.
+                  access it. Safe to retry — if interrupted, we'll resume without creating duplicates.
                 </span>
               </div>
 
@@ -142,18 +156,23 @@ export default function MigrationDialog() {
             </>
           )}
 
+          {/* ── Uploading / polling ── */}
           {phase === 'uploading' && (
             <div className="flex flex-col items-center py-6 gap-4 text-center">
               <Loader2 className="w-10 h-10 text-emerald-400 animate-spin" />
               <div>
                 <p className="text-white font-medium">Uploading your data…</p>
                 <p className="text-sm text-slate-400 mt-1">
-                  Sending {totalRecords} record{totalRecords !== 1 ? 's' : ''} to the server
+                  Saving {totalRecords} record{totalRecords !== 1 ? 's' : ''} securely.
+                </p>
+                <p className="text-xs text-slate-500 mt-2">
+                  Safe to close — progress is tracked and will resume on re-open.
                 </p>
               </div>
             </div>
           )}
 
+          {/* ── Done ── */}
           {phase === 'done' && (
             <div className="flex flex-col items-center py-6 gap-4 text-center">
               <div className="w-14 h-14 rounded-full bg-emerald-600/20 flex items-center justify-center">
@@ -175,6 +194,7 @@ export default function MigrationDialog() {
             </div>
           )}
 
+          {/* ── Error ── */}
           {phase === 'error' && (
             <div className="flex flex-col items-center py-4 gap-4 text-center">
               <div className="w-14 h-14 rounded-full bg-red-600/20 flex items-center justify-center">
@@ -183,6 +203,9 @@ export default function MigrationDialog() {
               <div>
                 <p className="text-white font-semibold">Upload failed</p>
                 <p className="text-sm text-slate-400 mt-1">{errorMsg}</p>
+                <p className="text-xs text-slate-500 mt-2">
+                  Your local data is unchanged — nothing was partially saved.
+                </p>
               </div>
               <div className="flex gap-3 w-full">
                 <Button
@@ -194,13 +217,15 @@ export default function MigrationDialog() {
                 </Button>
                 <Button
                   className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white"
-                  onClick={() => { setPhase('confirm'); setErrorMsg(''); }}
+                  onClick={handleRetry}
                 >
+                  <RefreshCw className="w-4 h-4 mr-2" />
                   Try again
                 </Button>
               </div>
             </div>
           )}
+
         </div>
       </div>
     </div>
