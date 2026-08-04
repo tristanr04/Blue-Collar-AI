@@ -17,6 +17,13 @@ import { scanLimiter } from "../middlewares/rate-limit.js";
 import { scanSemaphore } from "../middlewares/ai-guard.js";
 import { makeAbortController } from "../middlewares/timeout.js";
 import { requireAuthenticatedUser } from "../middlewares/auth.js";
+import type { AuthenticatedRequest } from "../middlewares/auth.js";
+import {
+  checkDocumentFingerprint,
+  createScannedDocument,
+  ensureUser,
+} from "../lib/financial-repository.js";
+import { computeFileFingerprint } from "../lib/fingerprint.js";
 
 const require = createRequire(import.meta.url);
 const pdfParse: (buffer: Buffer) => Promise<{
@@ -199,8 +206,26 @@ router.post(
     }
 
     const { buffer, originalname } = req.file;
+    const userId = (req as AuthenticatedRequest).authenticatedUserId!;
 
     try {
+      // ── Fingerprint / duplicate-document check ─────────────────────────────
+      // Computed BEFORE AI so we never waste an AI call on a duplicate upload.
+      // Ensure the user row exists first (required by the FK on scanned_documents).
+      const fingerprint = computeFileFingerprint(buffer);
+      await ensureUser({ userId });
+      const existingDoc = await checkDocumentFingerprint(userId, fingerprint);
+      if (existingDoc) {
+        abort.clearTimeout();
+        res.status(409).json({
+          stage: "duplicate_document",
+          error:
+            "This document has already been imported. Each file can only be added once per account. " +
+            `(First imported: ${existingDoc.createdAt.toLocaleDateString()})`,
+        });
+        return;
+      }
+
       const detectedMime = await detectSupportedUpload(buffer);
       let rawJson: string;
       let responseMime = detectedMime;
@@ -301,6 +326,17 @@ router.post(
         },
         "secure scan complete",
       );
+
+      // ── Persist document record (fire-and-forget; never fail the scan) ─────
+      createScannedDocument(userId, {
+        fileFingerprint: fingerprint,
+        fileName: originalname,
+        mimeType: responseMime,
+        documentType: data.docType ?? "Unknown",
+        classificationConfidence: data.classificationConfidence ?? null,
+        institutionNormalized: institution.normalizedName ?? null,
+        status: "Processed",
+      }).catch(err => logger.warn({ err }, "Failed to persist scanned document record"));
 
       res.json({
         ...data,

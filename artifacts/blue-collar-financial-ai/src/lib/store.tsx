@@ -79,7 +79,7 @@ export interface ScannedDocument {
   type: 'Paystub' | 'Bill' | 'Other';
   status: 'Pending Review' | 'Processed' | 'Rejected';
   data?: any;
-  /** SHA-256 hex fingerprint of the file — used for duplicate detection */
+  /** SHA-256 hex fingerprint — used for client-side and server-side duplicate detection */
   fingerprint?: string;
 }
 
@@ -124,8 +124,6 @@ export function computeMetrics(
   const freqMult: Record<string, number> = { Weekly: 4.33, 'Bi-Weekly': 2.17, 'Semi-Monthly': 2, Monthly: 1 };
   const mult = freqMult[profile?.payFrequency ?? 'Weekly'] ?? 4.33;
 
-  // Use the NEWEST paystub by pay-date (not the last array element).
-  // sortPaystubsNewestFirst from financial-calculations.ts handles invalid dates gracefully.
   const latest = sortPaystubsNewestFirst(paystubs)[0];
   const monthlyNet = Math.round((latest?.netPay ?? 0) * mult);
   const monthlyGross = Math.round((latest?.grossPay ?? 0) * mult);
@@ -139,13 +137,10 @@ export function computeMetrics(
     .reduce((s, a) => s + a.value, 0);
   const totalDebt = debts.reduce((s, d) => s + d.balance, 0);
   const netWorth = assets.reduce((s, a) => s + a.value, 0) - totalDebt;
-
-  // DTI uses GROSS income — this is the lender-standard definition.
   const dti = monthlyGross > 0 ? (totalDebtMin / monthlyGross) * 100 : 0;
   const monthlyExpenses = totalBills + totalDebtMin;
   const emergencyMonths = monthlyExpenses > 0 ? Math.round((liquidCash / monthlyExpenses) * 10) / 10 : 0;
 
-  // Health score
   let healthScore = 0;
   if (monthlyNet > 0 && paystubs.length > 0) {
     let score = 0;
@@ -157,7 +152,6 @@ export function computeMetrics(
     const hiB = debts.filter(d => (d.interestRate ?? 0) > 10).reduce((s, d) => s + d.balance, 0);
     const util = Math.min(hiB / 10000, 1);
     if (util < 0.3) score += 15; else if (util < 0.6) score += 8;
-    // Health score DTI also uses gross income — aligns with lender thresholds.
     const dtiR = monthlyGross > 0 ? totalDebtMin / monthlyGross : 1;
     if (dtiR <= 0.15) score += 15; else if (dtiR <= 0.28) score += 10; else if (dtiR <= 0.36) score += 5;
     const hiCount = debts.filter(d => (d.interestRate ?? 0) > 15).length;
@@ -204,21 +198,14 @@ interface StoreContextType extends StoreState {
   addDocument: (doc: Omit<ScannedDocument, 'id' | 'date'>) => void;
   updateDocument: (id: string, updates: Partial<ScannedDocument>) => void;
   removeDocument: (id: string) => void;
-  /** Record a batch of field-level changes and recompute metrics. */
   addChangeRecords: (records: FinancialChangeRecord[]) => void;
-  /** Reverse all changes from a single import (identified by sourceDocumentId). */
   undoImport: (sourceDocumentId: string) => void;
-  /** Restore a single field to its previous value. */
   restoreFieldValue: (changeId: string) => void;
   resetToDemo: () => void;
   clearAll: () => void;
-  /** True while the initial server snapshot is being fetched. */
   isLoadingFromServer: boolean;
-  /** True when local-only data exists and the server has no data (migration offer). */
   migrationPending: boolean;
-  /** Upload local data to the server (one-time migration). */
   migrateLocalToServer: () => Promise<void>;
-  /** Dismiss the migration offer without uploading. */
   dismissMigration: () => void;
 }
 
@@ -249,15 +236,12 @@ const DEMO_BASE = {
     { id: 'a3', name: 'Union 401k', type: 'Investment' as const, value: 14500 },
   ],
   documents: [
-    { id: 'doc1', date: new Date().toISOString(), type: 'Paystub' as const, status: 'Pending Review' as const, data: { netPay: 1400, grossPay: 1900 } },
+    { id: 'doc1', date: new Date().toISOString(), type: 'Paystub' as const, status: 'Pending Review' as const },
   ],
   changeHistory: [] as FinancialChangeRecord[],
 };
 
-const DEMO_STATE: StoreState = {
-  ...DEMO_BASE,
-  computed: computeMetrics(DEMO_BASE),
-};
+const DEMO_STATE: StoreState = { ...DEMO_BASE, computed: computeMetrics(DEMO_BASE) };
 
 const DEFAULT_STATE: StoreState = {
   profile: null, paystubs: [], debts: [], bills: [], assets: [], documents: [],
@@ -268,11 +252,9 @@ const DEFAULT_STATE: StoreState = {
 
 const StoreContext = createContext<StoreContextType | null>(null);
 
-/** Re-hydrate old stored state that may be missing newer fields. */
 function migrateState(raw: any): StoreState {
   const base = {
-    ...DEFAULT_STATE,
-    ...raw,
+    ...DEFAULT_STATE, ...raw,
     changeHistory: raw.changeHistory ?? [],
     paystubs: raw.paystubs ?? [],
     debts: raw.debts ?? [],
@@ -284,7 +266,6 @@ function migrateState(raw: any): StoreState {
   return base;
 }
 
-/** Apply an update to the mutable parts of state and recompute metrics. */
 function withComputed(patch: Partial<StoreState>, prev: StoreState): StoreState {
   const next = { ...prev, ...patch };
   next.computed = computeMetrics(next);
@@ -293,7 +274,6 @@ function withComputed(patch: Partial<StoreState>, prev: StoreState): StoreState 
 
 // ─── Server ↔ Store data mappers ──────────────────────────────────────────────
 
-/** Map a server FinancialSnapshot to StoreState fields. */
 function mapSnapshotToState(snapshot: FinancialSnapshot): Partial<StoreState> {
   const prof = snapshot.profile as any;
   return {
@@ -306,7 +286,6 @@ function mapSnapshotToState(snapshot: FinancialSnapshot): Partial<StoreState> {
     } : null,
     paystubs: (snapshot.paystubs as any[]).map((p) => ({
       id: p.id,
-      // payDate is a timestamp column; the server returns it serialized as ISO string
       date: p.payDate ? String(p.payDate) : new Date().toISOString(),
       employer: p.employer ?? '',
       regularHours: Number(p.regularHours ?? 0),
@@ -348,62 +327,49 @@ function mapSnapshotToState(snapshot: FinancialSnapshot): Partial<StoreState> {
   };
 }
 
-/** Map a store Paystub to the API request body. */
 function paystubToApi(p: Omit<Paystub, 'id'>): Record<string, unknown> {
   return {
-    employer: p.employer,
-    payDate: p.date,  // server coerces ISO string → timestamp
-    regularHours: p.regularHours,
-    overtimeHours: p.overtimeHours,
-    doubleTimeHours: p.doubleTimeHours,
-    perDiem: p.perDiem,
-    grossPay: p.grossPay,
-    netPay: p.netPay,
-    taxes: p.taxes,
-    deductions: p.deductions,
+    employer: p.employer, payDate: p.date,
+    regularHours: p.regularHours, overtimeHours: p.overtimeHours,
+    doubleTimeHours: p.doubleTimeHours, perDiem: p.perDiem,
+    grossPay: p.grossPay, netPay: p.netPay,
+    taxes: p.taxes, deductions: p.deductions,
   };
 }
-
-function debtToApi(d: Omit<Debt, 'id'>): Record<string, unknown> {
+function debtToApi(d: Partial<Omit<Debt, 'id'>>): Record<string, unknown> {
   return {
-    name: d.name,
-    balance: d.balance,
-    interestRate: d.interestRate,
-    minimumPayment: d.minimumPayment,
+    ...(d.name !== undefined && { name: d.name }),
+    ...(d.balance !== undefined && { balance: d.balance }),
+    ...(d.interestRate !== undefined && { interestRate: d.interestRate }),
+    ...(d.minimumPayment !== undefined && { minimumPayment: d.minimumPayment }),
     isRevolving: d.isRevolving ?? false,
     creditLimit: d.creditLimit ?? null,
     institutionName: d.institutionName ?? null,
     lastFour: d.lastFour ?? null,
   };
 }
-
-function billToApi(b: Omit<Bill, 'id'>): Record<string, unknown> {
+function billToApi(b: Partial<Omit<Bill, 'id'>>): Record<string, unknown> {
   return {
-    name: b.name,
-    amount: b.amount,
-    dueDay: b.dueDate,
-    isAutoPay: b.isAutoPay,
+    ...(b.name !== undefined && { name: b.name }),
+    ...(b.amount !== undefined && { amount: b.amount }),
+    ...(b.dueDate !== undefined && { dueDay: b.dueDate }),
+    ...(b.isAutoPay !== undefined && { isAutoPay: b.isAutoPay }),
     providerNormalized: b.providerNormalized ?? null,
   };
 }
-
-function assetToApi(a: Omit<Asset, 'id'>): Record<string, unknown> {
+function assetToApi(a: Partial<Omit<Asset, 'id'>>): Record<string, unknown> {
   return {
-    name: a.name,
-    type: a.type,
-    value: a.value,
+    ...(a.name !== undefined && { name: a.name }),
+    ...(a.type !== undefined && { type: a.type }),
+    ...(a.value !== undefined && { value: a.value }),
     institutionName: a.institutionName ?? null,
     lastFour: a.lastFour ?? null,
   };
 }
-
 function profileToApi(p: Profile): Record<string, unknown> {
   return {
-    name: p.name,
-    payFrequency: p.payFrequency,
-    hourlyRate: p.hourlyRate,
-    filingContext: p.filingContext,
-    hasCompletedOnboarding: p.hasCompletedOnboarding,
+    name: p.name, payFrequency: p.payFrequency, hourlyRate: p.hourlyRate,
+    filingContext: p.filingContext, hasCompletedOnboarding: p.hasCompletedOnboarding,
   };
 }
 
@@ -420,44 +386,38 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return DEFAULT_STATE;
   });
 
-  // Persist to localStorage on every state change.
   useEffect(() => {
     localStorage.setItem('bcf_state', JSON.stringify(state));
   }, [state]);
 
-  // ─── Auth integration ───────────────────────────────────────────────────────
+  // ─── Auth ─────────────────────────────────────────────────────────────────
 
   const { isLoaded, isSignedIn, getToken } = useAuth();
-
-  // Keep a fresh Clerk session token in a ref so background CRUD syncs can read
-  // it without causing unnecessary re-renders.
   const tokenRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!isLoaded || !isSignedIn) { tokenRef.current = null; return; }
     const refresh = () => getToken().then(t => { tokenRef.current = t; }).catch(() => {});
     refresh();
-    // Clerk tokens expire after 60 s; refresh every 50 s.
     const id = setInterval(refresh, 50_000);
     return () => clearInterval(id);
   }, [isLoaded, isSignedIn, getToken]);
 
-  // ─── Server snapshot on sign-in ─────────────────────────────────────────────
+  // ─── Local→Server UUID resolution map ─────────────────────────────────────
+  // Maps a temporary local UUID to a Promise that resolves with the server UUID.
+  // delete/update operations chain on this promise so they always use the real UUID.
+  const idPendingMap = useRef<Map<string, Promise<string>>>(new Map());
+
+  // ─── Server snapshot on sign-in ───────────────────────────────────────────
 
   const [serverSynced, setServerSynced] = useState(false);
   const [isLoadingFromServer, setIsLoadingFromServer] = useState(false);
   const [migrationPending, setMigrationPending] = useState(false);
-
-  // Keep a ref to current state so the load effect can check for local data
-  // without it being part of the dependency array.
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; });
 
-  // Reset sync flag on sign-out so we reload on next sign-in.
   useEffect(() => {
-    if (isLoaded && !isSignedIn) {
-      setServerSynced(false);
-      setMigrationPending(false);
-    }
+    if (isLoaded && !isSignedIn) { setServerSynced(false); setMigrationPending(false); }
   }, [isLoaded, isSignedIn]);
 
   useEffect(() => {
@@ -471,19 +431,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         const snapshot = await loadSnapshot(token);
         if (cancelled) return;
         const hasServerData = Boolean(
-          snapshot.profile ||
-          snapshot.paystubs?.length ||
-          snapshot.debts?.length ||
-          snapshot.bills?.length ||
-          snapshot.assets?.length,
+          snapshot.profile || snapshot.paystubs?.length ||
+          snapshot.debts?.length || snapshot.bills?.length || snapshot.assets?.length,
         );
-
         if (hasServerData) {
           setState(migrateState({ ...DEFAULT_STATE, ...mapSnapshotToState(snapshot) }));
         } else {
           const cur = stateRef.current;
-          const hasLocalData =
-            cur.paystubs.length > 0 || cur.debts.length > 0 ||
+          const hasLocalData = cur.paystubs.length > 0 || cur.debts.length > 0 ||
             cur.bills.length > 0 || cur.assets.length > 0;
           if (hasLocalData) setMigrationPending(true);
         }
@@ -496,40 +451,89 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, [isLoaded, isSignedIn, serverSynced, getToken]);
 
-  // ─── One-time migration: upload local data to server ────────────────────────
+  // ─── Migration ─────────────────────────────────────────────────────────────
 
   const migrateLocalToServer = useCallback(async () => {
     const token = tokenRef.current;
     if (!token) throw new Error('Not signed in');
     const cur = stateRef.current;
-    try {
-      if (cur.profile) await saveProfile(token, profileToApi(cur.profile));
-      for (const p of cur.paystubs) await createRecord(token, 'paystubs', paystubToApi(p));
-      for (const d of cur.debts) await createRecord(token, 'debts', debtToApi(d));
-      for (const b of cur.bills) await createRecord(token, 'bills', billToApi(b));
-      for (const a of cur.assets) await createRecord(token, 'assets', assetToApi(a));
-      setMigrationPending(false);
-      // Reload from server so local IDs are replaced with server UUIDs.
-      setServerSynced(false);
-    } catch (err) {
-      console.error('[store] Migration upload failed:', err);
-      throw err;
-    }
+    if (cur.profile) await saveProfile(token, profileToApi(cur.profile));
+    for (const p of cur.paystubs) await createRecord(token, 'paystubs', paystubToApi(p));
+    for (const d of cur.debts) await createRecord(token, 'debts', debtToApi(d));
+    for (const b of cur.bills) await createRecord(token, 'bills', billToApi(b));
+    for (const a of cur.assets) await createRecord(token, 'assets', assetToApi(a));
+    setMigrationPending(false);
+    setServerSynced(false); // reload to unify IDs
   }, []);
 
   const dismissMigration = useCallback(() => setMigrationPending(false), []);
 
-  // ─── Background API sync helper ──────────────────────────────────────────────
-  // Each CRUD function updates local state immediately (optimistic) then fires
-  // a background API call. Errors are logged but never surface to the UI.
+  // ─── Sync helpers ─────────────────────────────────────────────────────────
 
+  /**
+   * Fire a simple background write (profile save, or any non-create operation
+   * that doesn't need UUID resolution).
+   */
   const bgSync = useCallback((fn: (token: string) => Promise<unknown>) => {
     const token = tokenRef.current;
     if (!token) return;
-    fn(token).catch(err => console.error('[store] background sync failed:', err));
+    fn(token).catch(err => console.error('[store] sync failed:', err));
   }, []);
 
-  // ─── Profile ─────────────────────────────────────────────────────────────────
+  /**
+   * Fire a CREATE call in the background. When the server responds with the
+   * real UUID, replace the temporary localId in state and in changeHistory.
+   * The Promise in idPendingMap resolves with the server UUID so that any
+   * delete/update queued before the response arrives uses the correct ID.
+   */
+  const bgCreate = useCallback(<T extends { id: string }>(
+    localId: string,
+    section: 'paystubs' | 'debts' | 'bills' | 'assets',
+    fn: (token: string) => Promise<T>,
+    buildPatch: (prev: StoreState, serverId: string) => Partial<StoreState>,
+  ) => {
+    const token = tokenRef.current;
+    if (!token) return;
+
+    const promise = fn(token)
+      .then(result => {
+        const serverId = result.id;
+        setState(prev => withComputed(buildPatch(prev, serverId), prev));
+        idPendingMap.current.delete(localId);
+        return serverId;
+      })
+      .catch(err => {
+        console.error(`[store] ${section} create sync failed:`, err);
+        idPendingMap.current.delete(localId);
+        return localId; // keep local ID on failure — next server load will reconcile
+      });
+
+    idPendingMap.current.set(localId, promise);
+  }, []);
+
+  /**
+   * Fire a DELETE or UPDATE call, waiting for any in-flight create on the same
+   * record to finish first so the server UUID is always used.
+   */
+  const bgWithIdSync = useCallback((
+    localId: string,
+    fn: (token: string, resolvedId: string) => Promise<unknown>,
+  ) => {
+    const token = tokenRef.current;
+    if (!token) return;
+
+    const exec = (serverId: string) =>
+      fn(token, serverId).catch(err => console.error('[store] sync failed:', err));
+
+    const pending = idPendingMap.current.get(localId);
+    if (pending) {
+      pending.then(exec).catch(() => {});
+    } else {
+      exec(localId);
+    }
+  }, []);
+
+  // ─── Profile ──────────────────────────────────────────────────────────────
 
   const updateProfile = useCallback((profileUpdates: Partial<Profile>) => {
     setState(prev => {
@@ -541,84 +545,90 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     });
   }, [bgSync]);
 
-  // ─── Paystubs ─────────────────────────────────────────────────────────────────
+  // ─── Paystubs ─────────────────────────────────────────────────────────────
 
   const addPaystub = useCallback((paystub: Omit<Paystub, 'id'>): string => {
-    const id = crypto.randomUUID();
-    setState(prev => withComputed({ paystubs: [...prev.paystubs, { ...paystub, id }] }, prev));
-    bgSync(t => createRecord(t, 'paystubs', paystubToApi(paystub)));
-    return id;
-  }, [bgSync]);
+    const localId = crypto.randomUUID();
+    setState(prev => withComputed({ paystubs: [...prev.paystubs, { ...paystub, id: localId }] }, prev));
+    bgCreate(localId, 'paystubs', t => createRecord(t, 'paystubs', paystubToApi(paystub)), (prev, serverId) => ({
+      paystubs: prev.paystubs.map(p => p.id === localId ? { ...p, id: serverId } : p),
+      changeHistory: prev.changeHistory.map(r => r.recordId === localId ? { ...r, recordId: serverId } : r),
+    }));
+    return localId;
+  }, [bgCreate]);
 
   const removePaystub = useCallback((id: string) => {
     setState(prev => withComputed({ paystubs: prev.paystubs.filter(p => p.id !== id) }, prev));
-    bgSync(t => deleteRecord(t, 'paystubs', id));
-  }, [bgSync]);
+    bgWithIdSync(id, (t, serverId) => deleteRecord(t, 'paystubs', serverId));
+  }, [bgWithIdSync]);
 
-  // ─── Debts ───────────────────────────────────────────────────────────────────
+  // ─── Debts ────────────────────────────────────────────────────────────────
 
   const addDebt = useCallback((debt: Omit<Debt, 'id'>): string => {
-    const id = crypto.randomUUID();
-    setState(prev => withComputed({ debts: [...prev.debts, { ...debt, id }] }, prev));
-    bgSync(t => createRecord(t, 'debts', debtToApi(debt)));
-    return id;
-  }, [bgSync]);
+    const localId = crypto.randomUUID();
+    setState(prev => withComputed({ debts: [...prev.debts, { ...debt, id: localId }] }, prev));
+    bgCreate(localId, 'debts', t => createRecord(t, 'debts', debtToApi(debt)), (prev, serverId) => ({
+      debts: prev.debts.map(d => d.id === localId ? { ...d, id: serverId } : d),
+      changeHistory: prev.changeHistory.map(r => r.recordId === localId ? { ...r, recordId: serverId } : r),
+    }));
+    return localId;
+  }, [bgCreate]);
 
   const removeDebt = useCallback((id: string) => {
     setState(prev => withComputed({ debts: prev.debts.filter(d => d.id !== id) }, prev));
-    bgSync(t => deleteRecord(t, 'debts', id));
-  }, [bgSync]);
+    bgWithIdSync(id, (t, serverId) => deleteRecord(t, 'debts', serverId));
+  }, [bgWithIdSync]);
 
   const updateDebt = useCallback((id: string, updates: Partial<Debt>) => {
-    setState(prev => withComputed({
-      debts: prev.debts.map(d => d.id === id ? { ...d, ...updates } : d),
-    }, prev));
-    bgSync(t => updateRecord(t, 'debts', id, debtToApi(updates as Omit<Debt, 'id'>)));
-  }, [bgSync]);
+    setState(prev => withComputed({ debts: prev.debts.map(d => d.id === id ? { ...d, ...updates } : d) }, prev));
+    bgWithIdSync(id, (t, serverId) => updateRecord(t, 'debts', serverId, debtToApi(updates)));
+  }, [bgWithIdSync]);
 
-  // ─── Bills ───────────────────────────────────────────────────────────────────
+  // ─── Bills ────────────────────────────────────────────────────────────────
 
   const addBill = useCallback((bill: Omit<Bill, 'id'>): string => {
-    const id = crypto.randomUUID();
-    setState(prev => withComputed({ bills: [...prev.bills, { ...bill, id }] }, prev));
-    bgSync(t => createRecord(t, 'bills', billToApi(bill)));
-    return id;
-  }, [bgSync]);
+    const localId = crypto.randomUUID();
+    setState(prev => withComputed({ bills: [...prev.bills, { ...bill, id: localId }] }, prev));
+    bgCreate(localId, 'bills', t => createRecord(t, 'bills', billToApi(bill)), (prev, serverId) => ({
+      bills: prev.bills.map(b => b.id === localId ? { ...b, id: serverId } : b),
+      changeHistory: prev.changeHistory.map(r => r.recordId === localId ? { ...r, recordId: serverId } : r),
+    }));
+    return localId;
+  }, [bgCreate]);
 
   const removeBill = useCallback((id: string) => {
     setState(prev => withComputed({ bills: prev.bills.filter(b => b.id !== id) }, prev));
-    bgSync(t => deleteRecord(t, 'bills', id));
-  }, [bgSync]);
+    bgWithIdSync(id, (t, serverId) => deleteRecord(t, 'bills', serverId));
+  }, [bgWithIdSync]);
 
   const updateBill = useCallback((id: string, updates: Partial<Bill>) => {
-    setState(prev => withComputed({
-      bills: prev.bills.map(b => b.id === id ? { ...b, ...updates } : b),
-    }, prev));
-    bgSync(t => updateRecord(t, 'bills', id, billToApi(updates as Omit<Bill, 'id'>)));
-  }, [bgSync]);
+    setState(prev => withComputed({ bills: prev.bills.map(b => b.id === id ? { ...b, ...updates } : b) }, prev));
+    bgWithIdSync(id, (t, serverId) => updateRecord(t, 'bills', serverId, billToApi(updates)));
+  }, [bgWithIdSync]);
 
-  // ─── Assets ──────────────────────────────────────────────────────────────────
+  // ─── Assets ───────────────────────────────────────────────────────────────
 
   const addAsset = useCallback((asset: Omit<Asset, 'id'>): string => {
-    const id = crypto.randomUUID();
-    setState(prev => withComputed({ assets: [...prev.assets, { ...asset, id }] }, prev));
-    bgSync(t => createRecord(t, 'assets', assetToApi(asset)));
-    return id;
-  }, [bgSync]);
+    const localId = crypto.randomUUID();
+    setState(prev => withComputed({ assets: [...prev.assets, { ...asset, id: localId }] }, prev));
+    bgCreate(localId, 'assets', t => createRecord(t, 'assets', assetToApi(asset)), (prev, serverId) => ({
+      assets: prev.assets.map(a => a.id === localId ? { ...a, id: serverId } : a),
+      changeHistory: prev.changeHistory.map(r => r.recordId === localId ? { ...r, recordId: serverId } : r),
+    }));
+    return localId;
+  }, [bgCreate]);
 
   const removeAsset = useCallback((id: string) => {
     setState(prev => withComputed({ assets: prev.assets.filter(a => a.id !== id) }, prev));
-    bgSync(t => deleteRecord(t, 'assets', id));
-  }, [bgSync]);
+    bgWithIdSync(id, (t, serverId) => deleteRecord(t, 'assets', serverId));
+  }, [bgWithIdSync]);
 
   const updateAsset = useCallback((id: string, updates: Partial<Asset>) => {
-    setState(prev => withComputed({
-      assets: prev.assets.map(a => a.id === id ? { ...a, ...updates } : a),
-    }, prev));
-    bgSync(t => updateRecord(t, 'assets', id, assetToApi(updates as Omit<Asset, 'id'>)));
-  }, [bgSync]);
+    setState(prev => withComputed({ assets: prev.assets.map(a => a.id === id ? { ...a, ...updates } : a) }, prev));
+    bgWithIdSync(id, (t, serverId) => updateRecord(t, 'assets', serverId, assetToApi(updates)));
+  }, [bgWithIdSync]);
 
-  // ─── Documents ───────────────────────────────────────────────────────────────
+  // ─── Documents ────────────────────────────────────────────────────────────
 
   const addDocument = useCallback((doc: Omit<ScannedDocument, 'id' | 'date'>) => {
     setState(prev => ({
@@ -628,36 +638,25 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const updateDocument = useCallback((id: string, updates: Partial<ScannedDocument>) => {
-    setState(prev => ({
-      ...prev,
-      documents: prev.documents.map(d => d.id === id ? { ...d, ...updates } : d),
-    }));
+    setState(prev => ({ ...prev, documents: prev.documents.map(d => d.id === id ? { ...d, ...updates } : d) }));
   }, []);
 
   const removeDocument = useCallback((id: string) => {
     setState(prev => ({ ...prev, documents: prev.documents.filter(d => d.id !== id) }));
   }, []);
 
-  // ─── Change history ───────────────────────────────────────────────────────────
+  // ─── Change history ───────────────────────────────────────────────────────
 
   const addChangeRecords = useCallback((records: FinancialChangeRecord[]) => {
     if (records.length === 0) return;
-    setState(prev => ({
-      ...prev,
-      changeHistory: [...prev.changeHistory, ...records],
-    }));
+    setState(prev => ({ ...prev, changeHistory: [...prev.changeHistory, ...records] }));
   }, []);
 
   const undoImport = useCallback((sourceDocumentId: string) => {
     setState(prev => {
       const toUndo = prev.changeHistory.filter(r => r.sourceDocumentId === sourceDocumentId);
       if (toUndo.length === 0) return prev;
-
-      let assets = [...prev.assets];
-      let debts = [...prev.debts];
-      let bills = [...prev.bills];
-      let paystubs = [...prev.paystubs];
-
+      let assets = [...prev.assets], debts = [...prev.debts], bills = [...prev.bills], paystubs = [...prev.paystubs];
       for (const rec of [...toUndo].reverse()) {
         if (rec.field === 'created') {
           if (rec.destinationSection === 'assets') assets = assets.filter(a => a.id !== rec.recordId);
@@ -665,15 +664,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           else if (rec.destinationSection === 'bills') bills = bills.filter(b => b.id !== rec.recordId);
           else if (rec.destinationSection === 'paystubs') paystubs = paystubs.filter(p => p.id !== rec.recordId);
         } else if (rec.oldValue !== null && rec.oldValue !== undefined) {
-          if (rec.destinationSection === 'assets')
-            assets = assets.map(a => a.id === rec.recordId ? { ...a, [rec.field]: rec.oldValue } : a);
-          else if (rec.destinationSection === 'debts')
-            debts = debts.map(d => d.id === rec.recordId ? { ...d, [rec.field]: rec.oldValue } : d);
-          else if (rec.destinationSection === 'bills')
-            bills = bills.map(b => b.id === rec.recordId ? { ...b, [rec.field]: rec.oldValue } : b);
+          if (rec.destinationSection === 'assets') assets = assets.map(a => a.id === rec.recordId ? { ...a, [rec.field]: rec.oldValue } : a);
+          else if (rec.destinationSection === 'debts') debts = debts.map(d => d.id === rec.recordId ? { ...d, [rec.field]: rec.oldValue } : d);
+          else if (rec.destinationSection === 'bills') bills = bills.map(b => b.id === rec.recordId ? { ...b, [rec.field]: rec.oldValue } : b);
         }
       }
-
       const changeHistory = prev.changeHistory.filter(r => r.sourceDocumentId !== sourceDocumentId);
       return withComputed({ assets, debts, bills, paystubs, changeHistory }, prev);
     });
@@ -683,18 +678,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setState(prev => {
       const rec = prev.changeHistory.find(r => r.id === changeId);
       if (!rec || rec.field === 'created' || rec.oldValue === null || rec.oldValue === undefined) return prev;
-
-      let assets = prev.assets;
-      let debts = prev.debts;
-      let bills = prev.bills;
-
-      if (rec.destinationSection === 'assets')
-        assets = assets.map(a => a.id === rec.recordId ? { ...a, [rec.field]: rec.oldValue } : a);
-      else if (rec.destinationSection === 'debts')
-        debts = debts.map(d => d.id === rec.recordId ? { ...d, [rec.field]: rec.oldValue } : d);
-      else if (rec.destinationSection === 'bills')
-        bills = bills.map(b => b.id === rec.recordId ? { ...b, [rec.field]: rec.oldValue } : b);
-
+      let assets = prev.assets, debts = prev.debts, bills = prev.bills;
+      if (rec.destinationSection === 'assets') assets = assets.map(a => a.id === rec.recordId ? { ...a, [rec.field]: rec.oldValue } : a);
+      else if (rec.destinationSection === 'debts') debts = debts.map(d => d.id === rec.recordId ? { ...d, [rec.field]: rec.oldValue } : d);
+      else if (rec.destinationSection === 'bills') bills = bills.map(b => b.id === rec.recordId ? { ...b, [rec.field]: rec.oldValue } : b);
       const changeHistory = prev.changeHistory.filter(r => r.id !== changeId);
       return withComputed({ assets, debts, bills, changeHistory }, prev);
     });
@@ -714,10 +701,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       addDocument, updateDocument, removeDocument,
       addChangeRecords, undoImport, restoreFieldValue,
       resetToDemo, clearAll,
-      isLoadingFromServer,
-      migrationPending,
-      migrateLocalToServer,
-      dismissMigration,
+      isLoadingFromServer, migrationPending, migrateLocalToServer, dismissMigration,
     }}>
       {children}
     </StoreContext.Provider>

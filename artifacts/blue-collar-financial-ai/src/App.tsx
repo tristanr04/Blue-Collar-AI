@@ -7,6 +7,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 
 import { StoreProvider } from '@/lib/store';
+import MigrationDialog from '@/components/MigrationDialog';
 import { JobQueueProvider } from '@/lib/jobQueue';
 import { Shell } from '@/components/layout/Shell';
 import { DeveloperOnlyPage, ProtectedPage } from '@/components/auth/ProtectedPage';
@@ -187,6 +188,7 @@ function ClerkProviderWithRoutes() {
             <JobQueueProvider>
               <Router />
               <Toaster />
+              <MigrationDialog />
             </JobQueueProvider>
           </StoreProvider>
         </TooltipProvider>

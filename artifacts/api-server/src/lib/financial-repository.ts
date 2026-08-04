@@ -11,6 +11,7 @@ import {
   insertProfileSchema,
   paystubsTable,
   profilesTable,
+  scannedDocumentsTable,
   usersTable,
 } from "@workspace/db";
 
@@ -168,6 +169,56 @@ async function softDeleteAsset(userId: string, recordId: string): Promise<boolea
     )
     .returning({ id: assetsTable.id });
   return rows.length > 0;
+}
+
+// ─── Scanned documents / fingerprints ────────────────────────────────────────
+
+/**
+ * Return the existing document record for a user + fingerprint, or null.
+ * Used for server-side duplicate-document detection before AI processing.
+ */
+export async function checkDocumentFingerprint(userId: string, fingerprint: string) {
+  return db.query.scannedDocumentsTable.findFirst({
+    where: and(
+      eq(scannedDocumentsTable.userId, userId),
+      eq(scannedDocumentsTable.fileFingerprint, fingerprint),
+      isNull(scannedDocumentsTable.deletedAt),
+    ),
+  });
+}
+
+/**
+ * Record a processed document. The UNIQUE(user_id, file_fingerprint) constraint
+ * is enforced in the DB; ON CONFLICT DO NOTHING makes this idempotent.
+ * Returns the created row, or undefined on conflict.
+ */
+export async function createScannedDocument(
+  userId: string,
+  input: {
+    fileFingerprint: string;
+    fileName: string;
+    mimeType: string;
+    documentType?: string;
+    classificationConfidence?: number | null;
+    institutionNormalized?: string | null;
+    status?: "Pending Review" | "Processed" | "Rejected";
+  },
+) {
+  const [created] = await db
+    .insert(scannedDocumentsTable)
+    .values({
+      userId,
+      fileFingerprint: input.fileFingerprint,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      documentType: input.documentType ?? "Unknown",
+      classificationConfidence: input.classificationConfidence ?? null,
+      institutionNormalized: input.institutionNormalized ?? null,
+      status: (input.status ?? "Processed") as "Pending Review" | "Processed" | "Rejected",
+    })
+    .onConflictDoNothing()
+    .returning();
+  return created; // undefined when a duplicate fingerprint was ignored
 }
 
 // ─── Update functions ─────────────────────────────────────────────────────────
