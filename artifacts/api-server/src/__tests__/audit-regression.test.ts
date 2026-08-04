@@ -13,7 +13,7 @@ const schemaSource = await readFile(
 
 test("audit reads are always scoped to the authenticated user", () => {
   assert.match(repositorySource, /eq\(auditEventsTable\.userId, userId\)/);
-  assert.doesNotMatch(repositorySource, /userId\??:\s*string/);
+  assert.doesNotMatch(repositorySource, /userId\?:\s*string/);
 });
 
 test("audit metadata strips common secret and raw-document fields", () => {

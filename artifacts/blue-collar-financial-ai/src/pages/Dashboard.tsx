@@ -5,6 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useStore } from '@/lib/store';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { AgeBenchmarkCard } from '@/components/AgeBenchmarkCard';
+import { ageFromBirthDate } from '@/lib/age-benchmarks';
 
 // ─── Financial Health Score ───────────────────────────────────────────────────
 
@@ -291,6 +293,13 @@ export default function Dashboard() {
           </div>
         ))}
       </div>
+
+      {/* Age Benchmark */}
+      <AgeBenchmarkCard
+        age={profile.birthDate ? ageFromBirthDate(profile.birthDate) : null}
+        annualGrossIncome={monthlyGross > 0 ? monthlyGross * 12 : null}
+        netWorth={netWorth}
+      />
 
       {/* Recent paystubs + next moves */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

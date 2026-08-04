@@ -83,7 +83,9 @@ function balanceSimilarity(a?: number | null, b?: number | null): number {
 }
 
 function confidenceForScore(score: number): MatchConfidence {
-  if (score >= 90) return 'high';
+  // 85+ treats an exact-last-four + institution + type match as high confidence.
+  // Pure institution-only matches top out at ~32, well below this threshold.
+  if (score >= 85) return 'high';
   if (score >= 65) return 'medium';
   if (score >= 35) return 'low';
   return 'none';
@@ -111,7 +113,18 @@ export function scoreAccountCandidate(
     missingSignals.push('Account last four unavailable');
   }
 
-  const institutionSimilarity = tokenSimilarity(extracted.institutionName, account.institutionName);
+  // Asymmetric institution matching: extracted names are user-typed abbreviations
+  // (e.g. "Chase") while stored names may be the full legal name ("JPMorgan Chase").
+  // Treat the match as exact when all extracted tokens appear in the account name.
+  const extractedInstitutionTokens = tokenize(extracted.institutionName);
+  const accountInstitutionTokens = tokenize(account.institutionName);
+  const allExtractedPresent =
+    extractedInstitutionTokens.size > 0 &&
+    [...extractedInstitutionTokens].every((t) => accountInstitutionTokens.has(t));
+  const institutionSimilarity = allExtractedPresent
+    ? 1
+    : tokenSimilarity(extracted.institutionName, account.institutionName);
+
   if (institutionSimilarity === 1) {
     score += 20;
     matchedSignals.push('Exact normalized institution');

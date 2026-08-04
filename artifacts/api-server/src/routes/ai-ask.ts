@@ -8,7 +8,6 @@ import { aiAskLimiter } from "../middlewares/rate-limit.js";
 import { aiKillSwitch, aiGlobalSemaphore } from "../middlewares/ai-guard.js";
 import { requireAuthenticatedUser } from "../middlewares/auth.js";
 import { makeAbortController } from "../middlewares/timeout.js";
-import { requireAuthenticatedUser } from "../middlewares/auth.js";
 import type { AuthenticatedRequest } from "../middlewares/auth.js";
 import { ensureUser, getFinancialSnapshot } from "../lib/financial-repository.js";
 

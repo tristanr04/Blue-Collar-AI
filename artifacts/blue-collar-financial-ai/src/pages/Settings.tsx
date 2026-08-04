@@ -40,14 +40,36 @@ export default function Settings() {
     hourlyRate: profile?.hourlyRate ?? 0,
     payFrequency: (profile?.payFrequency ?? 'Weekly') as PayFrequency,
     filingContext: (profile?.filingContext ?? 'Single') as FilingContext,
+    birthDate: profile?.birthDate ?? '',
   });
+  const [birthDateError, setBirthDateError] = useState('');
 
   const handleSave = () => {
+    // Validate birthDate if supplied.
+    if (form.birthDate) {
+      const today = new Date();
+      const parsed = new Date(`${form.birthDate}T00:00:00Z`);
+      if (!Number.isFinite(parsed.getTime())) {
+        setBirthDateError('Enter a valid date (YYYY-MM-DD).');
+        return;
+      }
+      if (parsed > today) {
+        setBirthDateError('Date of birth cannot be in the future.');
+        return;
+      }
+      const age = today.getUTCFullYear() - parsed.getUTCFullYear();
+      if (age < 18 || age > 120) {
+        setBirthDateError('Age must be between 18 and 120.');
+        return;
+      }
+    }
+    setBirthDateError('');
     updateProfile({
       name: form.name,
       hourlyRate: Number(form.hourlyRate),
       payFrequency: form.payFrequency,
       filingContext: form.filingContext,
+      birthDate: form.birthDate || undefined,
     });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -160,6 +182,20 @@ export default function Settings() {
                 <SelectItem value="Head of Household">Head of Household</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+          <div className="space-y-1">
+            <Label>Date of Birth <span className="text-muted-foreground font-normal">(optional)</span></Label>
+            <Input
+              type="date"
+              value={form.birthDate}
+              onChange={e => { setForm(f => ({ ...f, birthDate: e.target.value })); setBirthDateError(''); }}
+              className="h-12"
+              max={new Date().toISOString().split('T')[0]}
+            />
+            {birthDateError && (
+              <p className="text-xs text-destructive mt-1">{birthDateError}</p>
+            )}
+            <p className="text-xs text-muted-foreground">Used to compare your finances against national medians for your age group.</p>
           </div>
           <Button
             className="w-full h-12 bg-primary hover:bg-primary/90 text-primary-foreground"

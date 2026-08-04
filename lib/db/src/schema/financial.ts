@@ -54,6 +54,8 @@ export const profilesTable = pgTable(
     hourlyRate: doublePrecision("hourly_rate").notNull().default(0),
     filingContext: text("filing_context").notNull().default("Single"),
     hasCompletedOnboarding: boolean("has_completed_onboarding").notNull().default(false),
+    // ISO-8601 date string (YYYY-MM-DD). Validated server-side: not future, age 18–120.
+    birthDate: text("birth_date"),
     ...timestamps,
   },
   (table) => [uniqueIndex("profiles_user_id_unique").on(table.userId)],

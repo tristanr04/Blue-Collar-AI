@@ -21,6 +21,8 @@ export interface Profile {
   hourlyRate: number;
   filingContext: FilingContext;
   hasCompletedOnboarding: boolean;
+  /** ISO-8601 date string YYYY-MM-DD. Optional; used for age-benchmark card. */
+  birthDate?: string;
 }
 
 export interface Paystub {
@@ -290,6 +292,7 @@ function mapSnapshotToState(snapshot: FinancialSnapshot): Partial<StoreState> {
       hourlyRate: Number(prof.hourlyRate ?? 0),
       filingContext: (prof.filingContext ?? 'Single') as FilingContext,
       hasCompletedOnboarding: Boolean(prof.hasCompletedOnboarding),
+      birthDate: prof.birthDate ?? undefined,
     } : null,
     paystubs: (snapshot.paystubs as any[]).map((p) => ({
       id: p.id,
@@ -377,6 +380,7 @@ function profileToApi(p: Profile): Record<string, unknown> {
   return {
     name: p.name, payFrequency: p.payFrequency, hourlyRate: p.hourlyRate,
     filingContext: p.filingContext, hasCompletedOnboarding: p.hasCompletedOnboarding,
+    birthDate: p.birthDate ?? null,
   };
 }
 
@@ -616,7 +620,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setState(prev => {
       const next = prev.profile
         ? { ...prev.profile, ...profileUpdates }
-        : { name: '', payFrequency: 'Weekly' as PayFrequency, hourlyRate: 0, filingContext: 'Single' as FilingContext, hasCompletedOnboarding: false, ...profileUpdates } as Profile;
+        : { name: '', payFrequency: 'Weekly' as PayFrequency, hourlyRate: 0, filingContext: 'Single' as FilingContext, hasCompletedOnboarding: false, birthDate: undefined, ...profileUpdates } as Profile;
       bgSync(t => saveProfile(t, profileToApi(next)));
       return withComputed({ profile: next }, prev);
     });
