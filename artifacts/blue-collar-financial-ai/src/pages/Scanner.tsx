@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useLocation } from 'wouter';
 import {
   Upload, ScanLine, CheckCircle2, AlertTriangle, X, Plus, Trash2,
@@ -352,35 +352,183 @@ function ConfidenceDot({ score }: { score: number }) {
   return <span className={`inline-block w-2 h-2 rounded-full ${cls} flex-shrink-0`} title={`${score}% confidence`} />;
 }
 
+// ─── Batch constants ──────────────────────────────────────────────────────────
+
+const MAX_BATCH_FILES = 20;
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+const SCAN_CONCURRENCY = 2;
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ProcessStatus = 'pending' | 'processing' | 'done' | 'error';
+type BatchDocumentStatus = 'pending' | 'processing' | 'done' | 'error';
 
-interface ProcessedDoc {
+interface BatchDocument {
   id: string;
   file: File;
   preview: string;
-  status: ProcessStatus;
-  error?: string;
-  errorStage?: string;
-  result?: ScanResult;
-  // Editable state
+  fingerprint?: string;
+  status: BatchDocumentStatus;
   docType: string;
   fields: Record<string, { value: string; confidence: number }>;
+  result?: ScanResult;
+  error?: string;
+  errorStage?: string;
   accepted: boolean;
-  // Institution info
+  isDuplicate: boolean;
   institutionName: string;
   institutionUnknown: boolean;
   institutionCategory: string | null;
-  /** SHA-256 hex fingerprint — set before processing for duplicate detection. */
-  fingerprint?: string;
-  /** True when fingerprint matches an already-confirmed document. */
-  isDuplicate?: boolean;
+}
+
+type Step = 'upload' | 'processing' | 'review' | 'done';
+
+// ─── Module-level helpers ─────────────────────────────────────────────────────
+
+/** Normalise a null / primitive / wrapped AI field value to a consistent shape. */
+function getFieldValue(raw: unknown): { value: string | null; confidence: number } {
+  if (raw == null) return { value: null, confidence: 0 };
+  if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
+    return { value: String(raw), confidence: 70 };
+  }
+  if (typeof raw === 'object' && 'value' in (raw as object)) {
+    const obj = raw as { value?: unknown; confidence?: unknown };
+    const v = obj.value;
+    return {
+      value: v != null ? String(v) : null,
+      confidence: typeof obj.confidence === 'number' ? obj.confidence : 70,
+    };
+  }
+  return { value: null, confidence: 0 };
+}
+
+/** Parse a structured JSON API error into stage + message. */
+function parseApiError(err: unknown): { stage: string; message: string } {
+  if (err instanceof Error) {
+    try {
+      const parsed = JSON.parse(err.message);
+      return { stage: parsed.stage ?? 'unknown', message: parsed.message ?? err.message };
+    } catch {
+      return { stage: 'unknown', message: err.message };
+    }
+  }
+  return { stage: 'unknown', message: String(err) };
+}
+
+/**
+ * Merge incoming files into the current list, deduplicating by name+size+mtime.
+ * Hard-caps the result at MAX_BATCH_FILES.
+ */
+function mergeUniqueFiles(current: File[], incoming: File[]): File[] {
+  const seen = new Set(current.map(f => `${f.name}:${f.size}:${f.lastModified}`));
+  const merged = [...current];
+  for (const file of incoming) {
+    const key = `${file.name}:${file.size}:${file.lastModified}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(file);
+    }
+  }
+  return merged.slice(0, MAX_BATCH_FILES);
+}
+
+/**
+ * Run `worker` over every item with at most `limit` running simultaneously.
+ * Each worker is expected to catch its own errors — a worker that throws
+ * propagates through Promise.all and cancels remaining work.  processDoc
+ * never throws (it catches internally), so batch failures are always isolated.
+ */
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0;
+  async function runWorker(): Promise<void> {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      await worker(items[index], index);
+    }
+  }
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () => runWorker());
+  await Promise.all(workers);
+}
+
+/**
+ * Normalise a ScanResult from any server fast-path or generic shape into the
+ * fields the UI and financial store need.
+ */
+function normalizeScanResult(result: ScanResult): {
+  resolvedDocType: string;
+  fieldMap: Record<string, { value: string; confidence: number }>;
+  institutionName: string;
+  institutionUnknown: boolean;
+  institutionCategory: string | null;
+} {
+  const r = result as any;
+  const isVehicleLoan = r.type === 'vehicleLoan' || r.documentType === 'vehicleLoan';
+  const isBankStatement = r.type === 'bankStatement' || r.documentType === 'bankStatement';
+
+  function resolveFlatData(res: any): Record<string, unknown> | null {
+    const d = res?.data?.data ?? res?.data?.extraction ?? res?.data?.result ??
+              res?.data ?? res?.extraction ?? res?.result;
+    return d && typeof d === 'object' && !Array.isArray(d) ? d : null;
+  }
+
+  function flatToFieldMap(
+    extracted: Record<string, unknown>,
+    keys: string[],
+    conf = 80,
+  ): Record<string, { value: string; confidence: number }> {
+    const map: Record<string, { value: string; confidence: number }> = {};
+    for (const key of keys) {
+      const val = extracted[key];
+      if (val !== null && val !== undefined) map[key] = { value: String(val), confidence: conf };
+    }
+    return map;
+  }
+
+  const fieldMap: Record<string, { value: string; confidence: number }> = {};
+
+  if (isVehicleLoan) {
+    const extracted = resolveFlatData(r);
+    if (!extracted) throw new Error('The document processor returned an unrecognized response format.');
+    Object.assign(fieldMap, flatToFieldMap(extracted, [
+      'loanName', 'accountLast4', 'balanceOwed', 'originalAmount',
+      'apr', 'monthlyPayment', 'monthsRemaining', 'nextDueDate',
+    ]));
+  } else if (isBankStatement) {
+    const extracted = resolveFlatData(r);
+    if (!extracted) throw new Error('The document processor returned an unrecognized response format.');
+    Object.assign(fieldMap, flatToFieldMap(extracted, [
+      'institution', 'accountName', 'lastFour',
+      'closingBalance', 'currentBalance', 'availableBalance',
+      'statementStartDate', 'statementEndDate', 'apy',
+    ]));
+  } else {
+    for (const [k, v] of Object.entries(result.fields ?? {})) {
+      const { value, confidence } = getFieldValue(v);
+      if (value != null) fieldMap[k] = { value, confidence };
+    }
+  }
+
+  const inst = result.institution;
+  const fastPathInstitution =
+    isVehicleLoan ? (r.data?.loanName ?? '') :
+    isBankStatement ? (r.data?.institution ?? '') : '';
+  const institutionName = inst?.normalizedName || inst?.rawName || fastPathInstitution || '';
+  const institutionUnknown = !inst?.isKnownInstitution && !!institutionName;
+  const institutionCategory = inst?.institutionCategory ?? null;
+  const resolvedDocType =
+    isVehicleLoan ? 'Auto Loan' :
+    isBankStatement ? 'Bank Statement' :
+    (result.docType ?? 'Unknown');
+
+  return { resolvedDocType, fieldMap, institutionName, institutionUnknown, institutionCategory };
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-
-type Step = 'upload' | 'processing' | 'review' | 'done';
 
 export default function Scanner() {
   const [_, setLocation] = useLocation();
@@ -398,7 +546,7 @@ export default function Scanner() {
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
   const [isDragging, setIsDragging] = useState(false);
-  const [docs, setDocs] = useState<ProcessedDoc[]>([]);
+  const [docs, setDocs] = useState<BatchDocument[]>([]);
   const [userName, setUserName] = useState(profile?.name ?? '');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [globalError, setGlobalError] = useState('');
@@ -407,219 +555,126 @@ export default function Scanner() {
   const [matchChoices, setMatchChoices] = useState<Record<string, MatchChoice>>({});
   const [lastImportDocId, setLastImportDocId] = useState<string | null>(null);
 
+  // ── Refs for preview URL cleanup on unmount ────────────────────────────────
+
+  const previewsRef = useRef<string[]>([]);
+  const docsRef = useRef<BatchDocument[]>([]);
+
+  useEffect(() => { previewsRef.current = previews; }, [previews]);
+  useEffect(() => { docsRef.current = docs; }, [docs]);
+
+  // Revoke all preview object URLs when the component unmounts.
+  useEffect(() => {
+    return () => {
+      previewsRef.current.forEach(url => { if (url) try { URL.revokeObjectURL(url); } catch {} });
+      docsRef.current.forEach(doc => { if (doc.preview) try { URL.revokeObjectURL(doc.preview); } catch {} });
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Progress counts (derived from docs state) ──────────────────────────────
+
+  const totalCount      = docs.length;
+  const completedCount  = docs.filter(d => d.status === 'done').length;
+  const failedCount     = docs.filter(d => d.status === 'error').length;
+  const processingCount = docs.filter(d => d.status === 'processing').length;
+  const pendingCount    = docs.filter(d => d.status === 'pending').length;
+  const finishedCount   = completedCount + failedCount;
+
+  /** Documents that are confirmed-done AND accepted — the set the store will receive. */
+  const savableDocuments = docs.filter(d => d.status === 'done' && d.accepted);
+
   // ── File handling ──────────────────────────────────────────────────────────
 
   const addFiles = useCallback((newFiles: File[]) => {
-    // Accept files whose MIME starts with image/, PDF, HEIC/HEIF, or whose
-    // extension implies an image format. On iOS Safari, JPEG files from the
-    // Photos or Files app often arrive with f.type === "" — the extension
-    // check catches those so they aren't silently dropped.
     const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp|heic|heif)$/i;
-    const valid = newFiles.filter(f =>
+
+    // Accept files by MIME or extension (iOS Safari often has empty MIME type)
+    const typeValid = newFiles.filter(f =>
       f.type.startsWith('image/') ||
       f.type === 'application/pdf' ||
       IMAGE_EXT.test(f.name) ||
       /\.pdf$/i.test(f.name)
     );
 
-    // Generate previews OUTSIDE the state updater so URL.createObjectURL is
-    // never called twice (React 18 Strict Mode runs updaters twice in dev).
-    // Wrapped in try/catch because iOS Safari throws
-    // "The string did not match the expected pattern" for certain file types.
-    const newPreviews = valid.map(f => {
+    const oversized = typeValid.filter(f => f.size > MAX_FILE_BYTES);
+    const sizeValid  = typeValid.filter(f => f.size <= MAX_FILE_BYTES);
+
+    if (oversized.length > 0) {
+      setGlobalError(
+        `${oversized.length} file${oversized.length !== 1 ? 's' : ''} exceed the 10 MB limit and were not added.`,
+      );
+    }
+
+    // Generate preview URLs OUTSIDE the state updater (React 18 Strict Mode
+    // double-invokes updaters in dev, which would create duplicate object URLs).
+    const newPreviews = sizeValid.map(f => {
       try {
-        if (f.type.startsWith('image/') || IMAGE_EXT.test(f.name)) {
-          return URL.createObjectURL(f);
-        }
-      } catch {
-        // Silently fall back — preview is cosmetic, upload still works
-      }
+        if (f.type.startsWith('image/') || IMAGE_EXT.test(f.name)) return URL.createObjectURL(f);
+      } catch {}
       return '';
     });
 
-    setFiles(prev => [...prev, ...valid]);
-    setPreviews(prev => [...prev, ...newPreviews]);
+    setFiles(prev => {
+      const merged = mergeUniqueFiles(prev, sizeValid);
+      if (sizeValid.length > 0 && prev.length + sizeValid.length > MAX_BATCH_FILES && merged.length === MAX_BATCH_FILES) {
+        setTimeout(() => setGlobalError(e => e || `Batch limit of ${MAX_BATCH_FILES} files reached.`), 0);
+      }
+      return merged;
+    });
+    setPreviews(prev => [...prev, ...newPreviews].slice(0, MAX_BATCH_FILES));
   }, []);
 
   const removeFile = (i: number) => {
+    const url = previews[i];
+    if (url) try { URL.revokeObjectURL(url); } catch {}
     setFiles(prev => prev.filter((_, idx) => idx !== i));
     setPreviews(prev => prev.filter((_, idx) => idx !== i));
-  };
-
-  // ── Parse structured API errors ────────────────────────────────────────────
-
-  const parseApiError = (err: unknown): { stage: string; message: string } => {
-    if (err instanceof Error) {
-      try {
-        const parsed = JSON.parse(err.message);
-        return { stage: parsed.stage ?? 'unknown', message: parsed.message ?? err.message };
-      } catch {
-        return { stage: 'unknown', message: err.message };
-      }
-    }
-    return { stage: 'unknown', message: String(err) };
-  };
-
-  // ── Null-safe field value extractor ───────────────────────────────────────
-  // The AI can return fields in three shapes:
-  //   { value: ..., confidence: ... }   ← normal
-  //   null                              ← field not found (crashes on .value)
-  //   "string" | number | boolean       ← flat value without wrapper
-  // This helper normalises all three without ever throwing.
-
-  const getFieldValue = (raw: unknown): { value: string | null; confidence: number } => {
-    if (raw == null) return { value: null, confidence: 0 };
-    if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
-      return { value: String(raw), confidence: 70 };
-    }
-    if (typeof raw === 'object' && 'value' in (raw as object)) {
-      const obj = raw as { value?: unknown; confidence?: unknown };
-      const v = obj.value;
-      return {
-        value: v != null ? String(v) : null,
-        confidence: typeof obj.confidence === 'number' ? obj.confidence : 70,
-      };
-    }
-    return { value: null, confidence: 0 };
   };
 
   // ── Process a single file and update its doc entry ─────────────────────────
 
   const processDoc = async (docId: string, file: File) => {
-    setDocs(prev => prev.map(d => d.id === docId ? { ...d, status: 'processing', error: undefined } : d));
+    setDocs(prev => prev.map(d =>
+      d.id === docId ? { ...d, status: 'processing', error: undefined, errorStage: undefined } : d,
+    ));
     try {
-      // Attach Clerk session token so the API server can verify the request.
       const token = await getToken().catch(() => null);
       const result = await scanFile(file, token);
+      const { resolvedDocType, fieldMap, institutionName, institutionUnknown, institutionCategory } =
+        normalizeScanResult(result);
 
-      // Dev-mode logging so the raw AI shape is visible in the browser console
-      // without exposing image data or full account numbers.
-      if (import.meta.env.DEV) {
-        const dt = (result.docType ?? '').toLowerCase();
-        if (dt.includes('bill') || dt.includes('utility') || dt === 'auto loan') {
-          console.group(`[Scanner] Raw extraction — ${result.docType} — ${file.name}`);
-          console.log('docType:', result.docType);
-          console.log('classificationConfidence:', result.classificationConfidence);
-          console.log('fields (raw):', JSON.stringify(result.fields ?? {}, null, 2));
-          console.groupEnd();
-        }
-      }
-
-      // ── Fast-path detection ─────────────────────────────────────────────────
-      const isVehicleLoan =
-        (result as any).type === 'vehicleLoan' ||
-        (result as any).documentType === 'vehicleLoan';
-
-      const isBankStatement =
-        (result as any).type === 'bankStatement' ||
-        (result as any).documentType === 'bankStatement';
-
-      /** Resolve the flat data object from any of the envelope shapes the server uses. */
-      function resolveFastPathData(r: any): Record<string, unknown> | null {
-        const d = r?.data?.data ?? r?.data?.extraction ?? r?.data?.result ?? r?.data ?? r?.extraction ?? r?.result;
-        if (d && typeof d === 'object' && !Array.isArray(d)) return d as Record<string, unknown>;
-        return null;
-      }
-
-      /** Build a fieldMap from a flat extraction object (fast-path response). */
-      function buildFieldMapFromFlat(
-        extracted: Record<string, unknown>,
-        keys: string[],
-        defaultConfidence = 80,
-      ): Record<string, { value: string; confidence: number }> {
-        const map: Record<string, { value: string; confidence: number }> = {};
-        for (const key of keys) {
-          const val = extracted[key];
-          if (val !== null && val !== undefined) {
-            map[key] = { value: String(val), confidence: defaultConfidence };
-          }
-        }
-        return map;
-      }
-
-      const fieldMap: Record<string, { value: string; confidence: number }> = {};
-
-      if (isVehicleLoan) {
-        const extracted = resolveFastPathData(result as any);
-        if (!extracted) throw new Error('The document processor returned an unrecognized response format.');
-
-        Object.assign(fieldMap, buildFieldMapFromFlat(extracted, [
-          'loanName', 'accountLast4', 'balanceOwed', 'originalAmount',
-          'apr', 'monthlyPayment', 'monthsRemaining', 'nextDueDate',
-        ]));
-
-        if (import.meta.env.DEV) {
-          console.group(`[Scanner] Vehicle loan extraction — ${(result as any).fileName ?? ''}`);
-          console.log('raw result:', JSON.stringify(result, null, 2));
-          console.log('extracted:', JSON.stringify(extracted, null, 2));
-          console.log('fieldMap:', JSON.stringify(fieldMap, null, 2));
-          console.groupEnd();
-        }
-
-      } else if (isBankStatement) {
-        const extracted = resolveFastPathData(result as any);
-        if (!extracted) throw new Error('The document processor returned an unrecognized response format.');
-
-        Object.assign(fieldMap, buildFieldMapFromFlat(extracted, [
-          'institution', 'accountName', 'lastFour',
-          'closingBalance', 'currentBalance', 'availableBalance',
-          'statementStartDate', 'statementEndDate', 'apy',
-        ]));
-
-        if (import.meta.env.DEV) {
-          console.group(`[Scanner] Bank statement extraction — ${(result as any).fileName ?? ''}`);
-          console.log('raw result:', JSON.stringify(result, null, 2));
-          console.log('extracted:', JSON.stringify(extracted, null, 2));
-          console.log('fieldMap:', JSON.stringify(fieldMap, null, 2));
-          console.groupEnd();
-        }
-
-      } else {
-        for (const [k, v] of Object.entries(result.fields ?? {})) {
-          // Use getFieldValue so null fields and flat values never crash
-          const { value, confidence } = getFieldValue(v);
-          if (value != null) {
-            fieldMap[k] = { value, confidence };
-          }
-        }
-      }
-
-      // Extract institution info returned by the server normalizer
-      const inst = result.institution;
-      const fastPathInstitution =
-        isVehicleLoan ? ((result as any).data?.loanName ?? '') :
-        isBankStatement ? ((result as any).data?.institution ?? '') :
-        '';
-      const institutionName = inst?.normalizedName || inst?.rawName || fastPathInstitution;
-      const institutionUnknown = !inst?.isKnownInstitution && !!institutionName;
-      const institutionCategory = inst?.institutionCategory ?? null;
-      const resolvedDocType =
-        isVehicleLoan ? 'Auto Loan' :
-        isBankStatement ? 'Bank Statement' :
-        (result.docType ?? 'Unknown');
-
-      setDocs(prev => prev.map(d => d.id === docId ? {
-        ...d,
-        status: 'done',
-        result,
-        docType: resolvedDocType,
-        fields: fieldMap,
-        institutionName,
-        institutionUnknown,
-        institutionCategory,
-        error: undefined,
-      } : d));
+      setDocs(prev => prev.map(d =>
+        d.id === docId
+          ? {
+              ...d,
+              status: 'done',
+              result,
+              docType: resolvedDocType,
+              fields: fieldMap,
+              institutionName,
+              institutionUnknown,
+              institutionCategory,
+              accepted: true,
+              error: undefined,
+              errorStage: undefined,
+            }
+          : d,
+      ));
     } catch (err) {
       const { stage, message } = parseApiError(err);
-      setDocs(prev => prev.map(d => d.id === docId ? {
-        ...d,
-        status: 'error',
-        error: message,
-        errorStage: stage,
-        docType: 'Unknown',
-        fields: {},
-        accepted: false,
-      } : d));
+      setDocs(prev => prev.map(d =>
+        d.id === docId
+          ? {
+              ...d,
+              status: 'error',
+              error: message,
+              errorStage: stage,
+              docType: 'Unknown',
+              fields: {},
+              accepted: false,
+            }
+          : d,
+      ));
     }
   };
 
@@ -630,56 +685,86 @@ export default function Scanner() {
     setStep('processing');
     setGlobalError('');
 
-    const initial: ProcessedDoc[] = files.map((f, i) => ({
-      id: crypto.randomUUID(),
-      file: f,
-      preview: previews[i] ?? '',
-      status: 'pending',
-      docType: 'Unknown',
-      fields: {},
-      accepted: true,
-      institutionName: '',
-      institutionUnknown: false,
-      institutionCategory: null,
-      fingerprint: undefined,
-      isDuplicate: false,
-    }));
-    setDocs(initial);
+    const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp|heic|heif)$/i;
 
-    // Compute SHA-256 fingerprints in parallel for duplicate detection.
-    // Compare against fingerprints of already-confirmed documents in the store.
-    const existingFingerprints = documents
-      .map(d => d.fingerprint)
-      .filter((fp): fp is string => Boolean(fp));
+    // Revoke upload-step preview URLs — new ones are created per-doc below.
+    previews.forEach(url => { if (url) try { URL.revokeObjectURL(url); } catch {} });
+    setPreviews([]);
 
-    const docsWithFingerprints = await Promise.all(
-      initial.map(async (doc) => {
+    // Create the initial batch docs with per-doc preview URLs.
+    const initialDocs = await Promise.all(
+      files.map(async (file) => {
+        let preview = '';
         try {
-          const fp = await fingerprintFile(doc.file);
-          return {
-            ...doc,
-            fingerprint: fp,
-            isDuplicate: isDuplicateFingerprint(fp, existingFingerprints),
-          };
-        } catch {
-          return doc; // fingerprinting is best-effort; never block the scan
-        }
+          if (file.type.startsWith('image/') || IMAGE_EXT.test(file.name)) {
+            preview = URL.createObjectURL(file);
+          }
+        } catch { preview = ''; }
+
+        let fingerprint: string | undefined;
+        try { fingerprint = await fingerprintFile(file); }
+        catch { fingerprint = undefined; }
+
+        return {
+          id: crypto.randomUUID(),
+          file,
+          preview,
+          fingerprint,
+          status: 'pending' as const,
+          docType: 'Unknown',
+          fields: {},
+          accepted: true,
+          isDuplicate: false,
+          institutionName: '',
+          institutionUnknown: false,
+          institutionCategory: null,
+        };
       }),
     );
-    setDocs(docsWithFingerprints);
 
-    // Warn if any duplicates were detected (non-blocking — user can still proceed).
-    const duplicateCount = docsWithFingerprints.filter(d => d.isDuplicate).length;
-    if (duplicateCount > 0) {
-      setGlobalError(
-        `${duplicateCount} file${duplicateCount > 1 ? 's' : ''} appear${duplicateCount === 1 ? 's' : ''} to be a duplicate of a document you've already imported. Review the results carefully before confirming.`,
-      );
+    // Detect duplicates within the batch (same fingerprint appears 2+ times)
+    // and against already-saved documents.
+    const fingerprintCounts = new Map<string, number>();
+    for (const doc of initialDocs) {
+      if (!doc.fingerprint) continue;
+      fingerprintCounts.set(doc.fingerprint, (fingerprintCounts.get(doc.fingerprint) ?? 0) + 1);
     }
+    const existingFingerprints = new Set(
+      documents.map(d => d.fingerprint).filter((fp): fp is string => Boolean(fp)),
+    );
 
-    // Process sequentially — update individual statuses as each completes
-    for (const doc of docsWithFingerprints) {
-      await processDoc(doc.id, doc.file);
-    }
+    const preparedDocs = initialDocs.map(doc => ({
+      ...doc,
+      isDuplicate:
+        Boolean(doc.fingerprint) &&
+        (existingFingerprints.has(doc.fingerprint!) ||
+         (fingerprintCounts.get(doc.fingerprint!) ?? 0) > 1),
+    }));
+
+    setDocs(preparedDocs);
+
+    await runWithConcurrency(
+      preparedDocs,
+      SCAN_CONCURRENCY,
+      async (doc) => {
+        if (doc.isDuplicate) {
+          setDocs(prev => prev.map(item =>
+            item.id === doc.id
+              ? {
+                  ...item,
+                  status: 'error',
+                  accepted: false,
+                  errorStage: 'duplicate_document',
+                  error: 'This document appears to be a duplicate of one you have already imported.',
+                }
+              : item,
+          ));
+          return;
+        }
+        await processDoc(doc.id, doc.file);
+      },
+    );
+
     setStep('review');
   };
 
@@ -688,13 +773,21 @@ export default function Scanner() {
   const retryDoc = async (docId: string) => {
     const doc = docs.find(d => d.id === docId);
     if (!doc) return;
-    await processDoc(docId, doc.file);
+    // Reset duplicate / rejected state before re-scanning
+    setDocs(prev => prev.map(item =>
+      item.id === docId ? { ...item, accepted: true, isDuplicate: false } : item,
+    ));
+    await processDoc(doc.id, doc.file);
   };
 
   // ── Remove a doc from the list ─────────────────────────────────────────────
 
   const removeDoc = (docId: string) => {
-    setDocs(prev => prev.filter(d => d.id !== docId));
+    setDocs(prev => {
+      const removed = prev.find(d => d.id === docId);
+      if (removed?.preview) try { URL.revokeObjectURL(removed.preview); } catch {}
+      return prev.filter(d => d.id !== docId);
+    });
   };
 
   // ── Field update ───────────────────────────────────────────────────────────
@@ -755,8 +848,6 @@ export default function Scanner() {
   /** Phase 1 (legacy path): called when there's no smart-update plan.
    *  Falls through to doApplyPlan immediately when no matches exist. */
   const confirmAndSave = () => {
-    const accepted = docs.filter(d => d.accepted && d.status !== 'error');
-
     // Profile
     if (userName.trim()) {
       updateProfile({
@@ -775,7 +866,7 @@ export default function Scanner() {
     }
 
     // Build update plan from accepted docs
-    const plan = buildUpdatePlan(accepted, { assets, debts, bills });
+    const plan = buildUpdatePlan(savableDocuments, { assets, debts, bills });
     const needsResolution = plan.entries.some(
       e => e.defaultAction === 'update' || e.isOlderStatement || e.billAmountDelta !== 0,
     );
@@ -1029,6 +1120,21 @@ export default function Scanner() {
             <div className="text-xs text-muted-foreground mt-3">or drag and drop here</div>
           </div>
 
+          {globalError && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-2xl p-4 flex gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-red-700 dark:text-red-300">{globalError}</div>
+                <button
+                  className="text-xs text-red-500 dark:text-red-400 underline mt-1"
+                  onClick={() => setGlobalError('')}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
           {files.length === 0 && (
             <div className="grid grid-cols-2 gap-3">
               {[
@@ -1051,7 +1157,7 @@ export default function Scanner() {
           {files.length > 0 && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <div className="font-semibold text-foreground">{files.length} file{files.length !== 1 ? 's' : ''} ready</div>
+                <div className="font-semibold text-foreground">{files.length} of {MAX_BATCH_FILES} file{files.length !== 1 ? 's' : ''} selected</div>
                 <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()}>
                   <Plus className="w-4 h-4 mr-1" /> Add more
                 </Button>
@@ -1074,8 +1180,9 @@ export default function Scanner() {
                         <X className="w-4 h-4 text-red-600" />
                       </button>
                     </div>
-                    <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] px-2 py-1 truncate">
-                      {file.name}
+                    <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] px-2 py-1">
+                      <div className="truncate">{file.name}</div>
+                      <div className="text-white/70">{(file.size / 1024 / 1024).toFixed(1)} MB</div>
                     </div>
                   </div>
                 ))}
@@ -1106,9 +1213,7 @@ export default function Scanner() {
   // ─── STEP 1: Processing ───────────────────────────────────────────────────────
 
   if (step === 'processing') {
-    const done = docs.filter(d => d.status === 'done' || d.status === 'error').length;
-    const total = docs.length;
-    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    const pct = totalCount > 0 ? Math.round((finishedCount / totalCount) * 100) : 0;
 
     return (
       <div className="min-h-[100dvh] bg-secondary text-secondary-foreground flex flex-col items-center justify-center p-6 text-center">
@@ -1116,14 +1221,22 @@ export default function Scanner() {
           <ScanLine className="w-9 h-9 text-primary animate-pulse" />
         </div>
         <h2 className="text-2xl font-bold mb-2">Analyzing your documents</h2>
-        <p className="text-secondary-foreground/70 mb-8 max-w-xs">
+        <p className="text-secondary-foreground/70 mb-6 max-w-xs">
           AI is classifying and extracting financial data from each file.
         </p>
 
         <div className="w-full max-w-sm space-y-4">
-          <div className="text-sm font-medium">{done} of {total} complete</div>
+          <div className="text-sm font-semibold">
+            Processing {finishedCount} of {totalCount} document{totalCount !== 1 ? 's' : ''}
+          </div>
           <div className="h-3 bg-white/10 rounded-full overflow-hidden">
             <div className="h-full bg-primary rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
+          </div>
+
+          <div className="flex justify-between text-xs text-secondary-foreground/70 px-1">
+            <span>✓ Done: {completedCount}</span>
+            {failedCount > 0 && <span className="text-red-400">✗ Failed: {failedCount}</span>}
+            <span>⏳ Remaining: {processingCount + pendingCount}</span>
           </div>
 
           <div className="space-y-2 mt-2">
@@ -1137,9 +1250,9 @@ export default function Scanner() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{doc.file.name}</div>
-                  {doc.status === 'done' && doc.result && (
+                  {doc.status === 'done' && (
                     <div className="text-xs text-secondary-foreground/60">
-                      {DOC_TYPE_EMOJI[doc.result.docType] ?? '📄'} {doc.result.docType} · {doc.result.classificationConfidence}% confidence
+                      {DOC_TYPE_EMOJI[doc.docType] ?? '📄'} {doc.docType}
                     </div>
                   )}
                   {doc.status === 'error' && (
@@ -1147,6 +1260,9 @@ export default function Scanner() {
                   )}
                   {doc.status === 'processing' && (
                     <div className="text-xs text-secondary-foreground/60">Analyzing…</div>
+                  )}
+                  {doc.status === 'pending' && (
+                    <div className="text-xs text-secondary-foreground/40">Waiting…</div>
                   )}
                 </div>
               </div>
@@ -1160,8 +1276,6 @@ export default function Scanner() {
   // ─── STEP 2: Review ───────────────────────────────────────────────────────────
 
   if (step === 'review') {
-    const accepted = docs.filter(d => d.accepted && d.status !== 'error');
-
     return (
       <div className="min-h-[100dvh] bg-background flex flex-col">
         <div className="sticky top-0 z-40 bg-secondary text-secondary-foreground px-4 py-4 flex items-center gap-3">
@@ -1413,8 +1527,7 @@ export default function Scanner() {
               onClick={() => {
                 // Rebuild the plan fresh from current doc state so any edits
                 // made after the match-resolution UI appeared are captured.
-                const accepted = docs.filter(d => d.accepted && d.status !== 'error');
-                const freshPlan = buildUpdatePlan(accepted, { assets, debts, bills });
+                const freshPlan = buildUpdatePlan(savableDocuments, { assets, debts, bills });
                 doApplyPlan(freshPlan, matchChoices);
               }}
             >
@@ -1424,11 +1537,11 @@ export default function Scanner() {
           ) : (
             <Button
               className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
-              disabled={accepted.length === 0}
+              disabled={savableDocuments.length === 0}
               onClick={confirmAndSave}
             >
               <CheckCircle2 className="w-5 h-5 mr-2" />
-              Confirm &amp; Save {accepted.length} Document{accepted.length !== 1 ? 's' : ''}
+              Confirm &amp; Save {savableDocuments.length} Document{savableDocuments.length !== 1 ? 's' : ''}
             </Button>
           )}
           <div className="text-center text-xs text-muted-foreground">

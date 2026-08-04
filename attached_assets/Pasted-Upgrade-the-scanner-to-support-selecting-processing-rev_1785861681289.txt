@@ -1,0 +1,588 @@
+Upgrade the scanner to support selecting, processing, reviewing, retrying, and saving multiple documents in one batch.
+
+Do not modify the existing Auto Loan or Bank Statement extraction logic.
+
+FILES TO MODIFY
+- artifacts/blue-collar-financial-ai/src/pages/Scanner.tsx
+- artifacts/blue-collar-financial-ai/src/lib/api.ts only if needed
+- existing scanner tests
+
+REQUIREMENTS
+
+1. MULTIPLE FILE SELECTION
+
+Update the file input to:
+
+<input
+  type="file"
+  multiple
+  accept="image/*,.pdf,application/pdf"
+/>
+
+Support:
+- iPhone photo library
+- camera
+- Files app
+- desktop file picker
+- drag and drop
+
+Do not combine documents together.
+
+Each selected file must remain a separate document.
+
+2. DOCUMENT STATE
+
+Each document must use this shape:
+
+type BatchDocumentStatus =
+  | "pending"
+  | "processing"
+  | "done"
+  | "error";
+
+interface BatchDocument {
+  id: string;
+  file: File;
+  preview: string;
+  fingerprint?: string;
+  status: BatchDocumentStatus;
+  docType: string;
+  fields: Record<
+    string,
+    {
+      value: string;
+      confidence: number;
+    }
+  >;
+  result?: ScanResult;
+  error?: string;
+  errorStage?: string;
+  accepted: boolean;
+  isDuplicate: boolean;
+}
+
+3. BATCH LIMITS
+
+Use these limits:
+
+const MAX_BATCH_FILES = 20;
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const SCAN_CONCURRENCY = 2;
+
+Reject additional files above 20.
+
+Reject any individual file larger than 10 MB.
+
+Display the validation error in the scanner UI.
+
+4. ADD FILES WITHOUT ERASING EXISTING FILES
+
+Use this helper:
+
+function mergeUniqueFiles(
+  current: File[],
+  incoming: File[],
+): File[] {
+  const seen = new Set(
+    current.map(
+      (file) =>
+        `${file.name}:${file.size}:${file.lastModified}`,
+    ),
+  );
+
+  const merged = [...current];
+
+  for (const file of incoming) {
+    const key =
+      `${file.name}:${file.size}:${file.lastModified}`;
+
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(file);
+    }
+  }
+
+  return merged.slice(0, MAX_BATCH_FILES);
+}
+
+When the user adds more files, append them instead of replacing the current batch.
+
+5. CREATE PREVIEWS
+
+Generate one preview for each image file.
+
+Use URL.createObjectURL only outside React state updater callbacks.
+
+Revoke preview URLs when:
+- a document is removed
+- the scanner component unmounts
+- the batch is reset
+
+PDF previews may use an empty string or generic PDF icon.
+
+6. PROCESS WITH A CONCURRENCY LIMIT OF 2
+
+Add this exact helper:
+
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (
+    item: T,
+    index: number,
+  ) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+
+      if (index >= items.length) {
+        return;
+      }
+
+      await worker(items[index], index);
+    }
+  }
+
+  const workers = Array.from(
+    {
+      length: Math.min(limit, items.length),
+    },
+    () => runWorker(),
+  );
+
+  await Promise.all(workers);
+}
+
+7. PROCESS ONE DOCUMENT INDEPENDENTLY
+
+Keep or create:
+
+const processDoc = async (
+  docId: string,
+  file: File,
+) => {
+  setDocs((previous) =>
+    previous.map((doc) =>
+      doc.id === docId
+        ? {
+            ...doc,
+            status: "processing",
+            error: undefined,
+            errorStage: undefined,
+          }
+        : doc,
+    ),
+  );
+
+  try {
+    const token =
+      await getToken().catch(() => null);
+
+    const result =
+      await scanFile(file, token);
+
+    const {
+      resolvedDocType,
+      fieldMap,
+      institutionName,
+      institutionUnknown,
+      institutionCategory,
+    } = normalizeScanResult(result);
+
+    setDocs((previous) =>
+      previous.map((doc) =>
+        doc.id === docId
+          ? {
+              ...doc,
+              status: "done",
+              result,
+              docType: resolvedDocType,
+              fields: fieldMap,
+              institutionName,
+              institutionUnknown,
+              institutionCategory,
+              accepted: true,
+              error: undefined,
+              errorStage: undefined,
+            }
+          : doc,
+      ),
+    );
+  } catch (error) {
+    const parsed =
+      parseApiError(error);
+
+    setDocs((previous) =>
+      previous.map((doc) =>
+        doc.id === docId
+          ? {
+              ...doc,
+              status: "error",
+              error: parsed.message,
+              errorStage: parsed.stage,
+              docType: "Unknown",
+              fields: {},
+              accepted: false,
+            }
+          : doc,
+      ),
+    );
+  }
+};
+
+Do not let one failure throw out of the whole batch.
+
+8. START BATCH PROCESSING
+
+Replace any sequential loop with:
+
+const startProcessing = async () => {
+  if (files.length === 0) {
+    return;
+  }
+
+  setStep("processing");
+  setGlobalError("");
+
+  const initialDocs =
+    await Promise.all(
+      files.map(
+        async (file, index) => {
+          let preview = "";
+
+          try {
+            if (
+              file.type.startsWith("image/")
+            ) {
+              preview =
+                URL.createObjectURL(file);
+            }
+          } catch {
+            preview = "";
+          }
+
+          let fingerprint:
+            | string
+            | undefined;
+
+          try {
+            fingerprint =
+              await fingerprintFile(file);
+          } catch {
+            fingerprint = undefined;
+          }
+
+          return {
+            id: crypto.randomUUID(),
+            file,
+            preview,
+            fingerprint,
+            status: "pending" as const,
+            docType: "Unknown",
+            fields: {},
+            accepted: true,
+            isDuplicate: false,
+          };
+        },
+      ),
+    );
+
+  const fingerprintCounts =
+    new Map<string, number>();
+
+  for (const doc of initialDocs) {
+    if (!doc.fingerprint) {
+      continue;
+    }
+
+    fingerprintCounts.set(
+      doc.fingerprint,
+      (fingerprintCounts.get(
+        doc.fingerprint,
+      ) ?? 0) + 1,
+    );
+  }
+
+  const existingFingerprints =
+    new Set(
+      documents
+        .map(
+          (document) =>
+            document.fingerprint,
+        )
+        .filter(
+          (
+            fingerprint,
+          ): fingerprint is string =>
+            Boolean(fingerprint),
+        ),
+    );
+
+  const preparedDocs =
+    initialDocs.map((doc) => ({
+      ...doc,
+      isDuplicate:
+        Boolean(doc.fingerprint) &&
+        (
+          existingFingerprints.has(
+            doc.fingerprint!,
+          ) ||
+          (
+            fingerprintCounts.get(
+              doc.fingerprint!,
+            ) ?? 0
+          ) > 1
+        ),
+    }));
+
+  setDocs(preparedDocs);
+
+  await runWithConcurrency(
+    preparedDocs,
+    SCAN_CONCURRENCY,
+    async (doc) => {
+      if (doc.isDuplicate) {
+        setDocs((previous) =>
+          previous.map((item) =>
+            item.id === doc.id
+              ? {
+                  ...item,
+                  status: "error",
+                  accepted: false,
+                  errorStage:
+                    "duplicate_document",
+                  error:
+                    "This document appears to be a duplicate.",
+                }
+              : item,
+          ),
+        );
+
+        return;
+      }
+
+      await processDoc(
+        doc.id,
+        doc.file,
+      );
+    },
+  );
+
+  setStep("review");
+};
+
+9. PROGRESS COUNTS
+
+Add these derived values:
+
+const totalCount = docs.length;
+
+const completedCount =
+  docs.filter(
+    (doc) =>
+      doc.status === "done",
+  ).length;
+
+const failedCount =
+  docs.filter(
+    (doc) =>
+      doc.status === "error",
+  ).length;
+
+const processingCount =
+  docs.filter(
+    (doc) =>
+      doc.status === "processing",
+  ).length;
+
+const pendingCount =
+  docs.filter(
+    (doc) =>
+      doc.status === "pending",
+  ).length;
+
+const finishedCount =
+  completedCount + failedCount;
+
+Display:
+
+Processing {finishedCount} of {totalCount} documents
+
+Also display:
+- Completed: {completedCount}
+- Failed: {failedCount}
+- Remaining: {processingCount + pendingCount}
+
+10. RETRY ONE DOCUMENT ONLY
+
+Use:
+
+const retryDoc = async (
+  docId: string,
+) => {
+  const doc =
+    docs.find(
+      (item) =>
+        item.id === docId,
+    );
+
+  if (!doc) {
+    return;
+  }
+
+  setDocs((previous) =>
+    previous.map((item) =>
+      item.id === docId
+        ? {
+            ...item,
+            accepted: true,
+            isDuplicate: false,
+          }
+        : item,
+    ),
+  );
+
+  await processDoc(
+    doc.id,
+    doc.file,
+  );
+};
+
+Retry must not restart the full batch.
+
+11. REMOVE ONE DOCUMENT
+
+Use:
+
+const removeDoc = (
+  docId: string,
+) => {
+  setDocs((previous) => {
+    const removed =
+      previous.find(
+        (doc) =>
+          doc.id === docId,
+      );
+
+    if (removed?.preview) {
+      URL.revokeObjectURL(
+        removed.preview,
+      );
+    }
+
+    return previous.filter(
+      (doc) =>
+        doc.id !== docId,
+    );
+  });
+};
+
+Removing one document must not affect the others.
+
+12. ACCEPT OR REJECT INDIVIDUAL DOCUMENTS
+
+Use an accepted boolean per document.
+
+Add controls:
+- Accept
+- Reject
+- Remove
+- Retry when failed
+
+Rejected documents stay visible but are not saved.
+
+13. CONFIRM BUTTON
+
+Use:
+
+const savableDocuments =
+  docs.filter(
+    (doc) =>
+      doc.status === "done" &&
+      doc.accepted,
+  );
+
+Button text:
+
+Confirm & Save {savableDocuments.length} Document
+
+or plural:
+
+Confirm & Save {savableDocuments.length} Documents
+
+Disable the button when:
+
+savableDocuments.length === 0
+
+14. SAVE DOCUMENTS INDEPENDENTLY
+
+During confirmation, only use:
+
+docs.filter(
+  (doc) =>
+    doc.status === "done" &&
+    doc.accepted,
+)
+
+Each document must produce its own:
+- document record
+- debt, asset, bill, or paystub record
+- source document ID
+- fingerprint
+
+Do not merge multiple documents into a single financial record.
+
+15. UI LAYOUT
+
+Before processing, show a grid or vertical list with one card per selected file:
+
+- preview
+- filename
+- file size
+- remove button
+- duplicate warning if applicable
+
+During processing, each card shows:
+- Pending
+- Processing
+- Completed
+- Failed
+
+On review, each card keeps its own extracted fields.
+
+16. TESTS
+
+Add tests for:
+
+1. Selecting five valid documents.
+2. Appending more files without clearing earlier files.
+3. Processing no more than two documents concurrently.
+4. One failed document does not stop the others.
+5. Retrying only one failed document.
+6. Removing only one document.
+7. Duplicate files in the current batch.
+8. Duplicate already saved previously.
+9. Confirming only accepted successful documents.
+10. Rejecting one successful document.
+11. Exceeding the 20-file limit.
+12. Rejecting a file over 10 MB.
+13. Mixed image and PDF batch.
+14. Progress count accuracy.
+15. Preview URL cleanup.
+
+Run:
+- frontend tests
+- API tests
+- typecheck
+- build
+
+After implementation, show:
+- all files changed
+- test results
+- confirmation that five mixed documents can be selected together
+- confirmation that only two process simultaneously
+- confirmation that one failure does not stop the batch
