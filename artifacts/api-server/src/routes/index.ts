@@ -5,6 +5,7 @@ import financialDataRouter from "./financial-data.js";
 import migrateRouter from "./migrate.js";
 import scanRouter from "./scan.js";
 import aiAskRouter from "./ai-ask.js";
+import backgroundJobsRouter from "./background-jobs.js";
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(financialDataRouter);
 router.use(migrateRouter);
 router.use(scanRouter);
 router.use(aiAskRouter);
+router.use(backgroundJobsRouter);
 
 export default router;
