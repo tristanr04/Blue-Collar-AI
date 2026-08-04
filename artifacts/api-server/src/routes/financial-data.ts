@@ -10,6 +10,9 @@ import {
   ensureUser,
   getFinancialSnapshot,
   softDeleteFinancialRecord,
+  updateAsset,
+  updateBill,
+  updateDebt,
   upsertProfile,
 } from "../lib/financial-repository.js";
 import { logger } from "../lib/logger.js";
@@ -60,6 +63,8 @@ router.put("/financial/profile", async (req: AuthenticatedRequest, res) => {
   }
 });
 
+// ─── Paystubs ────────────────────────────────────────────────────────────────
+
 router.post("/financial/paystubs", async (req: AuthenticatedRequest, res) => {
   try {
     const userId = userIdFrom(req);
@@ -69,6 +74,8 @@ router.post("/financial/paystubs", async (req: AuthenticatedRequest, res) => {
     sendRepositoryError(res, error);
   }
 });
+
+// ─── Debts ────────────────────────────────────────────────────────────────────
 
 router.post("/financial/debts", async (req: AuthenticatedRequest, res) => {
   try {
@@ -80,6 +87,23 @@ router.post("/financial/debts", async (req: AuthenticatedRequest, res) => {
   }
 });
 
+router.put("/financial/debts/:recordId", async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = userIdFrom(req);
+    const recordId = z.string().uuid().parse(req.params.recordId);
+    const updated = await updateDebt(userId, recordId, req.body);
+    if (!updated) {
+      res.status(404).json({ stage: "record_not_found", error: "Debt not found or does not belong to this account." });
+      return;
+    }
+    res.json(updated);
+  } catch (error) {
+    sendRepositoryError(res, error);
+  }
+});
+
+// ─── Bills ────────────────────────────────────────────────────────────────────
+
 router.post("/financial/bills", async (req: AuthenticatedRequest, res) => {
   try {
     const userId = userIdFrom(req);
@@ -90,6 +114,23 @@ router.post("/financial/bills", async (req: AuthenticatedRequest, res) => {
   }
 });
 
+router.put("/financial/bills/:recordId", async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = userIdFrom(req);
+    const recordId = z.string().uuid().parse(req.params.recordId);
+    const updated = await updateBill(userId, recordId, req.body);
+    if (!updated) {
+      res.status(404).json({ stage: "record_not_found", error: "Bill not found or does not belong to this account." });
+      return;
+    }
+    res.json(updated);
+  } catch (error) {
+    sendRepositoryError(res, error);
+  }
+});
+
+// ─── Assets ───────────────────────────────────────────────────────────────────
+
 router.post("/financial/assets", async (req: AuthenticatedRequest, res) => {
   try {
     const userId = userIdFrom(req);
@@ -99,6 +140,23 @@ router.post("/financial/assets", async (req: AuthenticatedRequest, res) => {
     sendRepositoryError(res, error);
   }
 });
+
+router.put("/financial/assets/:recordId", async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = userIdFrom(req);
+    const recordId = z.string().uuid().parse(req.params.recordId);
+    const updated = await updateAsset(userId, recordId, req.body);
+    if (!updated) {
+      res.status(404).json({ stage: "record_not_found", error: "Asset not found or does not belong to this account." });
+      return;
+    }
+    res.json(updated);
+  } catch (error) {
+    sendRepositoryError(res, error);
+  }
+});
+
+// ─── Delete (any section) ─────────────────────────────────────────────────────
 
 const deleteParamsSchema = z.object({
   section: z.enum(["paystubs", "debts", "bills", "assets"]),

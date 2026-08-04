@@ -8,8 +8,10 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { useAuth } from '@clerk/react';
 import { useStore } from '@/lib/store';
 import { scanFile, ScanResult, ScanFieldValue, InstitutionInfo } from '@/lib/api';
+import { fingerprintFile, isDuplicateFingerprint } from '@/lib/account-matching';
 import { buildUpdatePlan, applyUpdatePlan, type UpdatePlan, type UpdatePlanEntry, type MatchChoice } from '@/lib/financialUpdater';
 import { fileIdempotencyKey } from '@/lib/financialMatcher';
 import { useJobQueue } from '@/lib/jobQueue';
@@ -371,6 +373,10 @@ interface ProcessedDoc {
   institutionName: string;
   institutionUnknown: boolean;
   institutionCategory: string | null;
+  /** SHA-256 hex fingerprint — set before processing for duplicate detection. */
+  fingerprint?: string;
+  /** True when fingerprint matches an already-confirmed document. */
+  isDuplicate?: boolean;
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -379,11 +385,12 @@ type Step = 'upload' | 'processing' | 'review' | 'done';
 
 export default function Scanner() {
   const [_, setLocation] = useLocation();
+  const { getToken } = useAuth();
   const store = useStore();
   const {
     updateProfile, addPaystub, addDebt, addBill, addAsset,
     updateAsset, updateDebt, updateBill, addChangeRecords, undoImport,
-    assets, debts, bills,
+    assets, debts, bills, documents,
     profile,
   } = store;
   const { enqueue, updateJob } = useJobQueue();
@@ -482,7 +489,9 @@ export default function Scanner() {
   const processDoc = async (docId: string, file: File) => {
     setDocs(prev => prev.map(d => d.id === docId ? { ...d, status: 'processing', error: undefined } : d));
     try {
-      const result = await scanFile(file);
+      // Attach Clerk session token so the API server can verify the request.
+      const token = await getToken().catch(() => null);
+      const result = await scanFile(file, token);
 
       // Dev-mode logging for bill documents so the raw AI shape is visible
       // in the browser console without exposing image data or account numbers.
@@ -554,11 +563,43 @@ export default function Scanner() {
       institutionName: '',
       institutionUnknown: false,
       institutionCategory: null,
+      fingerprint: undefined,
+      isDuplicate: false,
     }));
     setDocs(initial);
 
+    // Compute SHA-256 fingerprints in parallel for duplicate detection.
+    // Compare against fingerprints of already-confirmed documents in the store.
+    const existingFingerprints = documents
+      .map(d => d.fingerprint)
+      .filter((fp): fp is string => Boolean(fp));
+
+    const docsWithFingerprints = await Promise.all(
+      initial.map(async (doc) => {
+        try {
+          const fp = await fingerprintFile(doc.file);
+          return {
+            ...doc,
+            fingerprint: fp,
+            isDuplicate: isDuplicateFingerprint(fp, existingFingerprints),
+          };
+        } catch {
+          return doc; // fingerprinting is best-effort; never block the scan
+        }
+      }),
+    );
+    setDocs(docsWithFingerprints);
+
+    // Warn if any duplicates were detected (non-blocking — user can still proceed).
+    const duplicateCount = docsWithFingerprints.filter(d => d.isDuplicate).length;
+    if (duplicateCount > 0) {
+      setGlobalError(
+        `${duplicateCount} file${duplicateCount > 1 ? 's' : ''} appear${duplicateCount === 1 ? 's' : ''} to be a duplicate of a document you've already imported. Review the results carefully before confirming.`,
+      );
+    }
+
     // Process sequentially — update individual statuses as each completes
-    for (const doc of initial) {
+    for (const doc of docsWithFingerprints) {
       await processDoc(doc.id, doc.file);
     }
     setStep('review');

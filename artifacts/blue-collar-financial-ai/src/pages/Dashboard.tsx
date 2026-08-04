@@ -15,8 +15,15 @@ interface ScoreBreakdown {
   tip: string;
 }
 
+/**
+ * Build the health-score breakdown.
+ *
+ * `monthlyGross` is the correct denominator for the debt-to-income ratio
+ * (lender-standard definition: minimum debt payments ÷ gross income).
+ */
 function calcHealthScore(data: {
   monthlyNet: number;
+  monthlyGross: number;
   totalBills: number;
   totalDebtMins: number;
   liquidCash: number;
@@ -26,18 +33,16 @@ function calcHealthScore(data: {
   paystubCount: number;
   retirementValue: number;
 }): { score: number; breakdown: ScoreBreakdown[] } {
-  const { monthlyNet, totalBills, totalDebtMins, liquidCash, totalDebt, debts, retirementValue, paystubCount } = data;
+  const { monthlyNet, monthlyGross, totalBills, totalDebtMins, liquidCash, totalDebt, debts, retirementValue, paystubCount } = data;
   const freeCash = monthlyNet - totalBills - totalDebtMins;
   const monthlyExpenses = totalBills + totalDebtMins;
   const breakdown: ScoreBreakdown[] = [];
 
-  // Only score categories where we have data
   if (paystubCount > 0 && monthlyNet > 0) {
     // 1. Positive cash flow (20 pts)
     let cfScore = 0;
     if (freeCash > monthlyNet * 0.2) cfScore = 20;
     else if (freeCash > 0) cfScore = Math.round((freeCash / (monthlyNet * 0.2)) * 20);
-    else cfScore = 0;
     breakdown.push({ label: 'Cash Flow', score: cfScore, max: 20, tip: cfScore < 20 ? 'Aim for 20%+ of take-home as free cash.' : 'Great cash flow!' });
 
     // 2. Emergency fund (20 pts)
@@ -48,27 +53,33 @@ function calcHealthScore(data: {
     else if (emMonths >= 1) efScore = 7;
     breakdown.push({ label: 'Emergency Fund', score: efScore, max: 20, tip: efScore < 20 ? `You have ${emMonths.toFixed(1)} months — aim for 6.` : '6+ months saved!' });
 
-    // 3. Credit utilization (15 pts) — only if credit card data exists
+    // 3. Credit utilization (15 pts)
     const ccDebts = debts.filter(d => d.interestRate > 10);
     const totalCcBalance = ccDebts.reduce((s, d) => s + d.balance, 0);
     if (totalCcBalance > 0) {
-      // Approximate: >$5k high-interest = bad
       const util = Math.min(totalCcBalance / 10000, 1);
-      let utilScore = util < 0.3 ? 15 : util < 0.6 ? 8 : 0;
+      const utilScore = util < 0.3 ? 15 : util < 0.6 ? 8 : 0;
       breakdown.push({ label: 'Credit Use', score: utilScore, max: 15, tip: utilScore < 15 ? 'High-interest balances dragging your score.' : 'Low revolving debt — great!' });
     }
 
-    // 4. Debt-to-income (15 pts)
-    const dti = monthlyNet > 0 ? totalDebtMins / monthlyNet : 0;
+    // 4. Debt-to-income using GROSS income (lender-standard — same threshold as mortgage underwriting)
+    const dti = monthlyGross > 0 ? totalDebtMins / monthlyGross : 0;
     let dtiScore = 0;
     if (dti <= 0.15) dtiScore = 15;
     else if (dti <= 0.28) dtiScore = 10;
     else if (dti <= 0.36) dtiScore = 5;
-    breakdown.push({ label: 'Debt-to-Income', score: dtiScore, max: 15, tip: dtiScore < 15 ? `Min payments are ${Math.round(dti * 100)}% of income.` : 'Debt payments well under control.' });
+    breakdown.push({
+      label: 'Debt-to-Income',
+      score: dtiScore,
+      max: 15,
+      tip: dtiScore < 15
+        ? `Min payments are ${Math.round(dti * 100)}% of gross income.`
+        : 'Debt payments well under control.',
+    });
 
     // 5. High-interest debt (10 pts)
     const highInt = debts.filter(d => d.interestRate > 15);
-    let hiScore = highInt.length === 0 ? 10 : highInt.length === 1 ? 4 : 0;
+    const hiScore = highInt.length === 0 ? 10 : highInt.length === 1 ? 4 : 0;
     if (highInt.length > 0) {
       breakdown.push({ label: 'High-Interest Debt', score: hiScore, max: 10, tip: `${highInt.length} debt${highInt.length > 1 ? 's' : ''} above 15% APR — priority payoff.` });
     } else {
@@ -76,7 +87,7 @@ function calcHealthScore(data: {
     }
 
     // 6. Retirement (10 pts)
-    let retScore = retirementValue > 0 ? 10 : 0;
+    const retScore = retirementValue > 0 ? 10 : 0;
     breakdown.push({ label: 'Retirement', score: retScore, max: 10, tip: retScore === 0 ? 'Start contributing to a 401k or IRA.' : 'Contributing to retirement.' });
   }
 
@@ -116,7 +127,7 @@ function ScoreRing({ score }: { score: number }) {
 
 export default function Dashboard() {
   const [_, setLocation] = useLocation();
-  const { profile, paystubs, bills, debts, assets } = useStore();
+  const { profile, paystubs, bills, debts, assets, computed } = useStore();
 
   useEffect(() => {
     if (!profile?.hasCompletedOnboarding) setLocation('/welcome');
@@ -124,35 +135,23 @@ export default function Dashboard() {
 
   if (!profile) return null;
 
+  // All metrics come from the store's deterministic engine (sortPaystubsNewestFirst, gross DTI).
+  const {
+    monthlyNet, monthlyGross, totalBills,
+    totalDebtMin: totalDebtMins, freeCashFlow,
+    liquidCash, totalInvestments, totalDebt, netWorth,
+    emergencyMonths, retirementTotal: retirementValue,
+  } = computed;
+
   const freq = profile.payFrequency;
   const multiplier = freq === 'Weekly' ? 4.33 : freq === 'Bi-Weekly' ? 2.17 : freq === 'Semi-Monthly' ? 2 : 1;
-  const latestStub = paystubs[0];
-  const weeklyNet = latestStub?.netPay ?? 0;
-  const weeklyGross = latestStub?.grossPay ?? 0;
-  const monthlyNet = Math.round(weeklyNet * multiplier);
-  const monthlyGross = Math.round(weeklyGross * multiplier);
-
-  const totalBills = bills.reduce((s, b) => s + b.amount, 0);
-  const totalDebtMins = debts.reduce((s, d) => s + d.minimumPayment, 0);
-  const freeCashFlow = monthlyNet - totalBills - totalDebtMins;
-
-  const cashAssets = assets.filter(a => a.type === 'Cash');
-  const investAssets = assets.filter(a => a.type === 'Investment');
-  const liquidCash = cashAssets.reduce((s, a) => s + a.value, 0);
-  const totalInvestments = investAssets.reduce((s, a) => s + a.value, 0);
-  const totalDebt = debts.reduce((s, d) => s + d.balance, 0);
-  const netWorth = assets.reduce((s, a) => s + a.value, 0) - totalDebt;
-
-  const retirementValue = assets.filter(a => a.type === 'Investment' && /401|ira|retirement/i.test(a.name)).reduce((s, a) => s + a.value, 0);
-  const monthlyExpenses = totalBills + totalDebtMins;
-  const emergencyMonths = monthlyExpenses > 0 ? +(liquidCash / monthlyExpenses).toFixed(1) : 0;
 
   const { score, breakdown } = calcHealthScore({
-    monthlyNet, totalBills, totalDebtMins, liquidCash, totalDebt,
-    debts, assets, retirementValue, paystubCount: paystubs.length,
+    monthlyNet, monthlyGross, totalBills, totalDebtMins,
+    liquidCash, totalDebt, debts, assets,
+    retirementValue, paystubCount: paystubs.length,
   });
 
-  // Bar chart data
   const chartData = [
     { name: 'Gross Pay', value: monthlyGross, color: '#64748b' },
     { name: 'Take Home', value: monthlyNet, color: '#10b981' },

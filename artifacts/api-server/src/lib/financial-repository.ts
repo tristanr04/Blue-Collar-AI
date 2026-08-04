@@ -89,7 +89,13 @@ export async function upsertProfile(userId: string, rawInput: unknown) {
 }
 
 export async function createPaystub(userId: string, rawInput: unknown) {
-  const input = insertPaystubSchema.parse(rawInput);
+  // payDate arrives as an ISO string over JSON; coerce it to Date for the
+  // Drizzle timestamp column (drizzle-zod generates z.date(), not z.coerce.date()).
+  const coerced =
+    rawInput && typeof rawInput === "object" && "payDate" in (rawInput as object)
+      ? { ...(rawInput as object), payDate: new Date((rawInput as any).payDate) }
+      : rawInput;
+  const input = insertPaystubSchema.parse(coerced);
   const [created] = await db.insert(paystubsTable).values({ ...input, userId }).returning();
   return created;
 }
@@ -162,6 +168,68 @@ async function softDeleteAsset(userId: string, recordId: string): Promise<boolea
     )
     .returning({ id: assetsTable.id });
   return rows.length > 0;
+}
+
+// ─── Update functions ─────────────────────────────────────────────────────────
+
+export async function updateDebt(
+  userId: string,
+  recordId: string,
+  rawInput: unknown,
+) {
+  const input = insertDebtSchema.partial().parse(rawInput);
+  const rows = await db
+    .update(debtsTable)
+    .set({ ...input, updatedAt: new Date() })
+    .where(
+      and(
+        eq(debtsTable.id, recordId),
+        eq(debtsTable.userId, userId),
+        isNull(debtsTable.deletedAt),
+      ),
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function updateBill(
+  userId: string,
+  recordId: string,
+  rawInput: unknown,
+) {
+  const input = insertBillSchema.partial().parse(rawInput);
+  const rows = await db
+    .update(billsTable)
+    .set({ ...input, updatedAt: new Date() })
+    .where(
+      and(
+        eq(billsTable.id, recordId),
+        eq(billsTable.userId, userId),
+        isNull(billsTable.deletedAt),
+      ),
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function updateAsset(
+  userId: string,
+  recordId: string,
+  rawInput: unknown,
+) {
+  const input = insertAssetSchema.partial().parse(rawInput);
+  const rows = await db
+    .update(assetsTable)
+    .set({ ...input, updatedAt: new Date() })
+    .where(
+      and(
+        eq(assetsTable.id, recordId),
+        eq(assetsTable.userId, userId),
+        isNull(assetsTable.deletedAt),
+      ),
+    )
+    .returning();
+  return rows[0] ?? null;
 }
 
 export async function softDeleteFinancialRecord(

@@ -1,4 +1,14 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
+import { useAuth } from '@clerk/react';
+import { sortPaystubsNewestFirst } from './financial-calculations';
+import {
+  loadSnapshot,
+  saveProfile,
+  createRecord,
+  updateRecord,
+  deleteRecord,
+  type FinancialSnapshot,
+} from './api';
 
 export type PayFrequency = 'Weekly' | 'Bi-Weekly' | 'Semi-Monthly' | 'Monthly';
 export type FilingContext = 'Single' | 'Married' | 'Head of Household';
@@ -31,6 +41,10 @@ export interface Debt {
   balance: number;
   interestRate: number;
   minimumPayment: number;
+  /** Set from scanned revolving-credit accounts */
+  isRevolving?: boolean;
+  /** Credit card / revolving account limit */
+  creditLimit?: number;
   /** Optional — set from scanned docs for smart matching */
   institutionName?: string;
   lastFour?: string;
@@ -65,6 +79,8 @@ export interface ScannedDocument {
   type: 'Paystub' | 'Bill' | 'Other';
   status: 'Pending Review' | 'Processed' | 'Rejected';
   data?: any;
+  /** SHA-256 hex fingerprint of the file — used for duplicate detection */
+  fingerprint?: string;
 }
 
 /** One field-level change created by a confirmed document import. */
@@ -94,6 +110,7 @@ export interface ComputedMetrics {
   totalDebt: number;
   netWorth: number;
   healthScore: number;
+  /** Debt-to-income ratio using GROSS monthly income (lender-standard). */
   dti: number;
   emergencyMonths: number;
 }
@@ -107,7 +124,9 @@ export function computeMetrics(
   const freqMult: Record<string, number> = { Weekly: 4.33, 'Bi-Weekly': 2.17, 'Semi-Monthly': 2, Monthly: 1 };
   const mult = freqMult[profile?.payFrequency ?? 'Weekly'] ?? 4.33;
 
-  const latest = paystubs[paystubs.length - 1];
+  // Use the NEWEST paystub by pay-date (not the last array element).
+  // sortPaystubsNewestFirst from financial-calculations.ts handles invalid dates gracefully.
+  const latest = sortPaystubsNewestFirst(paystubs)[0];
   const monthlyNet = Math.round((latest?.netPay ?? 0) * mult);
   const monthlyGross = Math.round((latest?.grossPay ?? 0) * mult);
   const totalBills = bills.reduce((s, b) => s + (b.amount ?? 0), 0);
@@ -120,11 +139,13 @@ export function computeMetrics(
     .reduce((s, a) => s + a.value, 0);
   const totalDebt = debts.reduce((s, d) => s + d.balance, 0);
   const netWorth = assets.reduce((s, a) => s + a.value, 0) - totalDebt;
-  const dti = monthlyNet > 0 ? (totalDebtMin / monthlyNet) * 100 : 0;
+
+  // DTI uses GROSS income — this is the lender-standard definition.
+  const dti = monthlyGross > 0 ? (totalDebtMin / monthlyGross) * 100 : 0;
   const monthlyExpenses = totalBills + totalDebtMin;
   const emergencyMonths = monthlyExpenses > 0 ? Math.round((liquidCash / monthlyExpenses) * 10) / 10 : 0;
 
-  // Health score (mirrors Dashboard.tsx)
+  // Health score
   let healthScore = 0;
   if (monthlyNet > 0 && paystubs.length > 0) {
     let score = 0;
@@ -136,7 +157,8 @@ export function computeMetrics(
     const hiB = debts.filter(d => (d.interestRate ?? 0) > 10).reduce((s, d) => s + d.balance, 0);
     const util = Math.min(hiB / 10000, 1);
     if (util < 0.3) score += 15; else if (util < 0.6) score += 8;
-    const dtiR = monthlyNet > 0 ? totalDebtMin / monthlyNet : 1;
+    // Health score DTI also uses gross income — aligns with lender thresholds.
+    const dtiR = monthlyGross > 0 ? totalDebtMin / monthlyGross : 1;
     if (dtiR <= 0.15) score += 15; else if (dtiR <= 0.28) score += 10; else if (dtiR <= 0.36) score += 5;
     const hiCount = debts.filter(d => (d.interestRate ?? 0) > 15).length;
     if (hiCount === 0) score += 10; else if (hiCount === 1) score += 4;
@@ -190,6 +212,14 @@ interface StoreContextType extends StoreState {
   restoreFieldValue: (changeId: string) => void;
   resetToDemo: () => void;
   clearAll: () => void;
+  /** True while the initial server snapshot is being fetched. */
+  isLoadingFromServer: boolean;
+  /** True when local-only data exists and the server has no data (migration offer). */
+  migrationPending: boolean;
+  /** Upload local data to the server (one-time migration). */
+  migrateLocalToServer: () => Promise<void>;
+  /** Dismiss the migration offer without uploading. */
+  dismissMigration: () => void;
 }
 
 // ─── Demo & default state ─────────────────────────────────────────────────────
@@ -206,7 +236,7 @@ const DEMO_BASE = {
   }],
   debts: [
     { id: 'd1', name: 'F-150 Auto Loan', balance: 24500, interestRate: 5.5, minimumPayment: 480 },
-    { id: 'd2', name: 'Credit Card (Tools)', balance: 3200, interestRate: 19.9, minimumPayment: 110 },
+    { id: 'd2', name: 'Credit Card (Tools)', balance: 3200, interestRate: 19.9, minimumPayment: 110, isRevolving: true, creditLimit: 5000 },
   ],
   bills: [
     { id: 'b1', name: 'Rent', amount: 1600, dueDate: 1, isAutoPay: true },
@@ -240,18 +270,18 @@ const StoreContext = createContext<StoreContextType | null>(null);
 
 /** Re-hydrate old stored state that may be missing newer fields. */
 function migrateState(raw: any): StoreState {
-  return {
+  const base = {
     ...DEFAULT_STATE,
     ...raw,
     changeHistory: raw.changeHistory ?? [],
-    computed: raw.computed ?? computeMetrics(raw),
-    // Ensure arrays are always present
     paystubs: raw.paystubs ?? [],
     debts: raw.debts ?? [],
     bills: raw.bills ?? [],
     assets: raw.assets ?? [],
     documents: raw.documents ?? [],
   };
+  base.computed = computeMetrics(base);
+  return base;
 }
 
 /** Apply an update to the mutable parts of state and recompute metrics. */
@@ -260,6 +290,124 @@ function withComputed(patch: Partial<StoreState>, prev: StoreState): StoreState 
   next.computed = computeMetrics(next);
   return next;
 }
+
+// ─── Server ↔ Store data mappers ──────────────────────────────────────────────
+
+/** Map a server FinancialSnapshot to StoreState fields. */
+function mapSnapshotToState(snapshot: FinancialSnapshot): Partial<StoreState> {
+  const prof = snapshot.profile as any;
+  return {
+    profile: prof ? {
+      name: prof.name ?? '',
+      payFrequency: (prof.payFrequency ?? 'Weekly') as PayFrequency,
+      hourlyRate: Number(prof.hourlyRate ?? 0),
+      filingContext: (prof.filingContext ?? 'Single') as FilingContext,
+      hasCompletedOnboarding: Boolean(prof.hasCompletedOnboarding),
+    } : null,
+    paystubs: (snapshot.paystubs as any[]).map((p) => ({
+      id: p.id,
+      // payDate is a timestamp column; the server returns it serialized as ISO string
+      date: p.payDate ? String(p.payDate) : new Date().toISOString(),
+      employer: p.employer ?? '',
+      regularHours: Number(p.regularHours ?? 0),
+      overtimeHours: Number(p.overtimeHours ?? 0),
+      doubleTimeHours: Number(p.doubleTimeHours ?? 0),
+      perDiem: Number(p.perDiem ?? 0),
+      grossPay: Number(p.grossPay ?? 0),
+      netPay: Number(p.netPay ?? 0),
+      taxes: Number(p.taxes ?? 0),
+      deductions: Number(p.deductions ?? 0),
+    })),
+    debts: (snapshot.debts as any[]).map((d) => ({
+      id: d.id,
+      name: d.name,
+      balance: Number(d.balance ?? 0),
+      interestRate: Number(d.interestRate ?? 0),
+      minimumPayment: Number(d.minimumPayment ?? 0),
+      isRevolving: Boolean(d.isRevolving),
+      creditLimit: d.creditLimit != null ? Number(d.creditLimit) : undefined,
+      institutionName: d.institutionName ?? undefined,
+      lastFour: d.lastFour ?? undefined,
+    })),
+    bills: (snapshot.bills as any[]).map((b) => ({
+      id: b.id,
+      name: b.name,
+      amount: Number(b.amount ?? 0),
+      dueDate: Number(b.dueDay ?? 1),
+      isAutoPay: Boolean(b.isAutoPay),
+      providerNormalized: b.providerNormalized ?? undefined,
+    })),
+    assets: (snapshot.assets as any[]).map((a) => ({
+      id: a.id,
+      name: a.name,
+      type: (a.type ?? 'Other') as 'Cash' | 'Investment' | 'Other',
+      value: Number(a.value ?? 0),
+      institutionName: a.institutionName ?? undefined,
+      lastFour: a.lastFour ?? undefined,
+    })),
+  };
+}
+
+/** Map a store Paystub to the API request body. */
+function paystubToApi(p: Omit<Paystub, 'id'>): Record<string, unknown> {
+  return {
+    employer: p.employer,
+    payDate: p.date,  // server coerces ISO string → timestamp
+    regularHours: p.regularHours,
+    overtimeHours: p.overtimeHours,
+    doubleTimeHours: p.doubleTimeHours,
+    perDiem: p.perDiem,
+    grossPay: p.grossPay,
+    netPay: p.netPay,
+    taxes: p.taxes,
+    deductions: p.deductions,
+  };
+}
+
+function debtToApi(d: Omit<Debt, 'id'>): Record<string, unknown> {
+  return {
+    name: d.name,
+    balance: d.balance,
+    interestRate: d.interestRate,
+    minimumPayment: d.minimumPayment,
+    isRevolving: d.isRevolving ?? false,
+    creditLimit: d.creditLimit ?? null,
+    institutionName: d.institutionName ?? null,
+    lastFour: d.lastFour ?? null,
+  };
+}
+
+function billToApi(b: Omit<Bill, 'id'>): Record<string, unknown> {
+  return {
+    name: b.name,
+    amount: b.amount,
+    dueDay: b.dueDate,
+    isAutoPay: b.isAutoPay,
+    providerNormalized: b.providerNormalized ?? null,
+  };
+}
+
+function assetToApi(a: Omit<Asset, 'id'>): Record<string, unknown> {
+  return {
+    name: a.name,
+    type: a.type,
+    value: a.value,
+    institutionName: a.institutionName ?? null,
+    lastFour: a.lastFour ?? null,
+  };
+}
+
+function profileToApi(p: Profile): Record<string, unknown> {
+  return {
+    name: p.name,
+    payFrequency: p.payFrequency,
+    hourlyRate: p.hourlyRate,
+    filingContext: p.filingContext,
+    hasCompletedOnboarding: p.hasCompletedOnboarding,
+  };
+}
+
+// ─── StoreProvider ────────────────────────────────────────────────────────────
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<StoreState>(() => {
@@ -272,75 +420,205 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return DEFAULT_STATE;
   });
 
+  // Persist to localStorage on every state change.
   useEffect(() => {
     localStorage.setItem('bcf_state', JSON.stringify(state));
   }, [state]);
 
-  const updateProfile = useCallback((profileUpdates: Partial<Profile>) => {
-    setState(prev => withComputed({
-      profile: prev.profile
-        ? { ...prev.profile, ...profileUpdates }
-        : { name: '', payFrequency: 'Weekly', hourlyRate: 0, filingContext: 'Single', hasCompletedOnboarding: false, ...profileUpdates } as Profile,
-    }, prev));
+  // ─── Auth integration ───────────────────────────────────────────────────────
+
+  const { isLoaded, isSignedIn, getToken } = useAuth();
+
+  // Keep a fresh Clerk session token in a ref so background CRUD syncs can read
+  // it without causing unnecessary re-renders.
+  const tokenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn) { tokenRef.current = null; return; }
+    const refresh = () => getToken().then(t => { tokenRef.current = t; }).catch(() => {});
+    refresh();
+    // Clerk tokens expire after 60 s; refresh every 50 s.
+    const id = setInterval(refresh, 50_000);
+    return () => clearInterval(id);
+  }, [isLoaded, isSignedIn, getToken]);
+
+  // ─── Server snapshot on sign-in ─────────────────────────────────────────────
+
+  const [serverSynced, setServerSynced] = useState(false);
+  const [isLoadingFromServer, setIsLoadingFromServer] = useState(false);
+  const [migrationPending, setMigrationPending] = useState(false);
+
+  // Keep a ref to current state so the load effect can check for local data
+  // without it being part of the dependency array.
+  const stateRef = useRef(state);
+  useEffect(() => { stateRef.current = state; });
+
+  // Reset sync flag on sign-out so we reload on next sign-in.
+  useEffect(() => {
+    if (isLoaded && !isSignedIn) {
+      setServerSynced(false);
+      setMigrationPending(false);
+    }
+  }, [isLoaded, isSignedIn]);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || serverSynced) return;
+    let cancelled = false;
+    (async () => {
+      const token = await getToken();
+      if (!token || cancelled) return;
+      setIsLoadingFromServer(true);
+      try {
+        const snapshot = await loadSnapshot(token);
+        if (cancelled) return;
+        const hasServerData = Boolean(
+          snapshot.profile ||
+          snapshot.paystubs?.length ||
+          snapshot.debts?.length ||
+          snapshot.bills?.length ||
+          snapshot.assets?.length,
+        );
+
+        if (hasServerData) {
+          setState(migrateState({ ...DEFAULT_STATE, ...mapSnapshotToState(snapshot) }));
+        } else {
+          const cur = stateRef.current;
+          const hasLocalData =
+            cur.paystubs.length > 0 || cur.debts.length > 0 ||
+            cur.bills.length > 0 || cur.assets.length > 0;
+          if (hasLocalData) setMigrationPending(true);
+        }
+      } catch (err) {
+        console.error('[store] Failed to load server snapshot:', err);
+      } finally {
+        if (!cancelled) { setIsLoadingFromServer(false); setServerSynced(true); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isLoaded, isSignedIn, serverSynced, getToken]);
+
+  // ─── One-time migration: upload local data to server ────────────────────────
+
+  const migrateLocalToServer = useCallback(async () => {
+    const token = tokenRef.current;
+    if (!token) throw new Error('Not signed in');
+    const cur = stateRef.current;
+    try {
+      if (cur.profile) await saveProfile(token, profileToApi(cur.profile));
+      for (const p of cur.paystubs) await createRecord(token, 'paystubs', paystubToApi(p));
+      for (const d of cur.debts) await createRecord(token, 'debts', debtToApi(d));
+      for (const b of cur.bills) await createRecord(token, 'bills', billToApi(b));
+      for (const a of cur.assets) await createRecord(token, 'assets', assetToApi(a));
+      setMigrationPending(false);
+      // Reload from server so local IDs are replaced with server UUIDs.
+      setServerSynced(false);
+    } catch (err) {
+      console.error('[store] Migration upload failed:', err);
+      throw err;
+    }
   }, []);
+
+  const dismissMigration = useCallback(() => setMigrationPending(false), []);
+
+  // ─── Background API sync helper ──────────────────────────────────────────────
+  // Each CRUD function updates local state immediately (optimistic) then fires
+  // a background API call. Errors are logged but never surface to the UI.
+
+  const bgSync = useCallback((fn: (token: string) => Promise<unknown>) => {
+    const token = tokenRef.current;
+    if (!token) return;
+    fn(token).catch(err => console.error('[store] background sync failed:', err));
+  }, []);
+
+  // ─── Profile ─────────────────────────────────────────────────────────────────
+
+  const updateProfile = useCallback((profileUpdates: Partial<Profile>) => {
+    setState(prev => {
+      const next = prev.profile
+        ? { ...prev.profile, ...profileUpdates }
+        : { name: '', payFrequency: 'Weekly' as PayFrequency, hourlyRate: 0, filingContext: 'Single' as FilingContext, hasCompletedOnboarding: false, ...profileUpdates } as Profile;
+      bgSync(t => saveProfile(t, profileToApi(next)));
+      return withComputed({ profile: next }, prev);
+    });
+  }, [bgSync]);
+
+  // ─── Paystubs ─────────────────────────────────────────────────────────────────
 
   const addPaystub = useCallback((paystub: Omit<Paystub, 'id'>): string => {
     const id = crypto.randomUUID();
     setState(prev => withComputed({ paystubs: [...prev.paystubs, { ...paystub, id }] }, prev));
+    bgSync(t => createRecord(t, 'paystubs', paystubToApi(paystub)));
     return id;
-  }, []);
+  }, [bgSync]);
 
   const removePaystub = useCallback((id: string) => {
     setState(prev => withComputed({ paystubs: prev.paystubs.filter(p => p.id !== id) }, prev));
-  }, []);
+    bgSync(t => deleteRecord(t, 'paystubs', id));
+  }, [bgSync]);
+
+  // ─── Debts ───────────────────────────────────────────────────────────────────
 
   const addDebt = useCallback((debt: Omit<Debt, 'id'>): string => {
     const id = crypto.randomUUID();
     setState(prev => withComputed({ debts: [...prev.debts, { ...debt, id }] }, prev));
+    bgSync(t => createRecord(t, 'debts', debtToApi(debt)));
     return id;
-  }, []);
+  }, [bgSync]);
 
   const removeDebt = useCallback((id: string) => {
     setState(prev => withComputed({ debts: prev.debts.filter(d => d.id !== id) }, prev));
-  }, []);
+    bgSync(t => deleteRecord(t, 'debts', id));
+  }, [bgSync]);
 
   const updateDebt = useCallback((id: string, updates: Partial<Debt>) => {
     setState(prev => withComputed({
       debts: prev.debts.map(d => d.id === id ? { ...d, ...updates } : d),
     }, prev));
-  }, []);
+    bgSync(t => updateRecord(t, 'debts', id, debtToApi(updates as Omit<Debt, 'id'>)));
+  }, [bgSync]);
+
+  // ─── Bills ───────────────────────────────────────────────────────────────────
 
   const addBill = useCallback((bill: Omit<Bill, 'id'>): string => {
     const id = crypto.randomUUID();
     setState(prev => withComputed({ bills: [...prev.bills, { ...bill, id }] }, prev));
+    bgSync(t => createRecord(t, 'bills', billToApi(bill)));
     return id;
-  }, []);
+  }, [bgSync]);
 
   const removeBill = useCallback((id: string) => {
     setState(prev => withComputed({ bills: prev.bills.filter(b => b.id !== id) }, prev));
-  }, []);
+    bgSync(t => deleteRecord(t, 'bills', id));
+  }, [bgSync]);
 
   const updateBill = useCallback((id: string, updates: Partial<Bill>) => {
     setState(prev => withComputed({
       bills: prev.bills.map(b => b.id === id ? { ...b, ...updates } : b),
     }, prev));
-  }, []);
+    bgSync(t => updateRecord(t, 'bills', id, billToApi(updates as Omit<Bill, 'id'>)));
+  }, [bgSync]);
+
+  // ─── Assets ──────────────────────────────────────────────────────────────────
 
   const addAsset = useCallback((asset: Omit<Asset, 'id'>): string => {
     const id = crypto.randomUUID();
     setState(prev => withComputed({ assets: [...prev.assets, { ...asset, id }] }, prev));
+    bgSync(t => createRecord(t, 'assets', assetToApi(asset)));
     return id;
-  }, []);
+  }, [bgSync]);
 
   const removeAsset = useCallback((id: string) => {
     setState(prev => withComputed({ assets: prev.assets.filter(a => a.id !== id) }, prev));
-  }, []);
+    bgSync(t => deleteRecord(t, 'assets', id));
+  }, [bgSync]);
 
   const updateAsset = useCallback((id: string, updates: Partial<Asset>) => {
     setState(prev => withComputed({
       assets: prev.assets.map(a => a.id === id ? { ...a, ...updates } : a),
     }, prev));
-  }, []);
+    bgSync(t => updateRecord(t, 'assets', id, assetToApi(updates as Omit<Asset, 'id'>)));
+  }, [bgSync]);
+
+  // ─── Documents ───────────────────────────────────────────────────────────────
 
   const addDocument = useCallback((doc: Omit<ScannedDocument, 'id' | 'date'>) => {
     setState(prev => ({
@@ -360,12 +638,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setState(prev => ({ ...prev, documents: prev.documents.filter(d => d.id !== id) }));
   }, []);
 
+  // ─── Change history ───────────────────────────────────────────────────────────
+
   const addChangeRecords = useCallback((records: FinancialChangeRecord[]) => {
     if (records.length === 0) return;
     setState(prev => ({
       ...prev,
       changeHistory: [...prev.changeHistory, ...records],
-      // metrics already current since the underlying add/update calls already ran withComputed
     }));
   }, []);
 
@@ -379,16 +658,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       let bills = [...prev.bills];
       let paystubs = [...prev.paystubs];
 
-      // Process in reverse so we undo later changes first
       for (const rec of [...toUndo].reverse()) {
         if (rec.field === 'created') {
-          // Delete the record that was created
           if (rec.destinationSection === 'assets') assets = assets.filter(a => a.id !== rec.recordId);
           else if (rec.destinationSection === 'debts') debts = debts.filter(d => d.id !== rec.recordId);
           else if (rec.destinationSection === 'bills') bills = bills.filter(b => b.id !== rec.recordId);
           else if (rec.destinationSection === 'paystubs') paystubs = paystubs.filter(p => p.id !== rec.recordId);
         } else if (rec.oldValue !== null && rec.oldValue !== undefined) {
-          // Only restore fields where we have a meaningful previous value
           if (rec.destinationSection === 'assets')
             assets = assets.map(a => a.id === rec.recordId ? { ...a, [rec.field]: rec.oldValue } : a);
           else if (rec.destinationSection === 'debts')
@@ -406,7 +682,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const restoreFieldValue = useCallback((changeId: string) => {
     setState(prev => {
       const rec = prev.changeHistory.find(r => r.id === changeId);
-      // Skip: no record, creation records, or records with no meaningful old value
       if (!rec || rec.field === 'created' || rec.oldValue === null || rec.oldValue === undefined) return prev;
 
       let assets = prev.assets;
@@ -439,6 +714,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       addDocument, updateDocument, removeDocument,
       addChangeRecords, undoImport, restoreFieldValue,
       resetToDemo, clearAll,
+      isLoadingFromServer,
+      migrationPending,
+      migrateLocalToServer,
+      dismissMigration,
     }}>
       {children}
     </StoreContext.Provider>
