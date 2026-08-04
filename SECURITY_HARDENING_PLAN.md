@@ -26,14 +26,16 @@ This branch is intentionally developed in reviewable stages. `main` is not modif
 
 ## Stage 3 — Authentication and authorization
 
-- [ ] Select and configure the supported Replit authentication provider
-- [ ] Add server-verified sessions
-- [ ] Protect financial pages and AI endpoints
-- [ ] Add logout and current-user endpoints
-- [ ] Restrict developer Test Lab access
-- [ ] Add unauthorized-access tests
+- [x] Select Clerk as the branded customer authentication provider
+- [x] Add server-verified Clerk sessions
+- [x] Protect financial pages and paid AI endpoints
+- [x] Add current-user endpoint and sign-out controls
+- [x] Disable developer Test Lab in production by default
+- [ ] Configure Clerk keys in Replit
+- [ ] Run signed-in and signed-out verification tests
+- [ ] Add automated auth middleware tests
 
-This stage requires Replit-side authentication configuration and secrets. No provider credentials will be guessed or committed to GitHub.
+Database-backed record ownership and cross-user authorization remain part of the persistence stage because the current financial store is still localStorage-based.
 
 ## Stage 4 — Upload security
 
