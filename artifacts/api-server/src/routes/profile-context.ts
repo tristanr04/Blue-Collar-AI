@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Response } from "express";
 import type { AuthenticatedRequest } from "../middlewares/auth.js";
 import { requireAuthenticatedUser } from "../middlewares/auth.js";
 import { appendAuditEvent } from "../lib/audit-repository.js";
@@ -16,7 +16,7 @@ function userIdFrom(req: AuthenticatedRequest): string {
   return req.authenticatedUserId;
 }
 
-function preventSensitiveCaching(res: Parameters<IRouter["use"]>[1] extends never ? never : any) {
+function preventSensitiveCaching(res: Response) {
   res.setHeader("Cache-Control", "private, no-store, no-cache, must-revalidate");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
