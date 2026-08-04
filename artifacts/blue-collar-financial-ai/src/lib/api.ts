@@ -103,10 +103,36 @@ export async function scanFile(
     );
   }
 
-  const json = await res.json().catch(() => ({
-    stage: "unknown",
-    message: `Upload failed with HTTP ${res.status}`,
-  }));
+  // ── Instrumentation ────────────────────────────────────────────────────────
+  console.log("RAW API RESPONSE");
+  console.dir(
+    {
+      status: res.status,
+      statusText: res.statusText,
+      headers: Object.fromEntries(res.headers.entries()),
+      url: res.url,
+    },
+    { depth: null },
+  );
+
+  let json: unknown;
+  try {
+    json = await res.clone().json();
+    console.log("RAW RESPONSE JSON");
+    console.dir(json, { depth: null });
+  } catch (parseErr) {
+    const rawText = await res.text().catch(() => "<could not read body>");
+    console.log("RAW RESPONSE JSON — JSON parse threw:", parseErr);
+    console.log("RAW RESPONSE BODY TEXT:", rawText);
+    throw new Error(
+      JSON.stringify({
+        stage: "json_parse",
+        message: `Response body is not valid JSON (HTTP ${res.status}): ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+        filename: file.name,
+      }),
+    );
+  }
+  // ── End instrumentation ────────────────────────────────────────────────────
 
   if (!res.ok) {
     throw new Error(

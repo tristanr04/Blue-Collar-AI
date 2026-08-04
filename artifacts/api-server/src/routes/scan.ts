@@ -548,10 +548,13 @@ router.post(
             ? (modelOutput as string).slice(0, 1000)
             : JSON.stringify(modelOutput).slice(0, 1000)),
         );
-        res.status(422).json({
+        const _body422a = {
           stage: "ai_json_parse",
           error: "The document processor returned an unreadable response. Please try again.",
-        });
+        };
+        console.log("RETURNING TO FRONTEND:");
+        console.dir(_body422a, { depth: null });
+        res.status(422).json(_body422a);
         return;
       }
 
@@ -591,7 +594,7 @@ router.post(
           status: "Processed",
         }).catch(err => logger.warn({ err }, "Failed to persist scanned document record"));
 
-        res.status(200).json({
+        const _body200vl = {
           success: true,
           documentType: "vehicleLoan",
           type: "vehicleLoan",
@@ -604,7 +607,10 @@ router.post(
           mimeType: responseMime,
           normalizedDimensions,
           securityWarnings,
-        });
+        };
+        console.log("RETURNING TO FRONTEND:");
+        console.dir(_body200vl, { depth: null });
+        res.status(200).json(_body200vl);
         return;
       }
 
@@ -625,11 +631,15 @@ router.post(
           JSON.stringify(rawExtraction, null, 2).slice(0, 1000),
         );
         console.log("Validation field errors:", JSON.stringify(validation.body.fieldErrors, null, 2));
-        res.status(422).json({
+        // ↓ THIS IS THE LINE THAT RETURNS "unrecognized response format"
+        const _body422b = {
           ...validation.body,
           error: "The document processor returned an unrecognized response format. Please try again.",
           detail: validation.body.fieldErrors,
-        });
+        };
+        console.log("RETURNING TO FRONTEND:");
+        console.dir(_body422b, { depth: null });
+        res.status(422).json(_body422b);
         return;
       }
 
@@ -662,14 +672,17 @@ router.post(
         status: "Processed",
       }).catch(err => logger.warn({ err }, "Failed to persist scanned document record"));
 
-      res.json({
+      const _body200generic = {
         ...data,
         institution,
         fileName: originalname,
         mimeType: responseMime,
         normalizedDimensions,
         securityWarnings,
-      });
+      };
+      console.log("RETURNING TO FRONTEND:");
+      console.dir(_body200generic, { depth: null });
+      res.json(_body200generic);
     } catch (error) {
       const isAbort =
         abort.signal.aborted ||
