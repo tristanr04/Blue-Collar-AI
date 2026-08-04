@@ -505,42 +505,48 @@ export default function Scanner() {
         }
       }
 
-      // ── Vehicle-loan fast path ──────────────────────────────────────────────
-      // The server returns { type: 'vehicleLoan', data: { loanName, ... } } for
-      // Auto Loan documents, bypassing the generic wrapped-fields format.
+      // ── Fast-path detection ─────────────────────────────────────────────────
       const isVehicleLoan =
         (result as any).type === 'vehicleLoan' ||
         (result as any).documentType === 'vehicleLoan';
 
+      const isBankStatement =
+        (result as any).type === 'bankStatement' ||
+        (result as any).documentType === 'bankStatement';
+
+      /** Resolve the flat data object from any of the envelope shapes the server uses. */
+      function resolveFastPathData(r: any): Record<string, unknown> | null {
+        const d = r?.data?.data ?? r?.data?.extraction ?? r?.data?.result ?? r?.data ?? r?.extraction ?? r?.result;
+        if (d && typeof d === 'object' && !Array.isArray(d)) return d as Record<string, unknown>;
+        return null;
+      }
+
+      /** Build a fieldMap from a flat extraction object (fast-path response). */
+      function buildFieldMapFromFlat(
+        extracted: Record<string, unknown>,
+        keys: string[],
+        defaultConfidence = 80,
+      ): Record<string, { value: string; confidence: number }> {
+        const map: Record<string, { value: string; confidence: number }> = {};
+        for (const key of keys) {
+          const val = extracted[key];
+          if (val !== null && val !== undefined) {
+            map[key] = { value: String(val), confidence: defaultConfidence };
+          }
+        }
+        return map;
+      }
+
       const fieldMap: Record<string, { value: string; confidence: number }> = {};
 
       if (isVehicleLoan) {
-        // Accept the extraction from any of the response locations the server may use
-        const extracted =
-          (result as any).data?.data ??
-          (result as any).data?.extraction ??
-          (result as any).data?.result ??
-          (result as any).data ??
-          (result as any).extraction ??
-          (result as any).result ??
-          result;
+        const extracted = resolveFastPathData(result as any);
+        if (!extracted) throw new Error('The document processor returned an unrecognized response format.');
 
-        if (!extracted || typeof extracted !== 'object') {
-          throw new Error('The document processor returned an unrecognized response format.');
-        }
-
-        // Map flat vehicle-loan extraction into the fieldMap the review UI reads.
-        // Use !== null / !== undefined — never truthy — so zero values are preserved.
-        const vehicleFields: Array<keyof typeof extracted> = [
+        Object.assign(fieldMap, buildFieldMapFromFlat(extracted, [
           'loanName', 'accountLast4', 'balanceOwed', 'originalAmount',
           'apr', 'monthlyPayment', 'monthsRemaining', 'nextDueDate',
-        ];
-        for (const key of vehicleFields) {
-          const val = (extracted as any)[key];
-          if (val !== null && val !== undefined) {
-            fieldMap[key as string] = { value: String(val), confidence: 80 };
-          }
-        }
+        ]));
 
         if (import.meta.env.DEV) {
           console.group(`[Scanner] Vehicle loan extraction — ${(result as any).fileName ?? ''}`);
@@ -549,6 +555,25 @@ export default function Scanner() {
           console.log('fieldMap:', JSON.stringify(fieldMap, null, 2));
           console.groupEnd();
         }
+
+      } else if (isBankStatement) {
+        const extracted = resolveFastPathData(result as any);
+        if (!extracted) throw new Error('The document processor returned an unrecognized response format.');
+
+        Object.assign(fieldMap, buildFieldMapFromFlat(extracted, [
+          'institution', 'accountName', 'lastFour',
+          'closingBalance', 'currentBalance', 'availableBalance',
+          'statementStartDate', 'statementEndDate', 'apy',
+        ]));
+
+        if (import.meta.env.DEV) {
+          console.group(`[Scanner] Bank statement extraction — ${(result as any).fileName ?? ''}`);
+          console.log('raw result:', JSON.stringify(result, null, 2));
+          console.log('extracted:', JSON.stringify(extracted, null, 2));
+          console.log('fieldMap:', JSON.stringify(fieldMap, null, 2));
+          console.groupEnd();
+        }
+
       } else {
         for (const [k, v] of Object.entries(result.fields ?? {})) {
           // Use getFieldValue so null fields and flat values never crash
@@ -561,11 +586,17 @@ export default function Scanner() {
 
       // Extract institution info returned by the server normalizer
       const inst = result.institution;
-      const institutionName = inst?.normalizedName || inst?.rawName ||
-        (isVehicleLoan ? ((result as any).data?.loanName ?? '') : '');
+      const fastPathInstitution =
+        isVehicleLoan ? ((result as any).data?.loanName ?? '') :
+        isBankStatement ? ((result as any).data?.institution ?? '') :
+        '';
+      const institutionName = inst?.normalizedName || inst?.rawName || fastPathInstitution;
       const institutionUnknown = !inst?.isKnownInstitution && !!institutionName;
       const institutionCategory = inst?.institutionCategory ?? null;
-      const resolvedDocType = isVehicleLoan ? 'Auto Loan' : (result.docType ?? 'Unknown');
+      const resolvedDocType =
+        isVehicleLoan ? 'Auto Loan' :
+        isBankStatement ? 'Bank Statement' :
+        (result.docType ?? 'Unknown');
 
       setDocs(prev => prev.map(d => d.id === docId ? {
         ...d,

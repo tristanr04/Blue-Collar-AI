@@ -441,6 +441,144 @@ function looksLikeVehicleLoan(
   return matchedFields >= 3;
 }
 
+// ─── Bank-statement helpers ───────────────────────────────────────────────────
+
+/**
+ * Extracts the plain institution name from whatever shape the AI may return:
+ * a bare string, a wrapped { value } string, or an institution envelope
+ * { rawName, normalizedName, name }.
+ */
+function resolveInstitutionName(raw: Record<string, unknown>): string | null {
+  const inst = raw.institution;
+  if (typeof inst === "string" && inst) return inst;
+  if (inst && typeof inst === "object" && !Array.isArray(inst)) {
+    const o = inst as Record<string, unknown>;
+    const name = o.rawName ?? o.normalizedName ?? o.name ?? o.value;
+    if (typeof name === "string" && name) return name;
+  }
+  const fallback = firstDefined(
+    raw.bankName, raw.bank, raw.financialInstitution,
+    raw.institutionName, raw.lender, raw.issuer, raw.providerName,
+  );
+  return typeof fallback === "string" ? fallback : null;
+}
+
+function looksLikeBankStatement(rawInput: Record<string, unknown>): boolean {
+  const raw = flattenWrappedFields(rawInput);
+
+  const type = normalizeDocumentType(
+    raw.docType ?? raw.documentType ?? raw.type ?? raw.accountType,
+  );
+
+  // Hard-exclude doc types that share field names but aren't bank statements
+  const nonBankType =
+    type.includes("credit card") ||
+    type.includes("loan") ||
+    type.includes("mortgage") ||
+    type.includes("heloc") ||
+    type.includes("paystub") ||
+    type.includes("pay stub") ||
+    type.includes("brokerage") ||
+    type.includes("ira") ||
+    type.includes("401") ||
+    type.includes("403") ||
+    type.includes("457") ||
+    type.includes("pension") ||
+    type.includes("bill");
+
+  if (nonBankType) return false;
+
+  const bankDocTypes = [
+    "bank statement",
+    "checking statement",
+    "checking account statement",
+    "savings statement",
+    "deposit account statement",
+    "checking account",
+    "savings account",
+    "high-yield savings",
+    "money market account",
+    "certificate of deposit",
+    "cash management account",
+  ];
+
+  if (bankDocTypes.some((t) => type === t || type.includes(t))) return true;
+
+  // Field-based detection — require 3+ bank-specific keys
+  const bankFieldKeys = [
+    "closingBalance",
+    "endingBalance",
+    "openingBalance",
+    "statementBalance",
+    "currentBalance",
+    "availableBalance",
+    "balance",
+    "statementStartDate",
+    "statementEndDate",
+    "statementStart",
+    "statementEnd",
+    "periodStart",
+    "periodEnd",
+    "apy",
+    "annualPercentageYield",
+  ];
+
+  const matchedFields = bankFieldKeys.filter(
+    (key) => raw[key] !== undefined && raw[key] !== null && raw[key] !== "",
+  ).length;
+
+  return matchedFields >= 3;
+}
+
+function normalizeBankStatementExtraction(rawInput: Record<string, unknown>) {
+  const raw = flattenWrappedFields(rawInput);
+
+  return {
+    documentType: "bankStatement" as const,
+
+    institution: resolveInstitutionName(raw),
+
+    accountName: firstDefined(
+      raw.accountName, raw.accountType, raw.accountTitle, raw.name,
+    ) as string | null,
+
+    lastFour: getLast4(firstDefined(
+      raw.lastFour, raw.last4, raw.accountLast4, raw.lastFourDigits,
+      raw.accountNumber,
+    )),
+
+    closingBalance: parseMoney(firstDefined(
+      raw.closingBalance, raw.endingBalance, raw.statementBalance,
+      raw.balanceAsOf, raw.closingAccountBalance, raw.currentBalance,
+      raw.balance,
+    )),
+
+    currentBalance: parseMoney(firstDefined(
+      raw.currentBalance, raw.balance, raw.accountBalance,
+    )),
+
+    availableBalance: parseMoney(firstDefined(
+      raw.availableBalance, raw.availableFunds, raw.availableForWithdrawal,
+    )),
+
+    statementStartDate: normalizeDate(firstDefined(
+      raw.statementStartDate, raw.statementStart, raw.periodStart,
+      raw.fromDate, raw.beginDate, raw.startDate, raw.statementPeriodStart,
+    )),
+
+    statementEndDate: normalizeDate(firstDefined(
+      raw.statementEndDate, raw.statementEnd, raw.periodEnd,
+      raw.throughDate, raw.endDate, raw.closingDate, raw.statementPeriodEnd,
+    )),
+
+    apy: parseApr(firstDefined(
+      raw.apy, raw.annualPercentageYield,
+    )),
+
+    confidence: (raw.confidence as Record<string, number>) ?? {},
+  };
+}
+
 function normalizeVehicleLoanExtraction(rawInput: Record<string, unknown>) {
   const raw = flattenWrappedFields(rawInput);
 
@@ -695,6 +833,49 @@ router.post(
         console.log("RETURNING TO FRONTEND:");
         console.dir(_body200vl, { depth: null });
         res.status(200).json(_body200vl);
+        return;
+      }
+
+      // ── Bank-statement fast path ────────────────────────────────────────────
+      if (looksLikeBankStatement(rawExtraction)) {
+        const normalizedExtraction = normalizeBankStatementExtraction(rawExtraction);
+
+        console.log(
+          "=== NORMALIZED BANK STATEMENT EXTRACTION ===",
+          JSON.stringify(normalizedExtraction, null, 2),
+        );
+
+        logger.info(
+          { docType: "Bank Statement", file: originalname, mimeType: responseMime },
+          "secure scan complete (bank statement)",
+        );
+
+        createScannedDocument(userId, {
+          fileFingerprint: fingerprint,
+          fileName: originalname,
+          mimeType: responseMime,
+          documentType: "Bank Statement",
+          classificationConfidence: null,
+          institutionNormalized: normalizedExtraction.institution,
+          status: "Processed",
+        }).catch(err => logger.warn({ err }, "Failed to persist scanned document record"));
+
+        const _body200bs = {
+          success: true,
+          documentType: "bankStatement",
+          type: "bankStatement",
+          data: normalizedExtraction,
+          extraction: normalizedExtraction,
+          docType: "Bank Statement",
+          fields: {},
+          fileName: originalname,
+          mimeType: responseMime,
+          normalizedDimensions,
+          securityWarnings,
+        };
+        console.log("RETURNING TO FRONTEND:");
+        console.dir(_body200bs, { depth: null });
+        res.status(200).json(_body200bs);
         return;
       }
 

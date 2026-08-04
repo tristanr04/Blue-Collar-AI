@@ -41,6 +41,21 @@ export interface VehicleLoanExtraction {
   confidence: Record<string, number>;
 }
 
+/** Normalized bank-statement extraction returned for Bank Statement / Checking / Savings docs. */
+export interface BankStatementExtraction {
+  documentType: "bankStatement";
+  institution: string | null;
+  accountName: string | null;
+  lastFour: string | null;
+  closingBalance: number | null;
+  currentBalance: number | null;
+  availableBalance: number | null;
+  statementStartDate: string | null;
+  statementEndDate: string | null;
+  apy: number | null;
+  confidence: Record<string, number>;
+}
+
 export interface ScanResult {
   docType: string;
   classificationConfidence: number;
@@ -50,12 +65,12 @@ export interface ScanResult {
   fileName: string;
   mimeType: string;
   error?: string;
-  /** Set when the server used the vehicle-loan fast path. */
+  /** Set when the server used a document fast path. */
   success?: boolean;
   type?: string;
   documentType?: string;
-  data?: VehicleLoanExtraction | Record<string, unknown>;
-  extraction?: VehicleLoanExtraction | Record<string, unknown>;
+  data?: VehicleLoanExtraction | BankStatementExtraction | Record<string, unknown>;
+  extraction?: VehicleLoanExtraction | BankStatementExtraction | Record<string, unknown>;
 }
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
