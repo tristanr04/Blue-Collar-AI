@@ -431,6 +431,263 @@ function unwrapDocumentResponse(raw: unknown): Record<string, unknown> | null {
   return null;
 }
 
+// ─── Response metadata & failure diagnosis ────────────────────────────────────
+
+interface ResponseMeta {
+  model: string | null;
+  finishReason: string | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
+  /** Chars of text sent to the model (0 for image-only inputs). */
+  promptChars: number;
+  /** Chars in the raw model output string. */
+  responseChars: number;
+}
+
+/** Pull finish_reason, token counts, and model name from the raw API response. */
+function extractResponseMeta(response: unknown, promptChars: number): ResponseMeta {
+  const r = response as Record<string, unknown> | null;
+  const choice = (r as any)?.choices?.[0];
+  const usage = (r as any)?.usage;
+  const rawContent: unknown = choice?.message?.content;
+  const responseChars = typeof rawContent === "string" ? rawContent.length : 0;
+
+  return {
+    model: (r as any)?.model ?? null,
+    finishReason: choice?.finish_reason ?? null,
+    promptTokens: usage?.prompt_tokens ?? null,
+    completionTokens: usage?.completion_tokens ?? null,
+    totalTokens: usage?.total_tokens ?? null,
+    promptChars,
+    responseChars,
+  };
+}
+
+/**
+ * Extract the raw string content from the API response — always returns a
+ * string (empty string if not present), without any parsing or recovery.
+ * Use this to save the verbatim model output before any cleanup is applied.
+ */
+function getRawOutputText(response: unknown): string {
+  const r = response as Record<string, unknown> | null;
+  const content: unknown =
+    (r as any)?.choices?.[0]?.message?.content ??
+    (r as any)?.output_text ??
+    (r as any)?.content?.[0]?.text ??
+    (r as any)?.message?.content ??
+    (r as any)?.output?.[0]?.content?.[0]?.text;
+
+  if (typeof content === "string") return content;
+  if (content == null) return "";
+  try { return JSON.stringify(content); } catch { return String(content); }
+}
+
+type FailureCause =
+  | "empty_response"
+  | "model_refusal"
+  | "truncated_output"
+  | "markdown_wrapping"
+  | "extra_explanatory_text"
+  | "multiple_json_objects"
+  | "invalid_json_syntax"
+  | "zod_schema_mismatch"
+  | "unknown";
+
+interface FailureDiagnosis {
+  cause: FailureCause;
+  detail: string;
+  /** First 600 chars of the raw response for quick log inspection. */
+  rawHead: string;
+  /** Last 300 chars — most useful for spotting truncation. */
+  rawTail: string;
+}
+
+/**
+ * Categorise why a model response could not be turned into a valid extraction.
+ *
+ * Pass `zodErrors` only when JSON parsed OK but schema validation failed —
+ * that drives the "zod_schema_mismatch" cause instead of the JSON-level checks.
+ */
+function classifyResponseFailure(
+  rawText: string,
+  meta: ResponseMeta,
+  zodErrors?: Record<string, string[]>,
+): FailureDiagnosis {
+  const trimmed = rawText.trim();
+  const rawHead = rawText.slice(0, 600);
+  const rawTail = rawText.slice(-300);
+
+  if (!trimmed) {
+    return {
+      cause: "empty_response",
+      detail: `Model returned empty content. finish_reason=${meta.finishReason}`,
+      rawHead, rawTail,
+    };
+  }
+
+  // finish_reason=length always means truncation regardless of content
+  if (meta.finishReason === "length") {
+    return {
+      cause: "truncated_output",
+      detail:
+        `finish_reason=length — output cut at ${meta.responseChars} chars / ` +
+        `${meta.completionTokens ?? "?"} completion tokens. ` +
+        `Last chars: …${rawTail.slice(-80)}`,
+      rawHead, rawTail,
+    };
+  }
+
+  const refusalRe = [
+    /^i('m| am) sorry\b/i,
+    /^i cannot\b/i,
+    /^i'm unable\b/i,
+    /^i don'?t\b/i,
+    /\bas an (ai|language model)\b/i,
+    /^sorry,? (but )?i (can'?t|cannot)\b/i,
+  ];
+  if (refusalRe.some(re => re.test(trimmed))) {
+    return {
+      cause: "model_refusal",
+      detail: "Model returned a refusal / explanation instead of JSON.",
+      rawHead, rawTail,
+    };
+  }
+
+  // Zod path — JSON parsed fine, schema rejected it
+  if (zodErrors) {
+    const topErrors = Object.entries(zodErrors)
+      .slice(0, 8)
+      .map(([k, msgs]) => `${k}: ${msgs.join("; ")}`)
+      .join(" | ");
+    return {
+      cause: "zod_schema_mismatch",
+      detail: `JSON parsed OK but failed schema validation — ${topErrors}`,
+      rawHead, rawTail,
+    };
+  }
+
+  if (trimmed.includes("```")) {
+    return {
+      cause: "markdown_wrapping",
+      detail: "Response contains markdown code fences that could not be stripped.",
+      rawHead, rawTail,
+    };
+  }
+
+  const topObjects = extractAllJsonObjects(trimmed);
+  if (topObjects.length > 1) {
+    return {
+      cause: "multiple_json_objects",
+      detail:
+        `${topObjects.length} separate JSON objects found. ` +
+        `Largest is ${topObjects[0]?.length ?? 0} chars.`,
+      rawHead, rawTail,
+    };
+  }
+
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+
+  if (firstBrace === -1 || lastBrace === -1) {
+    return {
+      cause: "invalid_json_syntax",
+      detail: "No JSON object delimiters found in response.",
+      rawHead, rawTail,
+    };
+  }
+
+  if (firstBrace > 10 || lastBrace < trimmed.trimEnd().length - 10) {
+    return {
+      cause: "extra_explanatory_text",
+      detail:
+        `Non-JSON prose detected: text before position ${firstBrace}` +
+        (lastBrace < trimmed.trimEnd().length - 10
+          ? ` and/or after position ${lastBrace}`
+          : "") +
+        ".",
+      rawHead, rawTail,
+    };
+  }
+
+  try {
+    JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+  } catch (e) {
+    return {
+      cause: "invalid_json_syntax",
+      detail: `JSON.parse error: ${e instanceof Error ? e.message : String(e)}`,
+      rawHead, rawTail,
+    };
+  }
+
+  return {
+    cause: "unknown",
+    detail: "Response appears structurally valid but all recovery stages failed.",
+    rawHead, rawTail,
+  };
+}
+
+/**
+ * Build the 422 body returned when both attempts fail.
+ *
+ * The user-visible `error` string stays generic; all diagnostic detail lives
+ * in `diagnosis` and `responseMetadata` so developers can inspect logs / API
+ * responses without exposing internals to end users.
+ */
+function buildDiagnosticFailureBody(opts: {
+  file: string;
+  attempt1: { meta: ResponseMeta; rawText: string; diagnosis: FailureDiagnosis };
+  attempt2: { meta: ResponseMeta; rawText: string; diagnosis: FailureDiagnosis } | null;
+  rawExtractionKeys: string[] | null;
+}) {
+  const { attempt1: a1, attempt2: a2, rawExtractionKeys } = opts;
+
+  const retryImproved =
+    a2 !== null && a2.diagnosis.cause !== a1.diagnosis.cause
+      ? `Retry changed failure cause: ${a1.diagnosis.cause} → ${a2.diagnosis.cause}`
+      : a2 !== null
+      ? `Retry produced the same failure cause: ${a2.diagnosis.cause}`
+      : null;
+
+  return {
+    stage: "ai_json_parse",
+    error: "The document processor returned an unrecognized response format. Please try again.",
+    // ── Diagnostic payload (for developers / support) ─────────────────────
+    diagnosis: {
+      cause: (a2 ?? a1).diagnosis.cause,
+      detail: (a2 ?? a1).diagnosis.detail,
+      attempt1Cause: a1.diagnosis.cause,
+      attempt2Cause: a2?.diagnosis.cause ?? null,
+      retryComparison: retryImproved,
+      rawHead: (a2 ?? a1).diagnosis.rawHead,
+      rawTail: (a2 ?? a1).diagnosis.rawTail,
+    },
+    responseMetadata: {
+      attempt1: {
+        model: a1.meta.model,
+        finishReason: a1.meta.finishReason,
+        promptChars: a1.meta.promptChars,
+        responseChars: a1.meta.responseChars,
+        promptTokens: a1.meta.promptTokens,
+        completionTokens: a1.meta.completionTokens,
+        totalTokens: a1.meta.totalTokens,
+      },
+      attempt2: a2
+        ? {
+            model: a2.meta.model,
+            finishReason: a2.meta.finishReason,
+            promptChars: a2.meta.promptChars,
+            responseChars: a2.meta.responseChars,
+            promptTokens: a2.meta.promptTokens,
+            completionTokens: a2.meta.completionTokens,
+            totalTokens: a2.meta.totalTokens,
+          }
+        : null,
+    },
+    rawExtractionKeys,
+  };
+}
+
 // ─── Vehicle-loan extraction normalization ────────────────────────────────────
 
 function firstDefined(...values: unknown[]): unknown {
@@ -927,52 +1184,104 @@ router.post(
         );
       }
 
+      // promptChars — the number of text chars sent to the model.
+      // For image inputs this is 0; for PDF/text inputs it is the sanitised text length.
+      const promptChars = aiInputText?.length ?? 0;
+
       // ── First AI call ─────────────────────────────────────────────────────
       const aiResponse = aiInputText !== null
         ? await extractFromText(aiInputText, abort.signal)
         : await extractFromImage(aiInputImageBuffer!, abort.signal);
 
-      logger.info({ file: originalname }, "[BCFAI] AI response received");
+      // Save ALL metadata from the raw response BEFORE any parsing so it is
+      // available for diagnostic logging even if parsing later fails.
+      const meta1 = extractResponseMeta(aiResponse, promptChars);
+      const rawText1 = getRawOutputText(aiResponse);
 
-      // ── Parse AI response (with multi-stage recovery) ─────────────────────
+      logger.info(
+        {
+          file: originalname,
+          model: meta1.model,
+          finishReason: meta1.finishReason,
+          promptChars: meta1.promptChars,
+          responseChars: meta1.responseChars,
+          promptTokens: meta1.promptTokens,
+          completionTokens: meta1.completionTokens,
+          totalTokens: meta1.totalTokens,
+        },
+        "[BCFAI] AI response received",
+      );
+
+      // ── Parse AI response (multi-stage recovery) ──────────────────────────
       const modelOutput = getModelOutput(aiResponse);
       let rawExtraction = unwrapDocumentResponse(modelOutput);
 
-      // ── Auto-retry once if the first response couldn't be parsed ──────────
+      // Track whether we've already made the one retry so we never attempt
+      // more than two total AI calls regardless of which path triggers the retry.
+      let didRetry = false;
+      let meta2: ResponseMeta | null = null;
+      let rawText2: string | null = null;
+
+      // ── Auto-retry once if the first response couldn't be JSON-parsed ─────
       if (!rawExtraction) {
-        const rawOutput = typeof modelOutput === "string" ? modelOutput : JSON.stringify(modelOutput);
+        const diag1 = classifyResponseFailure(rawText1, meta1);
+
         logger.warn(
-          { file: originalname, rawOutput },
-          "[BCFAI] first parse failed — raw AI response logged; retrying AI request",
+          {
+            file: originalname,
+            cause: diag1.cause,
+            detail: diag1.detail,
+            finishReason: meta1.finishReason,
+            completionTokens: meta1.completionTokens,
+            responseChars: meta1.responseChars,
+            // Write the verbatim raw text to the log before any cleanup
+            rawResponse: rawText1,
+          },
+          "[BCFAI] parse failed (attempt 1) — raw response logged; retrying",
         );
 
+        didRetry = true;
         logger.info({ file: originalname }, "[BCFAI] AI request started (retry)");
-        const retryAiResponse = aiInputText !== null
+        const retryResponse = aiInputText !== null
           ? await extractFromText(aiInputText, abort.signal)
           : await extractFromImage(aiInputImageBuffer!, abort.signal);
 
-        logger.info({ file: originalname }, "[BCFAI] AI response received (retry)");
-        const retryModelOutput = getModelOutput(retryAiResponse);
-        rawExtraction = unwrapDocumentResponse(retryModelOutput);
+        meta2 = extractResponseMeta(retryResponse, promptChars);
+        rawText2 = getRawOutputText(retryResponse);
+
+        logger.info(
+          {
+            file: originalname,
+            finishReason: meta2.finishReason,
+            responseChars: meta2.responseChars,
+            completionTokens: meta2.completionTokens,
+          },
+          "[BCFAI] AI response received (retry)",
+        );
+
+        rawExtraction = unwrapDocumentResponse(getModelOutput(retryResponse));
 
         if (rawExtraction) {
-          logger.info(
-            { file: originalname },
-            "[BCFAI] parse recovered on retry — continuing normally",
-          );
+          logger.info({ file: originalname }, "[BCFAI] parse recovered on retry — continuing normally");
         } else {
-          // Both attempts failed — log the retry response too and give up
-          const rawRetryOutput = typeof retryModelOutput === "string"
-            ? retryModelOutput
-            : JSON.stringify(retryModelOutput);
+          const diag2 = classifyResponseFailure(rawText2, meta2);
           logger.warn(
-            { file: originalname, rawOutput, rawRetryOutput },
-            "[BCFAI] document failed — both parse attempts failed; raw responses logged above",
+            {
+              file: originalname,
+              attempt1: { cause: diag1.cause, detail: diag1.detail },
+              attempt2: { cause: diag2.cause, detail: diag2.detail },
+              rawResponse2: rawText2,
+            },
+            "[BCFAI] document failed — both parse attempts failed; raw responses logged",
           );
-          res.status(422).json({
-            stage: "ai_json_parse",
-            error: "The document processor returned an unreadable response. Please try again.",
-          });
+          res.status(422).json(
+            buildDiagnosticFailureBody({
+              file: originalname,
+              attempt1: { meta: meta1, rawText: rawText1, diagnosis: diag1 },
+              attempt2: { meta: meta2, rawText: rawText2, diagnosis: diag2 },
+              rawExtractionKeys: null,
+            }),
+          );
           return;
         }
       }
@@ -1053,24 +1362,153 @@ router.post(
       }
 
       // ── Generic path — validate with Zod and return wrapped fields ─────────
-      const validation = validateValue(
+
+      // Helper: run the Zod validation and, on failure, optionally retry the AI
+      // call once (but only if we haven't already used our one retry above).
+      let validationResult = validateValue(
         AiExtractionOutputSchema,
         rawExtraction,
         "ai_output_validation",
       );
 
-      if (!validation.success) {
+      if (!validationResult.success) {
+        const zodErrors = validationResult.body.fieldErrors ?? {};
+        const rawExtractionKeys = Object.keys(rawExtraction);
+        const diag1 = classifyResponseFailure(rawText1, meta1, zodErrors);
+
         logger.warn(
-          { file: originalname, fieldErrors: validation.body.fieldErrors },
-          "[BCFAI] document failed — AI output failed schema validation",
+          {
+            file: originalname,
+            cause: diag1.cause,
+            detail: diag1.detail,
+            finishReason: meta1.finishReason,
+            completionTokens: meta1.completionTokens,
+            responseChars: meta1.responseChars,
+            detectedDocType: rawExtraction.docType ?? null,
+            rawExtractionKeys,
+            fieldErrors: zodErrors,
+            // Write the verbatim raw response so future analysis can see
+            // exactly what the model returned before any normalisation
+            rawResponse: rawText1,
+          },
+          "[BCFAI] schema validation failed (attempt 1) — raw response and field errors logged",
         );
-        res.status(422).json({
-          ...validation.body,
-          error: "The document processor returned an unrecognized response format. Please try again.",
-          detail: validation.body.fieldErrors,
-        });
-        return;
+
+        if (!didRetry) {
+          // Use our one allowed retry on the schema failure
+          didRetry = true;
+          logger.info({ file: originalname }, "[BCFAI] AI request started (retry after schema failure)");
+          const retryResponse = aiInputText !== null
+            ? await extractFromText(aiInputText, abort.signal)
+            : await extractFromImage(aiInputImageBuffer!, abort.signal);
+
+          meta2 = extractResponseMeta(retryResponse, promptChars);
+          rawText2 = getRawOutputText(retryResponse);
+
+          logger.info(
+            {
+              file: originalname,
+              finishReason: meta2.finishReason,
+              responseChars: meta2.responseChars,
+              completionTokens: meta2.completionTokens,
+            },
+            "[BCFAI] AI response received (retry)",
+          );
+
+          const retryExtraction = unwrapDocumentResponse(getModelOutput(retryResponse));
+
+          if (retryExtraction) {
+            validationResult = validateValue(
+              AiExtractionOutputSchema,
+              retryExtraction,
+              "ai_output_validation",
+            );
+
+            if (validationResult.success) {
+              rawExtraction = retryExtraction;
+              logger.info(
+                { file: originalname },
+                "[BCFAI] schema validation recovered on retry — continuing normally",
+              );
+            } else {
+              // Retry parsed but still fails Zod — build comparative diagnosis
+              const zodErrors2 = validationResult.body.fieldErrors ?? {};
+              const diag2 = classifyResponseFailure(rawText2, meta2, zodErrors2);
+              logger.warn(
+                {
+                  file: originalname,
+                  attempt1: { cause: diag1.cause, detail: diag1.detail, zodErrors },
+                  attempt2: { cause: diag2.cause, detail: diag2.detail, zodErrors: zodErrors2 },
+                  attempt2RawKeys: Object.keys(retryExtraction),
+                  rawResponse2: rawText2,
+                },
+                "[BCFAI] document failed — schema validation failed on both attempts",
+              );
+              res.status(422).json(
+                buildDiagnosticFailureBody({
+                  file: originalname,
+                  attempt1: { meta: meta1, rawText: rawText1, diagnosis: diag1 },
+                  attempt2: { meta: meta2, rawText: rawText2, diagnosis: diag2 },
+                  rawExtractionKeys,
+                }),
+              );
+              return;
+            }
+          } else {
+            // Retry produced unparseable JSON — even worse than attempt 1
+            const diag2 = classifyResponseFailure(rawText2, meta2);
+            logger.warn(
+              {
+                file: originalname,
+                attempt1: { cause: diag1.cause, zodErrors },
+                attempt2: { cause: diag2.cause, detail: diag2.detail },
+                rawResponse2: rawText2,
+              },
+              "[BCFAI] document failed — schema failure on attempt 1, JSON parse failure on retry",
+            );
+            res.status(422).json(
+              buildDiagnosticFailureBody({
+                file: originalname,
+                attempt1: { meta: meta1, rawText: rawText1, diagnosis: diag1 },
+                attempt2: { meta: meta2, rawText: rawText2, diagnosis: diag2 },
+                rawExtractionKeys,
+              }),
+            );
+            return;
+          }
+        } else {
+          // We already retried from a JSON parse failure above and somehow
+          // the retry extraction passes JSON parsing but fails Zod — no more
+          // retries; return the diagnostic immediately.
+          const retryDiag = meta2 && rawText2
+            ? classifyResponseFailure(rawText2, meta2, zodErrors)
+            : null;
+          logger.warn(
+            {
+              file: originalname,
+              cause: diag1.cause,
+              detail: diag1.detail,
+              zodErrors,
+              rawExtractionKeys,
+            },
+            "[BCFAI] document failed — retry already used; schema validation still fails",
+          );
+          res.status(422).json(
+            buildDiagnosticFailureBody({
+              file: originalname,
+              attempt1: { meta: meta1, rawText: rawText1, diagnosis: diag1 },
+              attempt2: retryDiag && meta2 && rawText2
+                ? { meta: meta2, rawText: rawText2, diagnosis: retryDiag }
+                : null,
+              rawExtractionKeys,
+            }),
+          );
+          return;
+        }
       }
+
+      // Re-read validated data after possible retry replacement
+      const validation = validationResult;
 
       const data = validation.data;
       const fieldsMap = data.fields ?? {};
