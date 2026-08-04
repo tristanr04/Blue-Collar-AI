@@ -204,14 +204,20 @@ export function matchExistingAccount(
 }
 
 export async function sha256Hex(data: ArrayBuffer | Uint8Array | string): Promise<string> {
-  const bytes =
+  // Normalise to a plain ArrayBuffer so crypto.subtle.digest is compatible
+  // across all TypeScript strictness levels.  Uint8Array<ArrayBufferLike> is
+  // not assignable to ArrayBufferView in TS ≥ 5.7 because ArrayBufferView
+  // requires buffer: ArrayBuffer (not ArrayBufferLike).
+  // new Uint8Array(uint8Array) uses the ArrayLike<number> constructor overload
+  // which always produces Uint8Array<ArrayBuffer> with a fresh backing buffer.
+  const buf: ArrayBuffer =
     typeof data === 'string'
-      ? new TextEncoder().encode(data)
+      ? new TextEncoder().encode(data).buffer
       : data instanceof Uint8Array
-        ? data
-        : new Uint8Array(data);
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+        ? new Uint8Array(data).buffer
+        : data;
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 export async function fingerprintFile(file: File): Promise<string> {

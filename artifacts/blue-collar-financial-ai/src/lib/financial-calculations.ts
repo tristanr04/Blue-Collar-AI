@@ -83,14 +83,14 @@ export function monthlyIncomeFromLatestPaystub(
   const sorted = sortPaystubsNewestFirst(paystubs);
   const latest = sorted[0];
   if (!latest) {
-    return result(null, `${field} × pay-frequency multiplier`, { frequency }, 'insufficient', [
+    return result<number>(null, `${field} × pay-frequency multiplier`, { frequency }, 'insufficient', [
       'No paystub is available.',
     ]);
   }
 
   const amount = finiteNonNegative(latest[field]);
   if (amount === 0) {
-    return result(null, `${field} × pay-frequency multiplier`, { frequency, latest }, 'insufficient', [
+    return result<number>(null, `${field} × pay-frequency multiplier`, { frequency, latest }, 'insufficient', [
       `Latest paystub does not contain a valid ${field}.`,
     ]);
   }
@@ -115,7 +115,7 @@ export function trailingAverageMonthlyIncome(
     .slice(0, count);
 
   if (valid.length === 0) {
-    return result(null, `average(${field}) × pay-frequency multiplier`, { frequency, count }, 'insufficient', [
+    return result<number>(null, `average(${field}) × pay-frequency multiplier`, { frequency, count }, 'insufficient', [
       'No valid paystubs are available.',
     ]);
   }
@@ -142,7 +142,7 @@ export function medianMonthlyIncome(
     .sort((a, b) => a - b);
 
   if (values.length === 0) {
-    return result(null, `median(${field}) × pay-frequency multiplier`, { frequency }, 'insufficient', [
+    return result<number>(null, `median(${field}) × pay-frequency multiplier`, { frequency }, 'insufficient', [
       'No valid paystub values are available.',
     ]);
   }
@@ -164,7 +164,7 @@ export function grossDebtToIncome(
   );
 
   if (!grossMonthlyIncome || grossMonthlyIncome <= 0) {
-    return result(null, 'monthly debt payments ÷ gross monthly income × 100', { monthlyDebtPayments }, 'insufficient', [
+    return result<number>(null, 'monthly debt payments ÷ gross monthly income × 100', { monthlyDebtPayments }, 'insufficient', [
       'Gross monthly income is required for DTI.',
     ]);
   }
@@ -187,7 +187,7 @@ export function netObligationRatio(
   const obligations = debtPayments + billPayments;
 
   if (!netMonthlyIncome || netMonthlyIncome <= 0) {
-    return result(null, 'monthly obligations ÷ net monthly income × 100', { obligations }, 'insufficient', [
+    return result<number>(null, 'monthly obligations ÷ net monthly income × 100', { obligations }, 'insufficient', [
       'Net monthly income is required.',
     ]);
   }
@@ -206,7 +206,7 @@ export function revolvingCreditUtilization(debts: DebtInput[]): CalculationResul
   );
 
   if (revolving.length === 0) {
-    return result(null, 'revolving balances ÷ revolving credit limits × 100', {}, 'insufficient', [
+    return result<number>(null, 'revolving balances ÷ revolving credit limits × 100', {}, 'insufficient', [
       'No revolving account with a valid credit limit is available.',
     ]);
   }
@@ -227,7 +227,7 @@ export function freeCashFlow(
   bills: BillInput[],
 ): CalculationResult<number> {
   if (netMonthlyIncome === null || netMonthlyIncome < 0) {
-    return result(null, 'net income − bills − debt payments', {}, 'insufficient', [
+    return result<number>(null, 'net income − bills − debt payments', {}, 'insufficient', [
       'Net monthly income is required.',
     ]);
   }
@@ -254,7 +254,7 @@ export function emergencyFundMonths(
     bills.reduce((sum, bill) => sum + finiteNonNegative(bill.amount), 0);
 
   if (monthlyExpenses <= 0) {
-    return result(null, 'liquid cash ÷ monthly obligations', { liquidCash }, 'insufficient', [
+    return result<number>(null, 'liquid cash ÷ monthly obligations', { liquidCash }, 'insufficient', [
       'Monthly obligations are required.',
     ]);
   }
