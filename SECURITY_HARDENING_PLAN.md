@@ -31,7 +31,7 @@ This branch is intentionally developed in reviewable stages. `main` is not modif
 - [x] Protect financial pages and paid AI endpoints
 - [x] Add current-user endpoint and sign-out controls
 - [x] Disable developer Test Lab in production by default
-- [ ] Configure Clerk keys in Replit
+- [ ] Configure Clerk keys in Replit following `AUTH_SETUP.md`
 - [ ] Run signed-in and signed-out verification tests
 - [ ] Add automated auth middleware tests
 
