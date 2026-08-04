@@ -1,62 +1,58 @@
 ---
 name: BCFAI Architecture
-description: Architecture decisions, key routing details, and integration notes for Blue Collar Financial AI app.
+description: Blue Collar Financial AI — key architecture decisions, routing, and integration patterns
 ---
 
-## App structure
-- Frontend: `artifacts/blue-collar-financial-ai` — React + Vite + Tailwind v4 + Wouter routing
-- API server: `artifacts/api-server` — Express + esbuild bundle + pino logging
-- Monorepo: pnpm workspaces, shared Zod schemas in `packages/api-zod`
+## Stack
+- Frontend: React + Vite + Wouter + Clerk auth (`artifacts/blue-collar-financial-ai`)
+- API server: Express + Fastify-style routes + Drizzle ORM (`artifacts/api-server`)
+- DB: PostgreSQL via `@workspace/db` (Drizzle schema in `lib/db/src/schema/financial.ts`)
+- Auth: Clerk (publishable key in `VITE_CLERK_PUBLISHABLE_KEY`, secret in `CLERK_SECRET_KEY`)
 
-## Auth: Clerk v6
-- `@clerk/react@^6.0.0` (NOT v5 — `5.40.0` doesn't exist; v5.54.0 was broken with @clerk/shared)
-- `@clerk/express@^1.x` on API server
-- Clerk provisioned via Replit Auth pane (NOT clerk dashboard). `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`, `VITE_CLERK_PUBLISHABLE_KEY` in Replit Secrets.
-- `VITE_CLERK_PROXY_URL` is empty in dev, auto-set in prod — do NOT gate on `NODE_ENV`.
+## UUID Sync (Priority 1 — resolved)
+The store uses `idPendingMap: useRef<Map<localId, Promise<serverId>>>` to track in-flight creates.
+- `bgCreate()`: fires POST, resolves promise with server UUID, replaces localId in state + changeHistory.
+- `bgWithIdSync()`: delete/update calls chain on the pending promise — never use localId for server ops.
+- Optimistic UI preserved; no page refresh required after create.
+**Why:** Local `crypto.randomUUID()` UUIDs diverge from server-assigned UUIDs; delete/update on a local UUID silently fails on the server.
 
-**Why ClerkProvider must be inside WouterRouter:**
-`routerPush`/`routerReplace` props need `useLocation` from wouter, which requires being inside `<Router base={basePath}>`. Component: `ClerkProviderWithRoutes` rendered inside `WouterRouter`.
+## Fingerprint Persistence (Priority 2 — resolved)
+- `lib/fingerprint.ts` (api-server): `computeFileFingerprint(buffer)` → SHA-256 hex.
+  Identical to client `fingerprintFile()` (Web Crypto SHA-256) — same algorithm, same output.
+- `scanned_documents` table has `UNIQUE(user_id, file_fingerprint)`.
+- `scan.ts` checks fingerprint BEFORE AI call → rejects 409 on duplicate.
+- `createScannedDocument` uses `ON CONFLICT DO NOTHING` — idempotent, returns `undefined` on dup.
+- Duplicate detection is user-scoped: different users may upload the same file.
+**Why:** Prevents re-importing the same physical file; saves AI quota.
 
-**Clerk v6 export changes vs v5:**
-- `SignedIn` / `SignedOut` removed. Use `useAuth()` → `{ isSignedIn, isLoaded }` instead.
-- `Show`, `UserButton`, `useAuth`, `useUser`, `useClerk` all still exported from `@clerk/react`.
-- `publishableKeyFromHost` from `@clerk/react/internal` NOT needed — use `import.meta.env.VITE_CLERK_PUBLISHABLE_KEY` directly.
+## Migration UI (Priority 3 — resolved)
+- `MigrationDialog.tsx`: 4-state modal (confirm/uploading/done/error), shows record counts per section.
+- Rendered inside `StoreProvider` in `App.tsx`. Triggered by `migrationPending` store flag.
+- No auto-migrate — user must click "Upload my data" explicitly.
 
-## CSS layer order (Tailwind v4 + Clerk)
-`index.css` must start with: `@layer theme, base, clerk, components, utilities;`
-Then: `@import 'tailwindcss';`
+## DTI Formula
+- All DTI calculations use **gross** monthly income (`monthlyGross`), not net.
+- Thresholds: 15% (excellent), 28% (acceptable), 36% (concerning) — lender-standard.
 
-`vite.config.ts` must use `tailwindcss({ optimize: false })` (prevents Clerk theme CSS layer reordering in prod).
+## Background Sync Pattern
+- `bgSync(fn)`: fire-and-forget for profile saves.
+- `bgCreate(localId, section, fn, buildPatch)`: replaces local UUID with server UUID on success.
+- `bgWithIdSync(localId, fn)`: waits for any pending create before firing delete/update.
 
-## API server build
-- esbuild bundles everything to `dist/index.mjs`
-- Must add to `external` in `build.mjs`: `@clerk/express`, `@clerk/shared`, `@clerk/shared/*`, `http-proxy-middleware`
-- `clerkProxyMiddleware` must be mounted BEFORE body parsers (`express.json`)
-- `clerkMiddleware` mounts AFTER body parsers, BEFORE routes
+## Test Coverage
+- 75 tests in `artifacts/api-server/src/__tests__/` (up from 60 at start of session).
+- `financial-crud-regression.test.ts`: create→update→delete against real DB for debt/bill/asset/paystub.
+- `fingerprint-security.test.ts`: determinism, distinctness, duplicate rejection, cross-user isolation.
 
-## Route protection order (API)
-```
-rate limiter → requireAuthenticatedUser → concurrency semaphore → handler
-```
-- Rate limit fires first (protects even unauthenticated abuse attempts)
-- Then auth check (`requireAuthenticatedUser` from `middlewares/auth.ts`)
-- `requireAuthenticatedUser` uses `getAuth(req)` from `@clerk/express` and checks `auth.isAuthenticated && auth.userId`
+## API Routes
+- POST `/api/scan-document` — requires auth; computes fingerprint, rejects duplicates, stores doc record
+- GET `/api/financial/snapshot` — load all records
+- POST `/api/financial/profile` — upsert profile
+- POST/PUT/DELETE `/api/financial/{paystubs,debts,bills,assets}` — CRUD all user-scoped
 
-## Frontend route structure
-- `/`, `/welcome` — public (Welcome page)
-- `/sign-in/*?`, `/sign-up/*?` — Clerk pages (REQUIRED: `/*?` wildcard for OAuth sub-paths)
-- All other routes wrapped in `ProtectedPage` (redirects to `/sign-in`)
-- Sign-in/sign-up `path` prop must include basePath: `${basePath}/sign-in`
-
-## Existing API server auth files
-- `src/middlewares/auth.ts` — `requireAuthenticatedUser`, `requireAdminUser` (use these, don't duplicate)
-- `src/routes/auth.ts` — `GET /api/auth/me` returns user profile from Clerk
-
-## App palette (for Clerk appearance)
-- `colorPrimary: '#059669'` (emerald-600)
-- `colorBackground: '#0f172a'` (slate-900)
-- `colorInput: '#1e293b'` (slate-800)
-- `colorForeground: '#f8fafc'` (slate-50)
-- `borderRadius: '0.5rem'`
-- Base theme: `dark` from `@clerk/themes`
-- cssLayerName: `'clerk'`
+## Remaining Technical Debt
+- ScannedDocument fingerprints not written through to the `scanned_documents` table from Scanner.tsx  
+  (Scanner computes the fingerprint but the store's `addDocument` doesn't persist it to DB)
+- Store CRUD functions return `localId` synchronously; callers (Scanner applyUpdatePlan) that hold  
+  the ID for subsequent operations may still operate on a local UUID for a short window before server response
+- No async `migrateLocalToServer` progress granularity (all-or-nothing; partial failures leave inconsistent state)
