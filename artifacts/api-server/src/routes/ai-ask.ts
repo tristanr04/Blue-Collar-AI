@@ -6,6 +6,7 @@ import { logger } from "../lib/logger.js";
 import { sanitizeProfileForExplanation } from "../lib/ai-financial-tools.js";
 import { aiAskLimiter } from "../middlewares/rate-limit.js";
 import { aiKillSwitch, aiGlobalSemaphore } from "../middlewares/ai-guard.js";
+import { requireAuthenticatedUser } from "../middlewares/auth.js";
 import { makeAbortController } from "../middlewares/timeout.js";
 
 const router: IRouter = Router();
@@ -129,7 +130,11 @@ router.post(
   },
 );
 
-router.get("/capabilities", (_req, res) => {
+// Capability metadata is operational information and should only be visible to
+// signed-in users. The response intentionally exposes only a boolean and never
+// returns provider URLs, model names, keys, or other deployment details.
+router.get("/capabilities", requireAuthenticatedUser, (_req, res) => {
+  res.setHeader("Cache-Control", "private, no-store");
   res.json({
     ai: Boolean(
       process.env.AI_INTEGRATIONS_OPENAI_API_KEY &&
