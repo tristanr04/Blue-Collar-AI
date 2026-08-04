@@ -38,25 +38,57 @@ export interface ScanResult {
   error?: string;
 }
 
+/** Let React commit the queued/processing UI before beginning a potentially long request. */
+function waitForPaint(): Promise<void> {
+  return new Promise(resolve => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => resolve());
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
 /** Upload a single file and get AI extraction results. */
 export async function scanFile(file: File): Promise<ScanResult> {
+  // Scanner.tsx marks the document as processing immediately before this call.
+  // Yielding one frame prevents React's state updates from remaining batched while
+  // the first network request is pending, which previously left every card shown
+  // as "Queued" even though the processing loop had started.
+  await waitForPaint();
+
   const form = new FormData();
   // Always pass the filename explicitly so multer receives originalname correctly
   // even when the browser omits it (common on iOS Safari).
   form.append("file", file, file.name);
 
+  const controller = new AbortController();
+  const timeoutMs = 60_000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
   let res: Response;
   try {
     // Do NOT set Content-Type manually — let fetch generate the multipart boundary.
-    res = await fetch(`${API_BASE}/scan-document`, { method: "POST", body: form });
+    res = await fetch(`${API_BASE}/scan-document`, {
+      method: "POST",
+      body: form,
+      signal: controller.signal,
+    });
   } catch (err) {
+    const timedOut = err instanceof DOMException && err.name === "AbortError";
     throw new Error(
       JSON.stringify({
-        stage: "upload_request",
-        message: err instanceof Error ? err.message : "Network error — check your connection",
+        stage: timedOut ? "timeout" : "upload_request",
+        message: timedOut
+          ? `Scanning timed out after ${timeoutMs / 1000} seconds`
+          : err instanceof Error
+            ? err.message
+            : "Network error — check your connection",
         filename: file.name,
       })
     );
+  } finally {
+    clearTimeout(timeout);
   }
 
   const json = await res.json().catch(() => ({
