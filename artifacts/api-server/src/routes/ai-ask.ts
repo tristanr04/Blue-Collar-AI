@@ -9,6 +9,16 @@ import { aiKillSwitch, aiGlobalSemaphore } from "../middlewares/ai-guard.js";
 import { requireAuthenticatedUser } from "../middlewares/auth.js";
 import { makeAbortController } from "../middlewares/timeout.js";
 import { requireAuthenticatedUser } from "../middlewares/auth.js";
+import type { AuthenticatedRequest } from "../middlewares/auth.js";
+import { ensureUser, getFinancialSnapshot } from "../lib/financial-repository.js";
+
+/** Pay-frequency multipliers for monthly income estimation (same values as the client store). */
+const PAY_FREQ_MULT: Record<string, number> = {
+  Weekly: 4.33,
+  "Bi-Weekly": 2.17,
+  "Semi-Monthly": 2,
+  Monthly: 1,
+};
 
 const router: IRouter = Router();
 
@@ -52,12 +62,47 @@ router.post(
   aiGlobalSemaphore.middleware(),
   validateBody(AskRequestSchema, "request_validation"),
   async (req, res) => {
-    const { question, financialProfile } = req.body as {
-      question: string;
-      financialProfile?: Record<string, unknown>;
+    const { question } = req.body as { question: string };
+    const userId = (req as AuthenticatedRequest).authenticatedUserId!;
+
+    // ── Load the user's verified financial snapshot directly from the database ──
+    // The client-supplied financialProfile is intentionally ignored. Every number
+    // the AI sees is derived from authenticated server data — never client input.
+    let dbSnapshot: Awaited<ReturnType<typeof getFinancialSnapshot>>;
+    try {
+      await ensureUser({ userId });
+      dbSnapshot = await getFinancialSnapshot(userId);
+    } catch (dbErr) {
+      logger.error({ err: dbErr }, "ai/ask: failed to load financial snapshot from DB");
+      res.status(503).json({
+        stage: "database",
+        error: "Your financial data could not be loaded right now. Please try again.",
+      });
+      return;
+    }
+
+    // Derive monthly income from the most-recent paystub (already DESC-sorted by payDate).
+    const latestPaystub = dbSnapshot.paystubs[0] as Record<string, unknown> | undefined;
+    const freq = String((dbSnapshot.profile as Record<string, unknown> | null)?.payFrequency ?? "Weekly");
+    const mult = PAY_FREQ_MULT[freq] ?? 4.33;
+    const monthlyGrossIncome = latestPaystub
+      ? Math.round(Number(latestPaystub.grossPay ?? 0) * mult)
+      : null;
+    const monthlyNetIncome = latestPaystub
+      ? Math.round(Number(latestPaystub.netPay ?? 0) * mult)
+      : null;
+
+    // Shape the server profile so sanitizeProfileForExplanation's field paths resolve.
+    const serverProfile: Record<string, unknown> = {
+      monthlyGrossIncome,
+      monthlyNetIncome,
+      profile: dbSnapshot.profile,
+      debts: dbSnapshot.debts,
+      bills: dbSnapshot.bills,
+      assets: dbSnapshot.assets,
     };
 
-    const trustedContext = sanitizeProfileForExplanation(financialProfile ?? {});
+    const trustedContext = sanitizeProfileForExplanation(serverProfile);
 
     const userMessage = [
       "USER QUESTION (untrusted text):",

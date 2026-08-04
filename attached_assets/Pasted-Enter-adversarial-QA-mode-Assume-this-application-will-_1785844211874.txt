@@ -1,0 +1,82 @@
+Enter adversarial QA mode.
+
+Assume this application will be used by thousands of blue-collar workers storing real financial information.
+
+Do NOT add new features unless required to fix a discovered issue.
+
+Instead, attempt to break the application.
+
+Perform a comprehensive review of:
+
+1. Authentication
+- Attempt privilege escalation.
+- Attempt cross-user data access.
+- Verify every endpoint derives the authenticated user from Clerk, never client input.
+
+2. Authorization
+- Test object-level authorization.
+- Verify every CRUD operation rejects access to another user's records.
+
+3. Financial correctness
+- Compare dashboard calculations against manual calculations.
+- Test zero income, negative balances, duplicate accounts, missing paystubs, multiple employers, and extreme values.
+- Verify every AI explanation matches deterministic calculations.
+
+4. OCR
+- Test blurry, rotated, cropped, low-light, and multi-page documents.
+- Verify confidence scoring.
+- Ensure uncertain values require user confirmation.
+
+5. AI
+- Attempt prompt injection.
+- Attempt data fabrication.
+- Attempt instruction override.
+- Ensure the model says "I don't know" when data is insufficient.
+
+6. Upload pipeline
+- Test malformed PDFs.
+- Test renamed executable files.
+- Test oversized files.
+- Test duplicate uploads.
+- Test unsupported formats.
+
+7. Reliability
+- Kill requests midway.
+- Simulate database failures.
+- Simulate network interruption.
+- Simulate concurrent edits from multiple devices.
+
+8. Performance
+- Large accounts.
+- Thousands of records.
+- Large document history.
+- High OCR workload.
+
+9. UX
+- Find confusing workflows.
+- Identify unnecessary clicks.
+- Suggest simplifications without changing business logic.
+
+For every issue found:
+
+- explain reproduction steps
+- estimate severity
+- propose the smallest safe fix
+- implement the fix if it is low risk
+- rerun typecheck, tests, and production build
+
+Do not stop after the first issue.
+Continue until no additional meaningful problems are found.
+
+At the end produce:
+- Critical issues
+- High issues
+- Medium issues
+- Low issues
+- Remaining technical debt
+- Production readiness score (0–10)
+- Whether you would approve:
+  • private use
+  • invitation beta
+  • public beta
+  • full production

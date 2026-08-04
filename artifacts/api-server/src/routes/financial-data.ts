@@ -13,6 +13,7 @@ import {
   updateAsset,
   updateBill,
   updateDebt,
+  updatePaystub,
   upsertProfile,
 } from "../lib/financial-repository.js";
 import { logger } from "../lib/logger.js";
@@ -70,6 +71,24 @@ router.post("/financial/paystubs", async (req: AuthenticatedRequest, res) => {
     const userId = userIdFrom(req);
     await ensureUser({ userId });
     res.status(201).json(await createPaystub(userId, req.body));
+  } catch (error) {
+    sendRepositoryError(res, error);
+  }
+});
+
+router.put("/financial/paystubs/:recordId", async (req: AuthenticatedRequest, res) => {
+  try {
+    const userId = userIdFrom(req);
+    const recordId = z.string().uuid().parse(req.params.recordId);
+    const updated = await updatePaystub(userId, recordId, req.body);
+    if (!updated) {
+      res.status(404).json({
+        stage: "record_not_found",
+        error: "Paystub not found or does not belong to this account.",
+      });
+      return;
+    }
+    res.json(updated);
   } catch (error) {
     sendRepositoryError(res, error);
   }

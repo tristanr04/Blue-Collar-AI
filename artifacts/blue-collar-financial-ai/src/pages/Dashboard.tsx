@@ -46,12 +46,14 @@ function calcHealthScore(data: {
     breakdown.push({ label: 'Cash Flow', score: cfScore, max: 20, tip: cfScore < 20 ? 'Aim for 20%+ of take-home as free cash.' : 'Great cash flow!' });
 
     // 2. Emergency fund (20 pts)
-    const emMonths = monthlyExpenses > 0 ? liquidCash / monthlyExpenses : 0;
+    // When expenses are 0 and cash is positive, coverage is effectively infinite.
+    const emMonths = monthlyExpenses > 0 ? liquidCash / monthlyExpenses : (liquidCash > 0 ? Infinity : 0);
     let efScore = 0;
     if (emMonths >= 6) efScore = 20;
     else if (emMonths >= 3) efScore = 14;
     else if (emMonths >= 1) efScore = 7;
-    breakdown.push({ label: 'Emergency Fund', score: efScore, max: 20, tip: efScore < 20 ? `You have ${emMonths.toFixed(1)} months — aim for 6.` : '6+ months saved!' });
+    const emLabel = emMonths === Infinity ? '∞' : emMonths.toFixed(1);
+    breakdown.push({ label: 'Emergency Fund', score: efScore, max: 20, tip: efScore < 20 ? `You have ${emLabel} months — aim for 6.` : '6+ months saved!' });
 
     // 3. Credit utilization (15 pts)
     const ccDebts = debts.filter(d => d.interestRate > 10);
@@ -187,7 +189,7 @@ export default function Dashboard() {
         {[
           { label: 'Monthly Take-Home', value: fmt(monthlyNet), sub: `${freq} × ${multiplier}`, accent: false },
           { label: 'Free Cash Flow', value: fmt(freeCashFlow), sub: 'After bills & min payments', accent: freeCashFlow > 0 },
-          { label: 'Liquid Cash', value: fmt(liquidCash), sub: `${emergencyMonths} months covered`, accent: false },
+          { label: 'Liquid Cash', value: fmt(liquidCash), sub: emergencyMonths === Infinity ? '∞ months covered (no obligations)' : `${emergencyMonths} months covered`, accent: false },
           { label: 'Net Worth', value: fmt(netWorth), sub: 'Assets minus all debts', accent: false },
         ].map((m) => (
           <Card key={m.label} className="bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 shadow-sm">
@@ -278,7 +280,7 @@ export default function Dashboard() {
           { label: 'Total Debt', value: fmt(totalDebt), warn: totalDebt > monthlyNet * 6 },
           { label: 'Investments', value: fmt(totalInvestments), warn: false },
           { label: 'Monthly Bills', value: fmt(totalBills), warn: false },
-          { label: 'Emergency Fund', value: `${emergencyMonths} mo`, warn: emergencyMonths < 3 },
+          { label: 'Emergency Fund', value: emergencyMonths === Infinity ? '∞ mo' : `${emergencyMonths} mo`, warn: emergencyMonths !== Infinity && emergencyMonths < 3 },
         ].map(m => (
           <div key={m.label} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 shadow-sm">
             <div className="text-xs text-slate-500 dark:text-slate-400 mb-1 flex items-center gap-1">

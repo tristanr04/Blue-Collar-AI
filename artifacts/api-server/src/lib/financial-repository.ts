@@ -223,6 +223,30 @@ export async function createScannedDocument(
 
 // ─── Update functions ─────────────────────────────────────────────────────────
 
+export async function updatePaystub(
+  userId: string,
+  recordId: string,
+  rawInput: unknown,
+) {
+  const input = insertPaystubSchema.partial().parse(rawInput);
+  // payDate may arrive as an ISO string — coerce it the same way createPaystub does.
+  if ("payDate" in input && typeof (input as any).payDate === "string") {
+    (input as any).payDate = new Date((input as any).payDate);
+  }
+  const rows = await db
+    .update(paystubsTable)
+    .set({ ...input, updatedAt: new Date() })
+    .where(
+      and(
+        eq(paystubsTable.id, recordId),
+        eq(paystubsTable.userId, userId),
+        isNull(paystubsTable.deletedAt),
+      ),
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
 export async function updateDebt(
   userId: string,
   recordId: string,

@@ -139,7 +139,11 @@ export function computeMetrics(
   const netWorth = assets.reduce((s, a) => s + a.value, 0) - totalDebt;
   const dti = monthlyGross > 0 ? (totalDebtMin / monthlyGross) * 100 : 0;
   const monthlyExpenses = totalBills + totalDebtMin;
-  const emergencyMonths = monthlyExpenses > 0 ? Math.round((liquidCash / monthlyExpenses) * 10) / 10 : 0;
+  // When the user has cash but no monthly expenses, coverage is effectively infinite
+  // rather than zero (dividing by zero would show "0 months" which is wrong).
+  const emergencyMonths = monthlyExpenses > 0
+    ? Math.round((liquidCash / monthlyExpenses) * 10) / 10
+    : liquidCash > 0 ? Infinity : 0;
 
   let healthScore = 0;
   if (monthlyNet > 0 && paystubs.length > 0) {
@@ -147,7 +151,8 @@ export function computeMetrics(
     const maxPts = 90;
     const ratio = freeCashFlow / monthlyNet;
     if (ratio >= 0.2) score += 20; else if (ratio > 0) score += Math.round((ratio / 0.2) * 20);
-    const emM = monthlyExpenses > 0 ? liquidCash / monthlyExpenses : 0;
+    // Same Infinity guard: no expenses + cash present → maximum emergency score.
+    const emM = monthlyExpenses > 0 ? liquidCash / monthlyExpenses : (liquidCash > 0 ? Infinity : 0);
     if (emM >= 6) score += 20; else if (emM >= 3) score += 14; else if (emM >= 1) score += 7;
     const hiB = debts.filter(d => (d.interestRate ?? 0) > 10).reduce((s, d) => s + d.balance, 0);
     const util = Math.min(hiB / 10000, 1);

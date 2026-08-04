@@ -129,7 +129,6 @@ export async function checkCapabilities(): Promise<{ ai: boolean }> {
  */
 export async function askAI(
   question: string,
-  financialProfile: Record<string, unknown>,
   onDelta: (text: string) => void,
   options?: { token?: string | null; signal?: AbortSignal },
 ): Promise<void> {
@@ -139,7 +138,9 @@ export async function askAI(
       "Content-Type": "application/json",
       ...authedHeaders(options?.token),
     } as HeadersInit,
-    body: JSON.stringify({ question, financialProfile }),
+    // financialProfile is intentionally omitted — the server loads the
+    // authenticated user's data directly from the database.
+    body: JSON.stringify({ question }),
     signal: options?.signal,
   });
 

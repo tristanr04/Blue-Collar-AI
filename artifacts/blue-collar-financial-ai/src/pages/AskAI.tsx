@@ -23,69 +23,6 @@ const SUGGESTED_QUESTIONS = [
   "What is my best financial move this month?",
 ];
 
-/**
- * Build the financial profile sent to the AI, using the store's deterministic
- * computed metrics (date-sorted paystubs, gross DTI) rather than manual
- * approximations from paystubs[0].
- */
-function buildFinancialProfile(store: ReturnType<typeof useStore>): Record<string, unknown> {
-  const { profile, paystubs, debts, bills, assets, computed } = store;
-
-  const {
-    monthlyNet, monthlyGross, totalBills, totalDebtMin,
-    freeCashFlow, liquidCash, totalDebt, netWorth, dti, emergencyMonths,
-  } = computed;
-
-  // Most-recent paystub (already sorted by date in the store).
-  const latestPaystub = paystubs.length > 0
-    ? [...paystubs].sort((a, b) => Date.parse(b.date) - Date.parse(a.date))[0]
-    : null;
-
-  return {
-    profile: profile
-      ? {
-          name: profile.name,
-          hourlyRate: profile.hourlyRate,
-          payFrequency: profile.payFrequency,
-          filingContext: profile.filingContext,
-        }
-      : null,
-    mostRecentPaystub: latestPaystub,
-    calculations: {
-      estimatedMonthlyGross: Math.round(monthlyGross),
-      estimatedMonthlyNet: Math.round(monthlyNet),
-      totalMonthlyBills: Math.round(totalBills),
-      totalMinimumDebtPayments: Math.round(totalDebtMin),
-      freeCashFlow: Math.round(freeCashFlow),
-      liquidCash: Math.round(liquidCash),
-      totalDebt: Math.round(totalDebt),
-      netWorth: Math.round(netWorth),
-      /** Gross debt-to-income ratio (lender standard). */
-      dtiPercent: Math.round(dti * 10) / 10,
-      emergencyFundMonths: emergencyMonths,
-    },
-    debts: debts.map(d => ({
-      name: d.name,
-      balance: d.balance,
-      aprPercent: d.interestRate,
-      minimumPayment: d.minimumPayment,
-      isRevolving: d.isRevolving ?? false,
-      creditLimit: d.creditLimit ?? null,
-    })),
-    bills: bills.map(b => ({
-      name: b.name,
-      amount: b.amount,
-      dueDay: b.dueDate,
-      autoPay: b.isAutoPay,
-    })),
-    assets: assets.map(a => ({
-      name: a.name,
-      type: a.type,
-      value: a.value,
-    })),
-  };
-}
-
 export default function AskAI() {
   const store = useStore();
   const { getToken } = useAuth();
@@ -133,12 +70,22 @@ export default function AskAI() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const financialProfile = buildFinancialProfile(store);
     const token = await getToken().catch(() => null);
+
+    // Guard: Clerk token missing means the session has expired.
+    if (!token) {
+      setMessages(prev => prev.map(m =>
+        m.id === aiMsg.id
+          ? { ...m, content: 'Your session has expired. Please reload the page and sign in again.', loading: false }
+          : m,
+      ));
+      setIsLoading(false);
+      return;
+    }
 
     try {
       let accumulated = '';
-      await askAI(q, financialProfile, (delta) => {
+      await askAI(q, (delta) => {
         accumulated += delta;
         setMessages(prev => prev.map(m =>
           m.id === aiMsg.id ? { ...m, content: accumulated, loading: false } : m,
