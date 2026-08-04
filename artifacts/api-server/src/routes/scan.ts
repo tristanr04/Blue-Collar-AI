@@ -194,36 +194,194 @@ async function extractFromText(text: string, signal?: AbortSignal): Promise<unkn
 
 // ─── Parsing helpers ─────────────────────────────────────────────────────────
 
-function stripCodeFence(value: string): string {
-  return value
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
+/**
+ * Safe JSON.parse that returns null instead of throwing, and rejects
+ * non-object / array top-level values so callers can always treat the
+ * result as Record<string,unknown> | null.
+ */
+function tryParseObject(text: string): Record<string, unknown> | null {
+  try {
+    const val = JSON.parse(text);
+    if (val !== null && typeof val === "object" && !Array.isArray(val)) {
+      return val as Record<string, unknown>;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
 }
 
+/**
+ * Walk a JSON string character-by-character and escape any literal
+ * newline / carriage-return characters that appear inside a string value.
+ * GPT occasionally produces these instead of the valid \\n escape sequence.
+ */
+function escapeLiteralNewlinesInStrings(text: string): string {
+  let result = "";
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) {
+      escape = false;
+      result += ch;
+      continue;
+    }
+    if (ch === "\\" && inString) {
+      escape = true;
+      result += ch;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      result += ch;
+      continue;
+    }
+    if (inString && (ch === "\n" || ch === "\r")) {
+      result += ch === "\n" ? "\\n" : "\\r";
+      continue;
+    }
+    result += ch;
+  }
+  return result;
+}
+
+/**
+ * Count unmatched opening delimiters (outside strings) and append the
+ * corresponding closing characters so JSON.parse has a chance to succeed.
+ */
+function closeUnclosedDelimiters(text: string): string {
+  const stack: string[] = [];
+  let inString = false;
+  let escape = false;
+
+  for (const ch of text) {
+    if (escape) { escape = false; continue; }
+    if (ch === "\\" && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+
+    if (ch === "{") stack.push("}");
+    else if (ch === "[") stack.push("]");
+    else if ((ch === "}" || ch === "]") && stack.length) stack.pop();
+  }
+
+  return text + stack.reverse().join("");
+}
+
+/**
+ * Apply common GPT formatting repairs to a JSON-like string:
+ *   1. Remove trailing commas before } or ]
+ *   2. Escape literal newlines inside string values
+ *   3. Close unclosed braces / brackets
+ */
+function repairJson(text: string): string {
+  let s = text;
+  s = escapeLiteralNewlinesInStrings(s);  // literal \n / \r in strings
+  s = closeUnclosedDelimiters(s);         // missing closing delimiters FIRST …
+  s = s.replace(/,(\s*[}\]])/g, "$1");   // … then trailing commas (catches comma before appended })
+  return s;
+}
+
+/**
+ * Walk the raw string looking for balanced { … } spans.
+ * Returns every top-level object candidate, longest first.
+ */
+function extractAllJsonObjects(text: string): string[] {
+  const objects: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === "\\" && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        objects.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+
+  // Longest candidates first → prefer the richest JSON object
+  return objects.sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Multi-stage JSON recovery.  Accepts any raw string the model may produce
+ * and returns the first valid plain object found, or null if all stages fail.
+ *
+ * Stage 1 — strip all markdown code fences (``` / ```json)
+ * Stage 2 — trim to first { … last }
+ * Stage 3 — direct JSON.parse
+ * Stage 4 — repair (trailing commas, literal newlines, missing braces) + parse
+ * Stage 5 — extract every balanced { … } span, try each (largest first),
+ *            with and without repair
+ */
+function recoverJsonString(raw: string): Record<string, unknown> | null {
+  // Stage 1: strip ALL code fence markers (not just prefix/suffix)
+  let text = raw
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/gi, "")
+    .trim();
+
+  // Stage 2: trim to first { … last }
+  const fb = text.indexOf("{");
+  const lb = text.lastIndexOf("}");
+  if (fb !== -1 && lb > fb) {
+    text = text.slice(fb, lb + 1);
+  }
+
+  // Stage 3: direct parse
+  const direct = tryParseObject(text);
+  if (direct) return direct;
+
+  // Stage 4: repair then parse
+  const repairedText = repairJson(text);
+  const repaired = tryParseObject(repairedText);
+  if (repaired) return repaired;
+
+  // Stage 4b: if the repaired string still has a prose prefix (repair closed
+  // a missing brace but left leading text), trim to first { … last } and retry.
+  const rfb = repairedText.indexOf("{");
+  const rlb = repairedText.lastIndexOf("}");
+  if (rfb !== -1 && rlb > rfb) {
+    const trimmedRepaired = tryParseObject(repairedText.slice(rfb, rlb + 1));
+    if (trimmedRepaired) return trimmedRepaired;
+  }
+
+  // Stage 5: extract every { … } span from the original raw string and
+  // try each one — handles responses that contain multiple JSON objects
+  for (const candidate of extractAllJsonObjects(raw)) {
+    const plain = tryParseObject(candidate);
+    if (plain) return plain;
+    const fixed = tryParseObject(repairJson(candidate));
+    if (fixed) return fixed;
+  }
+
+  return null;
+}
+
+/**
+ * parsePossibleJson — kept for call-site compatibility.
+ * Delegates to recoverJsonString for strings; passes objects through as-is.
+ */
 function parsePossibleJson(value: unknown): unknown {
   if (value === null || value === undefined) return null;
   if (typeof value === "object") return value;
   if (typeof value !== "string") return null;
-
-  const cleaned = stripCodeFence(value);
-
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    // Try to extract the first complete JSON object from the string
-    const firstBrace = cleaned.indexOf("{");
-    const lastBrace = cleaned.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      try {
-        return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
+  return recoverJsonString(value);
 }
 
 /** Extract the text payload from whatever shape the AI response takes. */
@@ -705,10 +863,14 @@ router.post(
       }
 
       const detectedMime = await detectSupportedUpload(buffer);
-      let aiResponse: unknown;
       let responseMime = detectedMime;
       let securityWarnings: string[] = [];
       let normalizedDimensions: { width: number; height: number } | undefined;
+
+      // ── Hoist AI inputs so the retry path can reuse them ──────────────────
+      // One of these two will be set after the branch below; the other stays null.
+      let aiInputText: string | null = null;
+      let aiInputImageBuffer: Buffer | null = null;
 
       if (isPdf(detectedMime)) {
         let parsed: Awaited<ReturnType<typeof pdfParse>>;
@@ -748,8 +910,8 @@ router.post(
           );
         }
 
+        aiInputText = pdfText;
         logger.info({ file: originalname, kind: "pdf" }, "[BCFAI] AI request started");
-        aiResponse = await extractFromText(pdfText, abort.signal);
       } else {
         const normalized = await normalizeImage(buffer);
         responseMime = normalized.mime;
@@ -757,27 +919,62 @@ router.post(
           width: normalized.width,
           height: normalized.height,
         };
+        aiInputImageBuffer = normalized.buffer;
         logger.info(
           { file: originalname, kind: "image", mime: responseMime,
             width: normalized.width, height: normalized.height },
           "[BCFAI] AI request started",
         );
-        aiResponse = await extractFromImage(normalized.buffer, abort.signal);
       }
+
+      // ── First AI call ─────────────────────────────────────────────────────
+      const aiResponse = aiInputText !== null
+        ? await extractFromText(aiInputText, abort.signal)
+        : await extractFromImage(aiInputImageBuffer!, abort.signal);
 
       logger.info({ file: originalname }, "[BCFAI] AI response received");
 
-      // ── Parse AI response ─────────────────────────────────────────────────
+      // ── Parse AI response (with multi-stage recovery) ─────────────────────
       const modelOutput = getModelOutput(aiResponse);
-      const rawExtraction = unwrapDocumentResponse(modelOutput);
+      let rawExtraction = unwrapDocumentResponse(modelOutput);
 
+      // ── Auto-retry once if the first response couldn't be parsed ──────────
       if (!rawExtraction) {
-        logger.warn({ file: originalname }, "[BCFAI] document failed — AI returned unreadable response");
-        res.status(422).json({
-          stage: "ai_json_parse",
-          error: "The document processor returned an unreadable response. Please try again.",
-        });
-        return;
+        const rawOutput = typeof modelOutput === "string" ? modelOutput : JSON.stringify(modelOutput);
+        logger.warn(
+          { file: originalname, rawOutput },
+          "[BCFAI] first parse failed — raw AI response logged; retrying AI request",
+        );
+
+        logger.info({ file: originalname }, "[BCFAI] AI request started (retry)");
+        const retryAiResponse = aiInputText !== null
+          ? await extractFromText(aiInputText, abort.signal)
+          : await extractFromImage(aiInputImageBuffer!, abort.signal);
+
+        logger.info({ file: originalname }, "[BCFAI] AI response received (retry)");
+        const retryModelOutput = getModelOutput(retryAiResponse);
+        rawExtraction = unwrapDocumentResponse(retryModelOutput);
+
+        if (rawExtraction) {
+          logger.info(
+            { file: originalname },
+            "[BCFAI] parse recovered on retry — continuing normally",
+          );
+        } else {
+          // Both attempts failed — log the retry response too and give up
+          const rawRetryOutput = typeof retryModelOutput === "string"
+            ? retryModelOutput
+            : JSON.stringify(retryModelOutput);
+          logger.warn(
+            { file: originalname, rawOutput, rawRetryOutput },
+            "[BCFAI] document failed — both parse attempts failed; raw responses logged above",
+          );
+          res.status(422).json({
+            stage: "ai_json_parse",
+            error: "The document processor returned an unreadable response. Please try again.",
+          });
+          return;
+        }
       }
 
       // ── Vehicle-loan fast path ──────────────────────────────────────────────
