@@ -36,3 +36,12 @@ description: Frontend-only localStorage app + API server for AI scan/chat; key r
 
 ## drizzle-zod
 - Do NOT use drizzle-zod@0.8.3 with Zod v3 — use plain `z.object()` instead
+
+## Rate-limit retry (added)
+- `is429Error(err)` — detects HTTP 429 / "too many requests" from the structured JSON error thrown by `scanFile`; returns `{ retryAfterMs }` (0 = use back-off table) or null
+- `scanWithRetry(file, token, onRetrying)` — wraps `scanFile` with up to 3 retries on 429; honors `Retry-After` header (ms = seconds × 1000); otherwise uses RETRY_DELAYS_MS [2000, 4000, 8000]
+- `processDoc` calls `scanWithRetry`; `onRetrying` callback sets doc status to `'retrying'` with `retryAttempt` + `retryWaitMs`
+- `BatchDocumentStatus` includes `'retrying'` — retrying docs do NOT count toward `finishedCount`; `activeCount = processingCount + retryingCount + pendingCount`
+- Confirm button disabled when `docs.some(d => d.status === 'processing' || d.status === 'retrying')`
+- `api.ts` non-OK error throw now includes `httpStatus: res.status` and `retryAfter: number` (from Retry-After header)
+- Tests: 27 frontend tests total (was 15 scanner-batch; added 12 rate-limit regression tests, tests 16–27)

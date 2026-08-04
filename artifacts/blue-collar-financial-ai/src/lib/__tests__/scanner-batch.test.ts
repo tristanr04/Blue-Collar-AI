@@ -2,7 +2,8 @@
  * Unit tests for scanner batch-processing helpers.
  *
  * These tests cover mergeUniqueFiles, runWithConcurrency, duplicate detection,
- * document filtering, progress counts, and preview URL cleanup patterns.
+ * document filtering, progress counts, preview URL cleanup patterns, and
+ * rate-limit (429) retry logic.
  * Pure functions are replicated here because they are not exported from
  * Scanner.tsx.  Keep in sync with changes to those functions.
  */
@@ -14,6 +15,61 @@ import { describe, it, expect, vi } from 'vitest';
 const MAX_BATCH_FILES = 20;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const SCAN_CONCURRENCY = 2;
+const RETRY_DELAYS_MS = [2000, 4000, 8000] as const;
+const MAX_RATE_LIMIT_RETRIES = 3;
+
+// ─── Rate-limit helpers (keep in sync with Scanner.tsx) ───────────────────────
+
+function is429Error(err: unknown): { retryAfterMs: number } | null {
+  if (!(err instanceof Error)) return null;
+  try {
+    const parsed = JSON.parse(err.message) as Record<string, unknown>;
+    const status = parsed.httpStatus;
+    const msg = typeof parsed.message === 'string' ? parsed.message.toLowerCase() : '';
+    if (status === 429 || msg.includes('too many requests') || msg.includes('rate limit')) {
+      const retryAfterSec = typeof parsed.retryAfter === 'number' ? parsed.retryAfter : 0;
+      return { retryAfterMs: retryAfterSec > 0 ? retryAfterSec * 1000 : 0 };
+    }
+  } catch { /* not JSON */ }
+  const raw = err.message.toLowerCase();
+  if (raw.includes('429') || raw.includes('too many requests') || raw.includes('rate limit')) {
+    return { retryAfterMs: 0 };
+  }
+  return null;
+}
+
+type ScanResult = { docType: string };
+
+async function scanWithRetry(
+  _file: unknown,
+  _token: string | null,
+  onRetrying: (attempt: number, waitMs: number) => void,
+  scanFn: () => Promise<ScanResult>,
+): Promise<ScanResult> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await scanFn();
+    } catch (err) {
+      const rl = is429Error(err);
+      if (rl === null || attempt >= MAX_RATE_LIMIT_RETRIES) throw err;
+      const waitMs = rl.retryAfterMs > 0
+        ? rl.retryAfterMs
+        : (RETRY_DELAYS_MS[attempt] ?? 8000);
+      onRetrying(attempt + 1, waitMs);
+      await new Promise<void>(resolve => setTimeout(resolve, 1)); // use 1ms in tests
+    }
+  }
+}
+
+function make429Error(opts?: { retryAfter?: number; message?: string }): Error {
+  return new Error(JSON.stringify({
+    stage: 'backend_receipt',
+    httpStatus: 429,
+    message: opts?.message ?? 'Too Many Requests',
+    filename: 'test.jpg',
+    ...(opts?.retryAfter !== undefined ? { retryAfter: opts.retryAfter } : {}),
+  }));
+}
 
 function mergeUniqueFiles(current: File[], incoming: File[]): File[] {
   const seen = new Set(current.map(f => `${f.name}:${f.size}:${f.lastModified}`));
@@ -308,5 +364,205 @@ describe('scanner batch', () => {
     expect(revokedUrls[0]).toBe(preview);
     expect(remaining).toHaveLength(2);
     expect(remaining.map(d => d.id)).not.toContain('doc1');
+  });
+});
+
+// ─── Rate-limit (429) regression tests ────────────────────────────────────────
+
+describe('rate-limit retry (is429Error + scanWithRetry)', () => {
+
+  // 16. is429Error recognizes httpStatus:429
+  it('is429Error detects httpStatus 429 in structured JSON error', () => {
+    expect(is429Error(make429Error())).not.toBeNull();
+    expect(is429Error(make429Error())).toMatchObject({ retryAfterMs: 0 });
+  });
+
+  // 17. is429Error reads Retry-After header value
+  it('is429Error converts retryAfter seconds to milliseconds', () => {
+    const result = is429Error(make429Error({ retryAfter: 5 }));
+    expect(result).not.toBeNull();
+    expect(result!.retryAfterMs).toBe(5000);
+  });
+
+  // 18. is429Error is null for non-rate-limit errors
+  it('is429Error returns null for non-429 errors', () => {
+    expect(is429Error(new Error('Network error'))).toBeNull();
+    expect(is429Error(new Error(JSON.stringify({ httpStatus: 500, message: 'Server error' })))).toBeNull();
+    expect(is429Error(new Error(JSON.stringify({ httpStatus: 401, message: 'Unauthorized' })))).toBeNull();
+    expect(is429Error('not an error')).toBeNull();
+    expect(is429Error(null)).toBeNull();
+  });
+
+  // 19. is429Error catches bare "too many requests" string errors
+  it('is429Error detects bare "too many requests" message', () => {
+    expect(is429Error(new Error('too many requests'))).not.toBeNull();
+    expect(is429Error(new Error('HTTP 429 rate limit exceeded'))).not.toBeNull();
+  });
+
+  // 20. scanWithRetry succeeds immediately when no 429
+  it('scanWithRetry returns on first attempt when no rate limit', async () => {
+    const calls: number[] = [];
+    const retries: number[] = [];
+    const result = await scanWithRetry(null, null, (attempt) => retries.push(attempt), async () => {
+      calls.push(1);
+      return { docType: 'Paystub' };
+    });
+    expect(result.docType).toBe('Paystub');
+    expect(calls).toHaveLength(1);
+    expect(retries).toHaveLength(0);
+  });
+
+  // 21. scanWithRetry retries on 429 and succeeds on 2nd attempt
+  it('scanWithRetry retries once after a 429 and succeeds', async () => {
+    let callCount = 0;
+    const retries: Array<{ attempt: number; waitMs: number }> = [];
+
+    const result = await scanWithRetry(null, null,
+      (attempt, waitMs) => retries.push({ attempt, waitMs }),
+      async () => {
+        callCount++;
+        if (callCount === 1) throw make429Error();
+        return { docType: 'Checking Account' };
+      },
+    );
+
+    expect(result.docType).toBe('Checking Account');
+    expect(callCount).toBe(2);
+    expect(retries).toHaveLength(1);
+    expect(retries[0].attempt).toBe(1);
+    expect(retries[0].waitMs).toBe(RETRY_DELAYS_MS[0]); // exponential back-off
+  });
+
+  // 22. scanWithRetry honors Retry-After header over back-off table
+  it('scanWithRetry uses Retry-After value instead of exponential back-off', async () => {
+    let callCount = 0;
+    const retries: Array<{ attempt: number; waitMs: number }> = [];
+
+    await scanWithRetry(null, null,
+      (attempt, waitMs) => retries.push({ attempt, waitMs }),
+      async () => {
+        callCount++;
+        if (callCount === 1) throw make429Error({ retryAfter: 7 }); // 7-second header
+        return { docType: 'Credit Card' };
+      },
+    );
+
+    expect(retries[0].waitMs).toBe(7000); // Retry-After 7s → 7000ms
+  });
+
+  // 23. scanWithRetry exhausts 3 retries then throws
+  it('scanWithRetry gives up after MAX_RATE_LIMIT_RETRIES and throws', async () => {
+    let callCount = 0;
+    const retries: number[] = [];
+
+    await expect(
+      scanWithRetry(null, null,
+        (attempt) => retries.push(attempt),
+        async () => {
+          callCount++;
+          throw make429Error();
+        },
+      ),
+    ).rejects.toThrow();
+
+    // Initial call + 3 retries = 4 total calls
+    expect(callCount).toBe(MAX_RATE_LIMIT_RETRIES + 1);
+    expect(retries).toHaveLength(MAX_RATE_LIMIT_RETRIES);
+    expect(retries).toEqual([1, 2, 3]);
+  });
+
+  // 24. 429 on one doc in a 12-doc batch does not affect completed docs
+  it('12-doc batch: 429 on 2 docs does not block the other 10', async () => {
+    const TOTAL = 12;
+    const RATE_LIMITED_IDS = new Set([2, 7]); // docs that get one 429 each
+    const completed: number[] = [];
+    const retriedIds: number[] = [];
+    const callCounts = new Array(TOTAL).fill(0);
+
+    const items = Array.from({ length: TOTAL }, (_, i) => i);
+
+    await runWithConcurrency(items, SCAN_CONCURRENCY, async (id) => {
+      await scanWithRetry(null, null,
+        () => retriedIds.push(id),
+        async () => {
+          callCounts[id]++;
+          if (RATE_LIMITED_IDS.has(id) && callCounts[id] === 1) {
+            throw make429Error();
+          }
+          completed.push(id);
+        },
+      );
+    });
+
+    expect(completed).toHaveLength(TOTAL); // all 12 complete
+    expect(retriedIds.sort()).toEqual([2, 7]); // exactly the two rate-limited docs retried
+    // Rate-limited docs needed 2 scanFile calls; others needed 1
+    RATE_LIMITED_IDS.forEach(id => expect(callCounts[id]).toBe(2));
+    items.filter(i => !RATE_LIMITED_IDS.has(i)).forEach(id => expect(callCounts[id]).toBe(1));
+  });
+
+  // 25. Confirm disabled while docs are processing or retrying
+  it('Confirm is disabled when any doc is processing or retrying', () => {
+    type DocStatus = 'pending' | 'processing' | 'retrying' | 'done' | 'error';
+    const isConfirmDisabled = (docs: Array<{ status: DocStatus; accepted: boolean }>) => {
+      const savable = docs.filter(d => d.status === 'done' && d.accepted);
+      return savable.length === 0 || docs.some(d => d.status === 'processing' || d.status === 'retrying');
+    };
+
+    // All done and accepted → enabled
+    expect(isConfirmDisabled([
+      { status: 'done', accepted: true },
+      { status: 'done', accepted: true },
+    ])).toBe(false);
+
+    // One still processing → disabled
+    expect(isConfirmDisabled([
+      { status: 'done', accepted: true },
+      { status: 'processing', accepted: true },
+    ])).toBe(true);
+
+    // One retrying → disabled
+    expect(isConfirmDisabled([
+      { status: 'done', accepted: true },
+      { status: 'retrying', accepted: true },
+    ])).toBe(true);
+
+    // All done but none accepted → disabled
+    expect(isConfirmDisabled([
+      { status: 'done', accepted: false },
+    ])).toBe(true);
+  });
+
+  // 26. retryingCount is accurate in progress counts
+  it('retryingCount is derived correctly from document statuses', () => {
+    type DocStatus = 'pending' | 'processing' | 'retrying' | 'done' | 'error';
+    const docs: Array<{ status: DocStatus }> = [
+      { status: 'done' },
+      { status: 'done' },
+      { status: 'error' },
+      { status: 'processing' },
+      { status: 'retrying' },
+      { status: 'retrying' },
+      { status: 'pending' },
+    ];
+
+    const completedCount  = docs.filter(d => d.status === 'done').length;
+    const failedCount     = docs.filter(d => d.status === 'error').length;
+    const processingCount = docs.filter(d => d.status === 'processing').length;
+    const retryingCount   = docs.filter(d => d.status === 'retrying').length;
+    const pendingCount    = docs.filter(d => d.status === 'pending').length;
+    const finishedCount   = completedCount + failedCount;
+    const activeCount     = processingCount + retryingCount + pendingCount;
+
+    expect(retryingCount).toBe(2);
+    expect(finishedCount).toBe(3);  // retrying does NOT count as finished
+    expect(activeCount).toBe(4);    // processing + retrying + pending
+  });
+
+  // 27. Exponential back-off table: 2 s, 4 s, 8 s
+  it('back-off delays are approximately 2, 4, 8 seconds', () => {
+    expect(RETRY_DELAYS_MS[0]).toBe(2000);
+    expect(RETRY_DELAYS_MS[1]).toBe(4000);
+    expect(RETRY_DELAYS_MS[2]).toBe(8000);
   });
 });

@@ -360,7 +360,7 @@ const SCAN_CONCURRENCY = 2;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type BatchDocumentStatus = 'pending' | 'processing' | 'done' | 'error';
+type BatchDocumentStatus = 'pending' | 'processing' | 'retrying' | 'done' | 'error';
 
 interface BatchDocument {
   id: string;
@@ -373,6 +373,8 @@ interface BatchDocument {
   result?: ScanResult;
   error?: string;
   errorStage?: string;
+  retryAttempt?: number;
+  retryWaitMs?: number;
   accepted: boolean;
   isDuplicate: boolean;
   institutionName: string;
@@ -429,6 +431,63 @@ function mergeUniqueFiles(current: File[], incoming: File[]): File[] {
     }
   }
   return merged.slice(0, MAX_BATCH_FILES);
+}
+
+// ─── Rate-limit retry helpers ─────────────────────────────────────────────────
+
+/** Exponential back-off delays for 429 retries (ms): ~2 s, ~4 s, ~8 s. */
+const RETRY_DELAYS_MS = [2000, 4000, 8000] as const;
+const MAX_RATE_LIMIT_RETRIES = 3;
+
+/**
+ * Returns retry metadata when `err` represents an HTTP 429 / rate-limit,
+ * or `null` for all other errors.
+ * `retryAfterMs` is 0 when no Retry-After header was present (use back-off table).
+ */
+function is429Error(err: unknown): { retryAfterMs: number } | null {
+  if (!(err instanceof Error)) return null;
+  try {
+    const parsed = JSON.parse(err.message) as Record<string, unknown>;
+    const status = parsed.httpStatus;
+    const msg = typeof parsed.message === 'string' ? parsed.message.toLowerCase() : '';
+    if (status === 429 || msg.includes('too many requests') || msg.includes('rate limit')) {
+      const retryAfterSec = typeof parsed.retryAfter === 'number' ? parsed.retryAfter : 0;
+      return { retryAfterMs: retryAfterSec > 0 ? retryAfterSec * 1000 : 0 };
+    }
+  } catch { /* not JSON — fall through to string check */ }
+  const raw = err.message.toLowerCase();
+  if (raw.includes('429') || raw.includes('too many requests') || raw.includes('rate limit')) {
+    return { retryAfterMs: 0 };
+  }
+  return null;
+}
+
+/**
+ * Scan a single file, automatically retrying up to MAX_RATE_LIMIT_RETRIES times
+ * on HTTP 429 responses.  Honors the Retry-After header when present; otherwise
+ * uses the RETRY_DELAYS_MS exponential back-off table.
+ *
+ * @param onRetrying  Called at the start of each retry wait with the 1-based
+ *                    attempt number and the actual wait duration in ms.
+ */
+async function scanWithRetry(
+  file: File,
+  token: string | null,
+  onRetrying: (attempt: number, waitMs: number) => void,
+): Promise<ScanResult> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await scanFile(file, token);
+    } catch (err) {
+      const rl = is429Error(err);
+      if (rl === null || attempt >= MAX_RATE_LIMIT_RETRIES) throw err;
+      const waitMs = rl.retryAfterMs > 0
+        ? rl.retryAfterMs
+        : (RETRY_DELAYS_MS[attempt] ?? 8000);
+      onRetrying(attempt + 1, waitMs); // 1-based for UI display
+      await new Promise<void>(resolve => setTimeout(resolve, waitMs));
+    }
+  }
 }
 
 /**
@@ -577,8 +636,10 @@ export default function Scanner() {
   const completedCount  = docs.filter(d => d.status === 'done').length;
   const failedCount     = docs.filter(d => d.status === 'error').length;
   const processingCount = docs.filter(d => d.status === 'processing').length;
+  const retryingCount   = docs.filter(d => d.status === 'retrying').length;
   const pendingCount    = docs.filter(d => d.status === 'pending').length;
   const finishedCount   = completedCount + failedCount;
+  const activeCount     = processingCount + retryingCount + pendingCount;
 
   /** Documents that are confirmed-done AND accepted — the set the store will receive. */
   const savableDocuments = docs.filter(d => d.status === 'done' && d.accepted);
@@ -635,11 +696,19 @@ export default function Scanner() {
 
   const processDoc = async (docId: string, file: File) => {
     setDocs(prev => prev.map(d =>
-      d.id === docId ? { ...d, status: 'processing', error: undefined, errorStage: undefined } : d,
+      d.id === docId
+        ? { ...d, status: 'processing', error: undefined, errorStage: undefined, retryAttempt: undefined, retryWaitMs: undefined }
+        : d,
     ));
     try {
       const token = await getToken().catch(() => null);
-      const result = await scanFile(file, token);
+      const result = await scanWithRetry(file, token, (attempt, waitMs) => {
+        setDocs(prev => prev.map(d =>
+          d.id === docId
+            ? { ...d, status: 'retrying', retryAttempt: attempt, retryWaitMs: waitMs }
+            : d,
+        ));
+      });
       const { resolvedDocType, fieldMap, institutionName, institutionUnknown, institutionCategory } =
         normalizeScanResult(result);
 
@@ -657,6 +726,8 @@ export default function Scanner() {
               accepted: true,
               error: undefined,
               errorStage: undefined,
+              retryAttempt: undefined,
+              retryWaitMs: undefined,
             }
           : d,
       ));
@@ -672,6 +743,8 @@ export default function Scanner() {
               docType: 'Unknown',
               fields: {},
               accepted: false,
+              retryAttempt: undefined,
+              retryWaitMs: undefined,
             }
           : d,
       ));
@@ -1236,17 +1309,19 @@ export default function Scanner() {
           <div className="flex justify-between text-xs text-secondary-foreground/70 px-1">
             <span>✓ Done: {completedCount}</span>
             {failedCount > 0 && <span className="text-red-400">✗ Failed: {failedCount}</span>}
-            <span>⏳ Remaining: {processingCount + pendingCount}</span>
+            {retryingCount > 0 && <span className="text-amber-400">↺ Retrying: {retryingCount}</span>}
+            <span>⏳ Remaining: {activeCount}</span>
           </div>
 
           <div className="space-y-2 mt-2">
             {docs.map((doc) => (
               <div key={doc.id} className="bg-white/10 rounded-xl p-3 text-left flex items-center gap-3">
                 <div className="w-6 h-6 flex-shrink-0 flex items-center justify-center">
-                  {doc.status === 'done' && <CheckCircle2 className="w-5 h-5 text-primary" />}
+                  {doc.status === 'done'       && <CheckCircle2 className="w-5 h-5 text-primary" />}
                   {doc.status === 'processing' && <Loader2 className="w-5 h-5 text-primary animate-spin" />}
-                  {doc.status === 'error' && <AlertTriangle className="w-5 h-5 text-red-400" />}
-                  {doc.status === 'pending' && <div className="w-4 h-4 rounded-full border-2 border-white/20" />}
+                  {doc.status === 'retrying'   && <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />}
+                  {doc.status === 'error'      && <AlertTriangle className="w-5 h-5 text-red-400" />}
+                  {doc.status === 'pending'    && <div className="w-4 h-4 rounded-full border-2 border-white/20" />}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{doc.file.name}</div>
@@ -1261,8 +1336,14 @@ export default function Scanner() {
                   {doc.status === 'processing' && (
                     <div className="text-xs text-secondary-foreground/60">Analyzing…</div>
                   )}
+                  {doc.status === 'retrying' && (
+                    <div className="text-xs text-amber-300">
+                      Waiting to retry ({doc.retryAttempt}/{MAX_RATE_LIMIT_RETRIES}
+                      {doc.retryWaitMs ? `, ${Math.round(doc.retryWaitMs / 1000)}s` : ''})
+                    </div>
+                  )}
                   {doc.status === 'pending' && (
-                    <div className="text-xs text-secondary-foreground/40">Waiting…</div>
+                    <div className="text-xs text-secondary-foreground/40">Queued</div>
                   )}
                 </div>
               </div>
@@ -1537,11 +1618,17 @@ export default function Scanner() {
           ) : (
             <Button
               className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
-              disabled={savableDocuments.length === 0}
+              disabled={
+                savableDocuments.length === 0 ||
+                docs.some(d => d.status === 'processing' || d.status === 'retrying')
+              }
               onClick={confirmAndSave}
             >
               <CheckCircle2 className="w-5 h-5 mr-2" />
-              Confirm &amp; Save {savableDocuments.length} Document{savableDocuments.length !== 1 ? 's' : ''}
+              {docs.some(d => d.status === 'processing' || d.status === 'retrying')
+                ? 'Scanning in progress…'
+                : `Confirm & Save ${savableDocuments.length} Document${savableDocuments.length !== 1 ? 's' : ''}`
+              }
             </Button>
           )}
           <div className="text-center text-xs text-muted-foreground">
