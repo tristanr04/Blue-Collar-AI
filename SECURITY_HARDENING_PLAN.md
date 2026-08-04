@@ -36,8 +36,6 @@ This branch is intentionally developed in reviewable stages. `main` is not modif
 - [ ] Complete explicit signed-out API and protected-page verification
 - [ ] Add automated auth middleware tests
 
-Database-backed record ownership and cross-user authorization remain part of the persistence stage because the current financial store is still localStorage-based.
-
 ## Stage 4 — Upload security
 
 - [x] Replace extension-based fallback with verified file-signature detection
@@ -62,46 +60,58 @@ Database-backed record ownership and cross-user authorization remain part of the
 - [x] Sanitize PDF control characters and enforce text length limit
 - [x] Detect common instruction-like phrases in PDF text
 - [x] Return non-sensitive security warnings to the review UI payload
-- [ ] Add adversarial prompt-injection fixtures and automated tests
 - [ ] Add image-document injection evaluation coverage
 
 ## Stage 6 — Financial correctness
 
-- [ ] Deterministic calculation engine
-- [ ] Correct gross-income DTI
-- [ ] Correct revolving utilization
-- [ ] Sort paystubs by date
-- [ ] Support variable-income averages and medians
-- [ ] Return completeness and warning metadata
-- [ ] Add calculation tests
+- [x] Add deterministic calculation engine
+- [x] Correct gross-income DTI calculation
+- [x] Add proper revolving utilization requiring credit limits
+- [x] Sort paystubs by actual date
+- [x] Support variable-income averages and medians
+- [x] Return completeness, formula, inputs, timestamp, and warning metadata
+- [x] Add calculation regression tests
+- [ ] Replace legacy store and dashboard calculations with the new engine
+- [ ] Replace the legacy health-score formula with transparent scored components
 
 ## Stage 7 — Matching and duplicate safety
 
-- [ ] Scored account matcher
-- [ ] Require confirmation for ambiguous matches
-- [ ] Fix token-based fuzzy matching
-- [ ] Content-hash duplicate detection
-- [ ] Add matching and duplicate tests
+- [x] Add scored and explainable account matcher
+- [x] Require confirmation for ambiguous or institution-only matches
+- [x] Preserve word boundaries for token-based matching
+- [x] Add SHA-256 content fingerprinting
+- [x] Add matching and duplicate tests
+- [ ] Wire matcher and fingerprints into scanner confirmation UI
 
 ## Stage 8 — Persistent user-owned storage
 
-- [ ] PostgreSQL and Drizzle schema
-- [ ] User ownership on every financial record
-- [ ] Transactional imports and undo
-- [ ] LocalStorage migration flow
-- [ ] Cross-user authorization tests
+- [x] Add PostgreSQL and Drizzle financial schema
+- [x] Add user ownership to every financial record
+- [x] Add document, import-job, change-history, link, preference, and AI-usage tables
+- [x] Add user-scoped repository layer
+- [x] Add authenticated snapshot and create/delete API foundation
+- [ ] Generate and apply database migration in Replit
+- [ ] Add transactional document import and undo service
+- [ ] Add localStorage migration flow
+- [ ] Add cross-user authorization tests
+- [ ] Switch frontend source of truth from localStorage to API storage
 
 ## Stage 9 — AI tools and explanation safety
 
-- [ ] Use deterministic financial tools before AI explanation
-- [ ] Remove raw profile JSON from trusted instruction text
-- [ ] Separate facts, calculations, estimates, and missing information
-- [ ] Fix stream-error swallowing and add cancellation
-- [ ] Add financial-advice boundary tests
+- [x] Use deterministic server calculations before AI explanation
+- [x] Remove raw profile JSON from trusted system instructions
+- [x] Separate untrusted question text from trusted numeric context
+- [x] Add facts/calculations/estimates/missing-information response rules
+- [x] Improve stream cancellation and proxy-buffering behavior
+- [x] Add deterministic financial-context regression tests
+- [ ] Update frontend stream parser to surface errors and support user cancellation
 
-## Stage 10 — CI and production audit
+## Stage 10 — Privacy, CI, and production audit
 
-- [ ] Unit, API, and end-to-end test commands
+- [ ] Accurate privacy and AI-processing disclosures
+- [ ] User data export and account deletion
+- [ ] Versioned backup import/export
+- [ ] Complete unit, API, and end-to-end test commands
 - [ ] GitHub Actions
 - [ ] Dependency and secret scanning
 - [ ] Monitoring and cost metrics
@@ -109,14 +119,17 @@ Database-backed record ownership and cross-user authorization remain part of the
 
 ## Replit sync status
 
-The Replit workspace currently has an interrupted rebase caused by local Clerk commits and remote scanner-security commits both editing `artifacts/api-server/package.json`. The conflict was resolved by selecting the Clerk-side package file, but it has not yet been staged and the rebase has not yet continued. The first command during the next sync session is:
+The Replit workspace currently has an interrupted rebase caused by local Clerk commits and remote scanner-security commits both editing `artifacts/api-server/package.json`. The package-file conflict was resolved by selecting the Clerk-side version, but it has not yet been staged and the rebase has not yet continued.
+
+The first commands during the next sync session are:
 
 ```bash
 git add artifacts/api-server/package.json
+GIT_EDITOR=true git rebase --continue
 ```
 
-Then continue the rebase and resolve any remaining conflicts without discarding either authentication or scanner-security dependencies.
+Continue resolving conflicts without discarding either authentication dependencies or the newer scanner/database dependencies. After the rebase finishes, run `pnpm install` so the lockfile includes Clerk, Sharp, file-type, and Vitest.
 
 ## Merge policy
 
-Do not merge this branch until the current stage passes typecheck, tests, and build in Replit or GitHub Actions. Each stage should remain independently reviewable and reversible.
+Do not merge this branch until typecheck, tests, database migration, build, authentication checks, scanner checks, and basic financial-data API checks pass in Replit or GitHub Actions. Each stage should remain independently reviewable and reversible.
