@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/reac
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
+import '@/scanner-command.css';
 
 import { StoreProvider } from '@/lib/store';
 import MigrationDialog from '@/components/MigrationDialog';
@@ -167,6 +168,12 @@ function Router() {
 // ─── ClerkProvider — must live inside WouterRouter to use useLocation ─────────
 function ClerkProviderWithRoutes() {
   const [, setLocation] = useLocation();
+
+  // Force dark mode for the command-center visual system (from origin/main)
+  useEffect(() => {
+    document.documentElement.classList.add('dark');
+    document.documentElement.style.colorScheme = 'dark';
+  }, []);
 
   return (
     <ClerkProvider

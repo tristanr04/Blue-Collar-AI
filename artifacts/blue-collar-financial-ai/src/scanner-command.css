@@ -1,0 +1,152 @@
+/* Blue Collar AI scanner command-center skin.
+   Keeps the existing scanner logic intact while upgrading upload, processing,
+   review, and success states for mobile and desktop. */
+
+/* Scanner fullscreen surfaces */
+.min-h-\[100dvh\].bg-background.flex.flex-col {
+  background:
+    radial-gradient(circle at 50% -10%, rgb(37 99 235 / 0.18), transparent 34rem),
+    linear-gradient(180deg, #07111f 0%, #091525 48%, #07101c 100%) !important;
+  color: #f8fafc;
+}
+
+.min-h-\[100dvh\].bg-background.flex.flex-col > .sticky.top-0,
+.min-h-\[100dvh\].bg-secondary.text-secondary-foreground {
+  background: rgb(5 13 25 / 0.94) !important;
+  border-bottom: 1px solid rgb(59 130 246 / 0.22);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+/* Upload page */
+.min-h-\[100dvh\].bg-background.flex.flex-col .border-dashed {
+  border-color: rgb(59 130 246 / 0.42) !important;
+  background:
+    linear-gradient(180deg, rgb(15 31 52 / 0.94), rgb(10 23 40 / 0.94)) !important;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.025), 0 18px 50px rgb(0 0 0 / 0.22);
+}
+
+.min-h-\[100dvh\].bg-background.flex.flex-col .border-dashed:hover {
+  border-color: rgb(59 130 246 / 0.8) !important;
+  background: linear-gradient(180deg, rgb(17 38 65), rgb(10 27 49)) !important;
+}
+
+.min-h-\[100dvh\].bg-background.flex.flex-col .bg-card,
+.min-h-\[100dvh\].bg-background.flex.flex-col .rounded-2xl.border,
+.min-h-\[100dvh\].bg-background.flex.flex-col .rounded-xl.border {
+  background: linear-gradient(180deg, rgb(15 29 49 / 0.96), rgb(10 22 38 / 0.96)) !important;
+  border-color: rgb(71 101 138 / 0.34) !important;
+  color: #f8fafc;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.025);
+}
+
+.min-h-\[100dvh\].bg-background.flex.flex-col .text-foreground {
+  color: #f8fafc !important;
+}
+
+.min-h-\[100dvh\].bg-background.flex.flex-col .text-muted-foreground {
+  color: #8fa4be !important;
+}
+
+.min-h-\[100dvh\].bg-background.flex.flex-col input,
+.min-h-\[100dvh\].bg-background.flex.flex-col select {
+  background: #091626 !important;
+  border-color: rgb(71 101 138 / 0.52) !important;
+  color: #f8fafc !important;
+}
+
+.min-h-\[100dvh\].bg-background.flex.flex-col input::placeholder {
+  color: #6f849e !important;
+}
+
+/* Primary scanner actions */
+.min-h-\[100dvh\].bg-background.flex.flex-col button.bg-primary,
+.min-h-\[100dvh\].bg-background.flex.flex-col .bg-primary.text-primary-foreground {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+  color: white !important;
+  border: 1px solid rgb(96 165 250 / 0.55) !important;
+  box-shadow: 0 10px 28px rgb(37 99 235 / 0.26), inset 0 1px 0 rgb(255 255 255 / 0.2);
+}
+
+/* Bottom action dock */
+.min-h-\[100dvh\].bg-background.flex.flex-col > .sticky.bottom-0 {
+  background: rgb(5 13 25 / 0.94) !important;
+  border-color: rgb(59 130 246 / 0.2) !important;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+}
+
+/* Processing command center */
+.min-h-\[100dvh\].bg-secondary.text-secondary-foreground.flex.flex-col.items-center {
+  justify-content: flex-start !important;
+  padding-top: max(4rem, env(safe-area-inset-top, 0px)) !important;
+  background:
+    radial-gradient(circle at 50% 15%, rgb(37 99 235 / 0.2), transparent 23rem),
+    linear-gradient(180deg, #06101d, #081524) !important;
+}
+
+.min-h-\[100dvh\].bg-secondary.text-secondary-foreground .w-20.h-20.rounded-full {
+  width: 7.5rem !important;
+  height: 7.5rem !important;
+  background: conic-gradient(#4ade80 var(--scanner-progress, 68%), rgb(30 49 72) 0) !important;
+  border: 10px solid rgb(12 29 49) !important;
+  box-shadow: 0 0 45px rgb(74 222 128 / 0.16);
+}
+
+.min-h-\[100dvh\].bg-secondary.text-secondary-foreground .w-full.max-w-sm {
+  max-width: 32rem !important;
+}
+
+.min-h-\[100dvh\].bg-secondary.text-secondary-foreground .bg-white\/10 {
+  background: linear-gradient(180deg, rgb(15 31 52 / 0.96), rgb(10 23 40 / 0.96)) !important;
+  border: 1px solid rgb(71 101 138 / 0.32);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.025);
+}
+
+.min-h-\[100dvh\].bg-secondary.text-secondary-foreground .h-3.bg-white\/10 {
+  height: 0.625rem !important;
+  background: #142238 !important;
+  border: 1px solid rgb(71 101 138 / 0.28);
+}
+
+.min-h-\[100dvh\].bg-secondary.text-secondary-foreground .h-full.bg-primary {
+  background: linear-gradient(90deg, #2563eb, #4ade80) !important;
+  box-shadow: 0 0 14px rgb(74 222 128 / 0.36);
+}
+
+/* Review cards */
+.min-h-\[100dvh\].bg-background.flex.flex-col .bg-amber-50,
+.min-h-\[100dvh\].bg-background.flex.flex-col .dark\:bg-amber-900\/20 {
+  background: rgb(120 69 10 / 0.17) !important;
+  border-color: rgb(245 158 11 / 0.4) !important;
+}
+
+.min-h-\[100dvh\].bg-background.flex.flex-col .bg-blue-50,
+.min-h-\[100dvh\].bg-background.flex.flex-col .dark\:bg-blue-900\/20 {
+  background: rgb(30 64 175 / 0.14) !important;
+  border-color: rgb(59 130 246 / 0.4) !important;
+}
+
+/* Confidence and state chips */
+.min-h-\[100dvh\].bg-background.flex.flex-col .bg-green-100,
+.min-h-\[100dvh\].bg-background.flex.flex-col .dark\:bg-green-900\/30 {
+  background: rgb(34 197 94 / 0.15) !important;
+  color: #86efac !important;
+  border: 1px solid rgb(34 197 94 / 0.28);
+}
+
+/* Mobile spacing */
+@media (max-width: 640px) {
+  .min-h-\[100dvh\].bg-background.flex.flex-col > .flex-1.p-4 {
+    padding: 1rem !important;
+  }
+
+  .min-h-\[100dvh\].bg-background.flex.flex-col .grid.grid-cols-2.gap-3 {
+    gap: 0.625rem !important;
+  }
+
+  .min-h-\[100dvh\].bg-background.flex.flex-col .grid.grid-cols-3.gap-3 {
+    gap: 0.5rem !important;
+  }
+}
