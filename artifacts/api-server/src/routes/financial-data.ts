@@ -2,6 +2,7 @@ import { Router, type IRouter, type Response } from "express";
 import { ZodError, z } from "zod";
 import type { AuthenticatedRequest } from "../middlewares/auth.js";
 import { requireAuthenticatedUser } from "../middlewares/auth.js";
+import { appendAuditEvent, type AuditAction } from "../lib/audit-repository.js";
 import {
   createAsset,
   createBill,
@@ -25,6 +26,49 @@ router.use("/financial", requireAuthenticatedUser);
 function userIdFrom(req: AuthenticatedRequest): string {
   if (!req.authenticatedUserId) throw new Error("Authenticated user ID is missing.");
   return req.authenticatedUserId;
+}
+
+function requestIdFrom(req: AuthenticatedRequest): string | null {
+  const requestId = (req as AuthenticatedRequest & { id?: unknown }).id;
+  if (typeof requestId === "string" && requestId.length > 0) return requestId;
+
+  const header = req.get("x-request-id");
+  return header && header.length > 0 ? header : null;
+}
+
+async function recordAudit(
+  req: AuthenticatedRequest,
+  input: {
+    userId: string;
+    action: AuditAction;
+    entityType: string;
+    entityId?: string | null;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<void> {
+  try {
+    await appendAuditEvent({
+      ...input,
+      requestId: requestIdFrom(req),
+      source: "api",
+    });
+  } catch (error) {
+    // A completed financial write must not be reported as failed solely because
+    // audit persistence is temporarily unavailable. The request ID makes the
+    // failure traceable for reconciliation and alerting.
+    logger.error(
+      {
+        err: error,
+        event: "audit_append_failed",
+        userId: input.userId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        requestId: requestIdFrom(req),
+      },
+      "financial mutation succeeded but audit event could not be persisted",
+    );
+  }
 }
 
 function sendRepositoryError(res: Response, error: unknown): void {
@@ -58,7 +102,15 @@ router.put("/financial/profile", async (req: AuthenticatedRequest, res) => {
   try {
     const userId = userIdFrom(req);
     await ensureUser({ userId });
-    res.json(await upsertProfile(userId, req.body));
+    const profile = await upsertProfile(userId, req.body);
+    await recordAudit(req, {
+      userId,
+      action: "update",
+      entityType: "profile",
+      entityId: profile.id,
+      metadata: { operation: "upsert" },
+    });
+    res.json(profile);
   } catch (error) {
     sendRepositoryError(res, error);
   }
@@ -70,7 +122,14 @@ router.post("/financial/paystubs", async (req: AuthenticatedRequest, res) => {
   try {
     const userId = userIdFrom(req);
     await ensureUser({ userId });
-    res.status(201).json(await createPaystub(userId, req.body));
+    const created = await createPaystub(userId, req.body);
+    await recordAudit(req, {
+      userId,
+      action: "create",
+      entityType: "paystub",
+      entityId: created.id,
+    });
+    res.status(201).json(created);
   } catch (error) {
     sendRepositoryError(res, error);
   }
@@ -88,6 +147,7 @@ router.put("/financial/paystubs/:recordId", async (req: AuthenticatedRequest, re
       });
       return;
     }
+    await recordAudit(req, { userId, action: "update", entityType: "paystub", entityId: recordId });
     res.json(updated);
   } catch (error) {
     sendRepositoryError(res, error);
@@ -100,7 +160,9 @@ router.post("/financial/debts", async (req: AuthenticatedRequest, res) => {
   try {
     const userId = userIdFrom(req);
     await ensureUser({ userId });
-    res.status(201).json(await createDebt(userId, req.body));
+    const created = await createDebt(userId, req.body);
+    await recordAudit(req, { userId, action: "create", entityType: "debt", entityId: created.id });
+    res.status(201).json(created);
   } catch (error) {
     sendRepositoryError(res, error);
   }
@@ -115,6 +177,7 @@ router.put("/financial/debts/:recordId", async (req: AuthenticatedRequest, res) 
       res.status(404).json({ stage: "record_not_found", error: "Debt not found or does not belong to this account." });
       return;
     }
+    await recordAudit(req, { userId, action: "update", entityType: "debt", entityId: recordId });
     res.json(updated);
   } catch (error) {
     sendRepositoryError(res, error);
@@ -127,7 +190,9 @@ router.post("/financial/bills", async (req: AuthenticatedRequest, res) => {
   try {
     const userId = userIdFrom(req);
     await ensureUser({ userId });
-    res.status(201).json(await createBill(userId, req.body));
+    const created = await createBill(userId, req.body);
+    await recordAudit(req, { userId, action: "create", entityType: "bill", entityId: created.id });
+    res.status(201).json(created);
   } catch (error) {
     sendRepositoryError(res, error);
   }
@@ -142,19 +207,22 @@ router.put("/financial/bills/:recordId", async (req: AuthenticatedRequest, res) 
       res.status(404).json({ stage: "record_not_found", error: "Bill not found or does not belong to this account." });
       return;
     }
+    await recordAudit(req, { userId, action: "update", entityType: "bill", entityId: recordId });
     res.json(updated);
   } catch (error) {
     sendRepositoryError(res, error);
   }
 });
 
-// ─── Assets ───────────────────────────────────────────────────────────────────
+// ─── Assets ────────────────────────────────────────────────────────────────────
 
 router.post("/financial/assets", async (req: AuthenticatedRequest, res) => {
   try {
     const userId = userIdFrom(req);
     await ensureUser({ userId });
-    res.status(201).json(await createAsset(userId, req.body));
+    const created = await createAsset(userId, req.body);
+    await recordAudit(req, { userId, action: "create", entityType: "asset", entityId: created.id });
+    res.status(201).json(created);
   } catch (error) {
     sendRepositoryError(res, error);
   }
@@ -169,6 +237,7 @@ router.put("/financial/assets/:recordId", async (req: AuthenticatedRequest, res)
       res.status(404).json({ stage: "record_not_found", error: "Asset not found or does not belong to this account." });
       return;
     }
+    await recordAudit(req, { userId, action: "update", entityType: "asset", entityId: recordId });
     res.json(updated);
   } catch (error) {
     sendRepositoryError(res, error);
@@ -196,6 +265,13 @@ router.delete("/financial/:section/:recordId", async (req: AuthenticatedRequest,
       return;
     }
 
+    await recordAudit(req, {
+      userId,
+      action: "delete",
+      entityType: params.section.slice(0, -1),
+      entityId: params.recordId,
+      metadata: { softDelete: true },
+    });
     res.status(204).end();
   } catch (error) {
     sendRepositoryError(res, error);
