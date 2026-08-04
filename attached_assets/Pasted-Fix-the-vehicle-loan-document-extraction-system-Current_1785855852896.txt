@@ -1,0 +1,320 @@
+Fix the vehicle-loan document extraction system.
+
+Current bug:
+The uploaded document is successfully read, but only Monthly Payment is populated. Loan Name, Last 4 Digits, Balance Owed, Original Amount, APR, Months Remaining, and Next Due Date show “Not found.”
+
+Implement the following fixes:
+
+1. Find the API route/function that sends vehicle-loan document text or images to the AI extraction model.
+
+2. Force the model to return ONLY valid JSON using this exact structure:
+
+{
+  "loanName": null,
+  "accountLast4": null,
+  "balanceOwed": null,
+  "originalAmount": null,
+  "apr": null,
+  "monthlyPayment": null,
+  "monthsRemaining": null,
+  "nextDueDate": null,
+  "confidence": {
+    "loanName": 0,
+    "accountLast4": 0,
+    "balanceOwed": 0,
+    "originalAmount": 0,
+    "apr": 0,
+    "monthlyPayment": 0,
+    "monthsRemaining": 0,
+    "nextDueDate": 0
+  }
+}
+
+3. Update the extraction prompt so these equivalent labels are recognized:
+
+loanName:
+- lender
+- creditor
+- finance company
+- financial institution
+- loan provider
+- servicer
+- company name
+- account type
+- vehicle loan
+- auto loan
+
+accountLast4:
+- account number
+- account ID
+- loan number
+- contract number
+- account ending in
+- last four digits
+Extract only the final four letters/digits.
+
+balanceOwed:
+- remaining balance
+- current balance
+- principal balance
+- payoff balance
+- unpaid principal
+- amount owed
+- balance due
+
+originalAmount:
+- original loan amount
+- original amount
+- amount financed
+- initial principal
+- financed amount
+- loan amount
+
+apr:
+- APR
+- annual percentage rate
+- interest rate
+- rate
+
+monthlyPayment:
+- monthly payment
+- regular payment
+- payment amount
+- scheduled payment
+Do not automatically use “amount due” when a separate monthly payment exists.
+
+monthsRemaining:
+- remaining term
+- payments remaining
+- remaining payments
+- months left
+- months remaining
+
+nextDueDate:
+- payment due date
+- next payment date
+- next due date
+- due date
+
+4. Add a normalization layer so the UI works even if the AI returns alternate property names.
+
+Use this function:
+
+function firstDefined(...values: unknown[]) {
+  return values.find(
+    (value) =>
+      value !== undefined &&
+      value !== null &&
+      value !== ""
+  ) ?? null;
+}
+
+function parseMoney(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+
+  const cleaned = value.replace(/[$,\s]/g, "");
+  const parsed = Number.parseFloat(cleaned);
+
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseApr(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+
+  const match = value.match(/\d+(?:\.\d+)?/);
+  if (!match) return null;
+
+  const parsed = Number.parseFloat(match[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.round(value);
+  }
+
+  if (typeof value !== "string") return null;
+
+  const match = value.match(/\d+/);
+  if (!match) return null;
+
+  const parsed = Number.parseInt(match[0], 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getLast4(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+
+  const cleaned = String(value)
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .trim();
+
+  return cleaned.length >= 4 ? cleaned.slice(-4) : cleaned || null;
+}
+
+function normalizeVehicleLoanExtraction(raw: any) {
+  return {
+    loanName: firstDefined(
+      raw.loanName,
+      raw.lenderName,
+      raw.lender,
+      raw.creditor,
+      raw.financeCompany,
+      raw.servicer,
+      raw.companyName
+    ),
+
+    accountLast4: getLast4(
+      firstDefined(
+        raw.accountLast4,
+        raw.last4,
+        raw.lastFourDigits,
+        raw.accountNumber,
+        raw.accountId,
+        raw.loanNumber,
+        raw.contractNumber
+      )
+    ),
+
+    balanceOwed: parseMoney(
+      firstDefined(
+        raw.balanceOwed,
+        raw.remainingBalance,
+        raw.currentBalance,
+        raw.principalBalance,
+        raw.payoffBalance,
+        raw.amountOwed
+      )
+    ),
+
+    originalAmount: parseMoney(
+      firstDefined(
+        raw.originalAmount,
+        raw.originalLoanAmount,
+        raw.amountFinanced,
+        raw.initialPrincipal,
+        raw.loanAmount
+      )
+    ),
+
+    apr: parseApr(
+      firstDefined(
+        raw.apr,
+        raw.interestRate,
+        raw.annualPercentageRate,
+        raw.rate
+      )
+    ),
+
+    monthlyPayment: parseMoney(
+      firstDefined(
+        raw.monthlyPayment,
+        raw.regularPayment,
+        raw.scheduledPayment,
+        raw.paymentAmount,
+        raw.amountDue
+      )
+    ),
+
+    monthsRemaining: parseInteger(
+      firstDefined(
+        raw.monthsRemaining,
+        raw.remainingMonths,
+        raw.remainingTerm,
+        raw.paymentsRemaining,
+        raw.monthsLeft
+      )
+    ),
+
+    nextDueDate: firstDefined(
+      raw.nextDueDate,
+      raw.paymentDueDate,
+      raw.nextPaymentDate,
+      raw.dueDate
+    ),
+
+    confidence: raw.confidence ?? {}
+  };
+}
+
+5. Always call normalizeVehicleLoanExtraction() before saving the extraction result or sending it to the frontend.
+
+6. Do not use truthy checks for numbers.
+
+Incorrect:
+if (result.balanceOwed) { ... }
+
+Correct:
+if (result.balanceOwed !== null && result.balanceOwed !== undefined) {
+  ...
+}
+
+7. Make sure the frontend reads these exact camelCase properties:
+
+loanName
+accountLast4
+balanceOwed
+originalAmount
+apr
+monthlyPayment
+monthsRemaining
+nextDueDate
+
+8. When setting form state, merge every extracted value instead of only monthlyPayment:
+
+setLoanForm((previous) => ({
+  ...previous,
+  loanName: extracted.loanName ?? previous.loanName ?? "",
+  accountLast4: extracted.accountLast4 ?? previous.accountLast4 ?? "",
+  balanceOwed: extracted.balanceOwed ?? previous.balanceOwed ?? "",
+  originalAmount: extracted.originalAmount ?? previous.originalAmount ?? "",
+  apr: extracted.apr ?? previous.apr ?? "",
+  monthlyPayment:
+    extracted.monthlyPayment ?? previous.monthlyPayment ?? "",
+  monthsRemaining:
+    extracted.monthsRemaining ?? previous.monthsRemaining ?? "",
+  nextDueDate: extracted.nextDueDate ?? previous.nextDueDate ?? ""
+}));
+
+9. Add server-side console logging during development:
+
+console.log(
+  "RAW VEHICLE LOAN EXTRACTION:",
+  JSON.stringify(rawExtraction, null, 2)
+);
+
+console.log(
+  "NORMALIZED VEHICLE LOAN EXTRACTION:",
+  JSON.stringify(normalizedExtraction, null, 2)
+);
+
+10. Do not silently replace missing fields with zero. Missing values must remain null.
+
+11. Test against a document containing:
+- Account ID: TEST-VEH-0042
+- Original Amount: $36,500.00
+- Remaining Balance: $19,432.58
+- Interest Rate: 8.49%
+- Monthly Payment: $687.21
+- Loan Term: 72 months
+- Payment Due Date: 08/15/2026
+
+Expected extraction:
+{
+  "loanName": "Vehicle Payment Test Form",
+  "accountLast4": "0042",
+  "balanceOwed": 19432.58,
+  "originalAmount": 36500,
+  "apr": 8.49,
+  "monthlyPayment": 687.21,
+  "monthsRemaining": 72,
+  "nextDueDate": "2026-08-15"
+}
+
+After implementing it, show me:
+- every file modified
+- the raw model response
+- the normalized response
+- confirmation that all eight fields populate in the review form

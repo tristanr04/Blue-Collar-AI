@@ -130,14 +130,13 @@ const DOC_FIELDS: Record<string, Array<{ key: string; label: string; type?: stri
     { key: 'dueDate', label: 'Due Date' },
   ],
   'Auto Loan': [
-    { key: 'lender', label: 'Lender' },
-    { key: 'loanName', label: 'Loan Name' },
-    { key: 'lastFour', label: 'Last 4 Digits' },
-    { key: 'currentBalance', label: 'Balance Owed', type: 'number', prefix: '$' },
+    { key: 'loanName', label: 'Lender / Loan Name' },
+    { key: 'accountLast4', label: 'Last 4 Digits' },
+    { key: 'balanceOwed', label: 'Balance Owed', type: 'number', prefix: '$' },
     { key: 'originalAmount', label: 'Original Amount', type: 'number', prefix: '$' },
     { key: 'apr', label: 'APR (%)', type: 'number' },
     { key: 'monthlyPayment', label: 'Monthly Payment', type: 'number', prefix: '$' },
-    { key: 'remainingTermMonths', label: 'Months Remaining', type: 'number' },
+    { key: 'monthsRemaining', label: 'Months Remaining', type: 'number' },
     { key: 'nextDueDate', label: 'Next Due Date' },
   ],
   'Personal Loan': [
@@ -493,12 +492,12 @@ export default function Scanner() {
       const token = await getToken().catch(() => null);
       const result = await scanFile(file, token);
 
-      // Dev-mode logging for bill documents so the raw AI shape is visible
-      // in the browser console without exposing image data or account numbers.
+      // Dev-mode logging so the raw AI shape is visible in the browser console
+      // without exposing image data or full account numbers.
       if (import.meta.env.DEV) {
         const dt = (result.docType ?? '').toLowerCase();
-        if (dt.includes('bill') || dt.includes('utility')) {
-          console.group(`[Scanner] Raw bill extraction — ${file.name}`);
+        if (dt.includes('bill') || dt.includes('utility') || dt === 'auto loan') {
+          console.group(`[Scanner] Raw extraction — ${result.docType} — ${file.name}`);
           console.log('docType:', result.docType);
           console.log('classificationConfidence:', result.classificationConfidence);
           console.log('fields (raw):', JSON.stringify(result.fields ?? {}, null, 2));
@@ -796,16 +795,20 @@ export default function Scanner() {
         // ── Installment loans → Debt ─────────────────────────────────────────
         case 'Auto Loan':
         case 'Personal Loan':
-        case 'Student Loan':
-          if (n('currentBalance') > 0) {
+        case 'Student Loan': {
+          // Auto Loan uses canonical names (loanName, balanceOwed, monthsRemaining);
+          // Personal/Student Loan still use currentBalance as fallback.
+          const loanBal = n('balanceOwed') || n('currentBalance') || n('principalBalance');
+          if (loanBal > 0) {
             addDebt({
               name: s('loanName') || s('servicer') || s('lender') || doc.institutionName || doc.docType,
-              balance: n('currentBalance'),
+              balance: loanBal,
               interestRate: n('apr') || n('interestRate'),
               minimumPayment: n('monthlyPayment'),
             });
           }
           break;
+        }
 
         case 'Mortgage':
         case 'HELOC':
