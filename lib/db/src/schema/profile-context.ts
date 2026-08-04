@@ -1,5 +1,4 @@
 import { boolean, date, integer, pgTable, text, timestamp, uniqueIndex, uuid, varchar } from "drizzle-orm/pg-core";
-import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 import { z } from "zod";
 import { usersTable } from "./financial";
 
@@ -57,15 +56,16 @@ const birthDateSchema = z
   .refine((value) => ageOnDate(value) >= 18, "User must be at least 18.")
   .refine((value) => ageOnDate(value) <= 120, "Birth date is outside the supported range.");
 
-export const insertProfileContextSchema = createInsertSchema(profileContextTable, {
+/** Validated input accepted by upsertProfileContextForUser. */
+export const insertProfileContextSchema = z.object({
   birthDate: birthDateSchema.nullable().optional(),
   stateCode: z.enum(US_STATE_CODES).nullable().optional(),
-  taxFilingStatus: z.enum(taxFilingStatuses),
-  qualifyingChildren: z.number().int().min(0).max(20),
-  otherDependents: z.number().int().min(0).max(20),
-  additionalAnnualIncome: z.number().int().min(0).max(100_000_000),
-  annualPreTaxDeductions: z.number().int().min(0).max(100_000_000),
-}).omit({ id: true, userId: true, createdAt: true, updatedAt: true });
+  taxFilingStatus: z.enum(taxFilingStatuses).default("Single"),
+  qualifyingChildren: z.number().int().min(0).max(20).default(0),
+  otherDependents: z.number().int().min(0).max(20).default(0),
+  spouseHasIncome: z.boolean().default(false),
+  additionalAnnualIncome: z.number().int().min(0).max(100_000_000).default(0),
+  annualPreTaxDeductions: z.number().int().min(0).max(100_000_000).default(0),
+});
 
-export const selectProfileContextSchema = createSelectSchema(profileContextTable);
 export type ProfileContext = typeof profileContextTable.$inferSelect;

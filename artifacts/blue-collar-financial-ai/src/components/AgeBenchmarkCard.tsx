@@ -13,6 +13,9 @@ interface AgeBenchmarkCardProps {
   age: number | null;
   annualGrossIncome: number | null;
   netWorth: number | null;
+  /** ISO-3166-2 state code (e.g. "OK"). When present, shows national comparison
+   *  with a note that state-level comparison is coming. */
+  stateCode?: string | null;
 }
 
 const LABELS: Record<BenchmarkMetric, string> = {
@@ -78,7 +81,7 @@ function MetricRow({ comparison }: { comparison: BenchmarkComparison }) {
   );
 }
 
-export function AgeBenchmarkCard({ age, annualGrossIncome, netWorth }: AgeBenchmarkCardProps) {
+export function AgeBenchmarkCard({ age, annualGrossIncome, netWorth, stateCode }: AgeBenchmarkCardProps) {
   if (age === null) {
     return (
       <Card className="bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 shadow-sm">
@@ -125,6 +128,12 @@ export function AgeBenchmarkCard({ age, annualGrossIncome, netWorth }: AgeBenchm
           ))
         ) : (
           <div className="text-sm text-slate-500">Add income and asset/debt data to calculate this comparison.</div>
+        )}
+        {stateCode && (
+          <div className="flex gap-2 text-[11px] text-slate-500 bg-slate-50 dark:bg-slate-800/50 rounded-lg px-3 py-2">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>Showing national comparison. State-specific comparison for {stateCode} coming soon.</span>
+          </div>
         )}
         <div className="flex gap-2 border-t border-slate-100 pt-3 text-[11px] leading-relaxed text-slate-500 dark:border-slate-800">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />

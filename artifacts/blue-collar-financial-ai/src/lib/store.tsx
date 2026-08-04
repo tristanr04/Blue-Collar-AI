@@ -11,6 +11,14 @@ import {
   getMigrationStatus,
   type FinancialSnapshot,
 } from './api';
+import {
+  loadProfileContext as loadProfileContextApi,
+  saveProfileContext as saveProfileContextApi,
+  type ProfileContext as ServerProfileContext,
+  type ProfileContextInput,
+} from './profile-context-api';
+
+export type { ServerProfileContext, ProfileContextInput };
 
 export type PayFrequency = 'Weekly' | 'Bi-Weekly' | 'Semi-Monthly' | 'Monthly';
 export type FilingContext = 'Single' | 'Married' | 'Head of Household';
@@ -216,6 +224,14 @@ interface StoreContextType extends StoreState {
   migrationPending: boolean;
   migrateLocalToServer: () => Promise<void>;
   dismissMigration: () => void;
+  // ─── Profile context ────────────────────────────────────────────────────────
+  profileContext: ServerProfileContext | null;
+  profileContextLoading: boolean;
+  profileContextSaving: boolean;
+  profileContextError: string | null;
+  loadProfileContext: () => Promise<void>;
+  saveProfileContext: (input: ProfileContextInput) => Promise<void>;
+  clearProfileContext: () => void;
 }
 
 // ─── Demo & default state ─────────────────────────────────────────────────────
@@ -427,8 +443,20 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; });
 
+  // ─── Profile context state ───────────────────────────────────────────────
+  const [profileContext, setProfileContext] = useState<ServerProfileContext | null>(null);
+  const [profileContextLoading, setProfileContextLoading] = useState(false);
+  const [profileContextSaving, setProfileContextSaving] = useState(false);
+  const [profileContextError, setProfileContextError] = useState<string | null>(null);
+  const profileContextLoadingRef = useRef(false);
+
   useEffect(() => {
-    if (isLoaded && !isSignedIn) { setServerSynced(false); setMigrationPending(false); }
+    if (isLoaded && !isSignedIn) {
+      setServerSynced(false);
+      setMigrationPending(false);
+      setProfileContext(null);
+      setProfileContextError(null);
+    }
   }, [isLoaded, isSignedIn]);
 
   useEffect(() => {
@@ -461,6 +489,65 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     })();
     return () => { cancelled = true; };
   }, [isLoaded, isSignedIn, serverSynced, getToken]);
+
+  // ─── Profile context load (after first server sync) ──────────────────────
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || !serverSynced) return;
+    if (profileContextLoadingRef.current || profileContext !== null) return;
+    profileContextLoadingRef.current = true;
+    setProfileContextLoading(true);
+    getToken()
+      .then(token => token ? loadProfileContextApi(token) : null)
+      .then(ctx => { setProfileContext(ctx); })
+      .catch(err => {
+        console.error('[store] profile context load failed:', err);
+        setProfileContextError(err instanceof Error ? err.message : 'Failed to load profile context');
+      })
+      .finally(() => {
+        setProfileContextLoading(false);
+        profileContextLoadingRef.current = false;
+      });
+  }, [isLoaded, isSignedIn, serverSynced, getToken, profileContext]);
+
+  const loadProfileContext = useCallback(async () => {
+    const token = tokenRef.current;
+    if (!token || profileContextLoadingRef.current) return;
+    profileContextLoadingRef.current = true;
+    setProfileContextLoading(true);
+    setProfileContextError(null);
+    try {
+      const ctx = await loadProfileContextApi(token);
+      setProfileContext(ctx);
+    } catch (err) {
+      setProfileContextError(err instanceof Error ? err.message : 'Failed to load profile context');
+    } finally {
+      setProfileContextLoading(false);
+      profileContextLoadingRef.current = false;
+    }
+  }, []);
+
+  const saveProfileContext = useCallback(async (input: ProfileContextInput) => {
+    const token = tokenRef.current;
+    if (!token) throw new Error('Not signed in');
+    setProfileContextSaving(true);
+    setProfileContextError(null);
+    try {
+      const ctx = await saveProfileContextApi(token, input);
+      setProfileContext(ctx);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to save profile context';
+      setProfileContextError(msg);
+      throw err;
+    } finally {
+      setProfileContextSaving(false);
+    }
+  }, []);
+
+  const clearProfileContext = useCallback(() => {
+    setProfileContext(null);
+    setProfileContextError(null);
+  }, []);
 
   // ─── Migration (idempotent) ────────────────────────────────────────────────
   //
@@ -783,6 +870,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       addChangeRecords, undoImport, restoreFieldValue,
       resetToDemo, clearAll,
       isLoadingFromServer, migrationPending, migrateLocalToServer, dismissMigration,
+      profileContext, profileContextLoading, profileContextSaving, profileContextError,
+      loadProfileContext, saveProfileContext, clearProfileContext,
     }}>
       {children}
     </StoreContext.Provider>

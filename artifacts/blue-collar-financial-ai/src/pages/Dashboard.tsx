@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { useStore } from '@/lib/store';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { AgeBenchmarkCard } from '@/components/AgeBenchmarkCard';
+import { TaxEstimatorCard } from '@/components/TaxEstimatorCard';
 import { ageFromBirthDate } from '@/lib/age-benchmarks';
 
 // ─── Financial Health Score ───────────────────────────────────────────────────
@@ -131,7 +132,7 @@ function ScoreRing({ score }: { score: number }) {
 
 export default function Dashboard() {
   const [_, setLocation] = useLocation();
-  const { profile, paystubs, bills, debts, assets, computed } = useStore();
+  const { profile, paystubs, bills, debts, assets, computed, profileContext } = useStore();
 
   useEffect(() => {
     if (!profile?.hasCompletedOnboarding) setLocation('/welcome');
@@ -294,11 +295,23 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {/* Age Benchmark */}
+      {/* Age Benchmark — uses profileContext.birthDate as primary, falls back to profile.birthDate */}
       <AgeBenchmarkCard
-        age={profile.birthDate ? ageFromBirthDate(profile.birthDate) : null}
+        age={(() => {
+          const bd = profileContext?.birthDate ?? profile.birthDate;
+          return bd ? ageFromBirthDate(bd) : null;
+        })()}
         annualGrossIncome={monthlyGross > 0 ? monthlyGross * 12 : null}
         netWorth={netWorth}
+        stateCode={profileContext?.stateCode}
+      />
+
+      {/* Tax & Overtime Estimator */}
+      <TaxEstimatorCard
+        profileContext={profileContext}
+        profile={profile}
+        paystubs={paystubs}
+        multiplier={freq === 'Weekly' ? 52 : freq === 'Bi-Weekly' ? 26 : freq === 'Semi-Monthly' ? 24 : 12}
       />
 
       {/* Recent paystubs + next moves */}
