@@ -9,9 +9,13 @@ import router from "./routes/index.js";
 import { logger } from "./lib/logger.js";
 import { makeCors } from "./middlewares/cors.js";
 import { generalLimiter } from "./middlewares/rate-limit.js";
+import { securityHeaders } from "./middlewares/security-headers.js";
 
 const app: Express = express();
 const MAX_SCAN_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+app.disable("x-powered-by");
+app.use(securityHeaders);
 
 // ─── Request logging ──────────────────────────────────────────────────────────
 
