@@ -8,6 +8,7 @@ import { aiAskLimiter } from "../middlewares/rate-limit.js";
 import { aiKillSwitch, aiGlobalSemaphore } from "../middlewares/ai-guard.js";
 import { requireAuthenticatedUser } from "../middlewares/auth.js";
 import { makeAbortController } from "../middlewares/timeout.js";
+import { requireAuthenticatedUser } from "../middlewares/auth.js";
 
 const router: IRouter = Router();
 
@@ -34,10 +35,20 @@ RESPONSE RULES:
 7. Keep the language direct, practical, and respectful.
 8. End every response with exactly: "⚠️ I am not a licensed financial adviser. This is educational guidance, not financial advice."`;
 
+// ─── POST /api/ai/ask ─────────────────────────────────────────────────────────
+// Middleware stack (innermost last):
+//   1. aiKillSwitch              — AI_ENABLED=false → 503
+//   2. aiAskLimiter              — 20 req/hour/IP   → 429
+//   3. requireAuthenticatedUser  — Clerk session required → 401
+//   4. aiGlobalSemaphore         — global concurrency cap → 429
+//   5. validateBody              — Zod AskRequestSchema → 400
+//   6. handler                   — 60-second AbortController timeout
+
 router.post(
   "/ai/ask",
   aiKillSwitch,
   aiAskLimiter,
+  requireAuthenticatedUser,
   aiGlobalSemaphore.middleware(),
   validateBody(AskRequestSchema, "request_validation"),
   async (req, res) => {

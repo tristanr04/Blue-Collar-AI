@@ -16,6 +16,7 @@ import {
 import { scanLimiter } from "../middlewares/rate-limit.js";
 import { scanSemaphore } from "../middlewares/ai-guard.js";
 import { makeAbortController } from "../middlewares/timeout.js";
+import { requireAuthenticatedUser } from "../middlewares/auth.js";
 
 const require = createRequire(import.meta.url);
 const pdfParse: (buffer: Buffer) => Promise<{
@@ -171,9 +172,18 @@ function isEncryptedPdfError(error: unknown): boolean {
   return message.includes("password") || message.includes("encrypted") || message.includes("encryption");
 }
 
+// ─── POST /api/scan-document ──────────────────────────────────────────────────
+// Middleware stack (innermost last):
+//   1. scanLimiter              — 10 scans/hour/IP → 429
+//   2. requireAuthenticatedUser — Clerk session required → 401
+//   3. scanSemaphore            — 3 concurrent/IP  → 429
+//   4. upload.single            — multer file parse
+//   5. handler                  — 90-second AbortController timeout
+
 router.post(
   "/scan-document",
   scanLimiter,
+  requireAuthenticatedUser,
   scanSemaphore.middleware(),
   upload.single("file"),
   async (req, res) => {

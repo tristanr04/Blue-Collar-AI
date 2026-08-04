@@ -11,7 +11,8 @@
     "test": "node --import tsx/esm --test 'src/__tests__/**/*.test.ts'"
   },
   "dependencies": {
-    "@clerk/express": "^1.7.38",
+    "@clerk/express": "^1.7.82",
+    "@clerk/shared": "^4.25.10",
     "@types/multer": "^2.2.0",
     "@types/pdf-parse": "^1.1.5",
     "@workspace/api-zod": "workspace:*",
@@ -21,13 +22,12 @@
     "drizzle-orm": "catalog:",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.1",
-    "file-type": "^21.0.0",
+    "http-proxy-middleware": "^4.2.0",
     "multer": "^2.2.0",
     "openai": "^7.3.0",
     "pdf-parse": "1.1.1",
     "pino": "^9.14.0",
     "pino-http": "^10.5.0",
-    "sharp": "^0.34.3",
     "zod": "catalog:"
   },
   "devDependencies": {

@@ -1,22 +1,21 @@
-import { clerkMiddleware } from "@clerk/express";
 import express, { type Express } from "express";
 import pinoHttp from "pino-http";
+import { clerkMiddleware } from "@clerk/express";
+import { publishableKeyFromHost } from "@clerk/shared/keys";
+import {
+  CLERK_PROXY_PATH,
+  clerkProxyMiddleware,
+  getClerkProxyHost,
+} from "./middlewares/clerkProxyMiddleware.js";
 import router from "./routes/index.js";
 import { logger } from "./lib/logger.js";
 import { makeCors } from "./middlewares/cors.js";
 import { generalLimiter } from "./middlewares/rate-limit.js";
-import { aiKillSwitch, aiGlobalSemaphore } from "./middlewares/ai-guard.js";
-import { requireAuthenticatedUser } from "./middlewares/auth.js";
 
 const app: Express = express();
 const MAX_SCAN_UPLOAD_BYTES = 10 * 1024 * 1024;
 
-// Replit and most production hosts terminate HTTPS behind a reverse proxy.
-app.set("trust proxy", 1);
-
-// Clerk verifies session cookies / bearer tokens and attaches auth state.
-// CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY must be configured in Replit.
-app.use(clerkMiddleware());
+// ─── Request logging ──────────────────────────────────────────────────────────
 
 app.use(
   pinoHttp({
@@ -37,6 +36,13 @@ app.use(
     },
   }),
 );
+
+// ─── Clerk proxy — BEFORE body parsers (streams raw bytes) ────────────────────
+// Only active in production; no-op in development.
+
+app.use(CLERK_PROXY_PATH, clerkProxyMiddleware());
+
+// ─── CORS ─────────────────────────────────────────────────────────────────────
 
 app.use(makeCors());
 
@@ -65,55 +71,34 @@ app.use("/api/scan-document", (req, res, next) => {
   next();
 });
 
+// ─── Body parsing (250 KB cap) ────────────────────────────────────────────────
+
 app.use(express.json({ limit: "250kb" }));
 app.use(express.urlencoded({ extended: true, limit: "250kb" }));
 
-app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
-  const bodyError = err as { type?: string; status?: number };
-  if (bodyError.type === "entity.too.large" || bodyError.status === 413) {
-    res.status(413).json({
-      stage: "request_size_limit",
-      error: "Request body is too large. Maximum size is 250 KB.",
-    });
-    return;
-  }
-  next(err);
-});
+// ─── General rate limiter (100 req / 15 min per IP) ───────────────────────────
 
 app.use("/api", generalLimiter);
 
-// Paid and sensitive financial endpoints require a verified user session.
-app.use("/api", (req, res, next) => {
-  const protectedPath =
-    req.path === "/auth/me" ||
-    (req.method === "POST" && (req.path === "/scan-document" || req.path === "/ai/ask"));
+// ─── Clerk session middleware ─────────────────────────────────────────────────
+// Populates req.auth on every request. Routes call requireAuth() to enforce it.
+// publishableKeyFromHost resolves the key from the request hostname so the
+// same server can serve multiple Clerk custom domains.
 
-  if (protectedPath) {
-    requireAuthenticatedUser(req, res, next);
-    return;
-  }
-  next();
-});
+app.use(
+  clerkMiddleware((req) => ({
+    publishableKey: publishableKeyFromHost(
+      getClerkProxyHost(req) ?? "",
+      process.env.CLERK_PUBLISHABLE_KEY,
+    ),
+  })),
+);
 
-// Both scan and chat consume paid AI capacity.
-app.use("/api", (req, res, next) => {
-  if (req.method === "POST" && (req.path === "/scan-document" || req.path === "/ai/ask")) {
-    aiKillSwitch(req, res, next);
-    return;
-  }
-  next();
-});
-
-const globalAiConcurrency = aiGlobalSemaphore.middleware();
-app.use("/api", (req, res, next) => {
-  if (req.method === "POST" && req.path === "/scan-document") {
-    globalAiConcurrency(req, res, next);
-    return;
-  }
-  next();
-});
+// ─── Routes ───────────────────────────────────────────────────────────────────
 
 app.use("/api", router);
+
+// ─── Structured 404 ───────────────────────────────────────────────────────────
 
 app.use("/api", (req, res) => {
   res.status(404).json({
