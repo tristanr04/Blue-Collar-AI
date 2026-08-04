@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Response } from "express";
 import { ZodError, z } from "zod";
 import type { AuthenticatedRequest } from "../middlewares/auth.js";
 import { requireAuthenticatedUser } from "../middlewares/auth.js";
@@ -23,7 +23,7 @@ function userIdFrom(req: AuthenticatedRequest): string {
   return req.authenticatedUserId;
 }
 
-function sendRepositoryError(res: Parameters<Parameters<typeof router.get>[1]>[1], error: unknown): void {
+function sendRepositoryError(res: Response, error: unknown): void {
   if (error instanceof ZodError) {
     res.status(400).json({
       stage: "request_validation",
