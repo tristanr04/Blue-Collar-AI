@@ -180,17 +180,110 @@ async function extractFromText(text: string, signal?: AbortSignal): Promise<stri
   return response.choices[0]?.message?.content ?? "{}";
 }
 
-function safeParseJson(raw: string): { data: Record<string, unknown>; parseError: boolean } {
+/**
+ * Strip all markdown code-fence variants the model might emit:
+ *   ```json … ```
+ *   ``` … ```
+ *   Inline fences embedded anywhere in the string.
+ */
+function stripMarkdownFences(raw: string): string {
+  return raw
+    .replace(/^```(?:json|JSON)?\s*/m, "")  // opening fence (start of line)
+    .replace(/\s*```\s*$/m, "")              // closing fence (end of string)
+    .trim();
+}
+
+/**
+ * Attempt to parse `text` as JSON.
+ * Returns the parsed value or throws with an informative message.
+ */
+function tryJsonParse(text: string): unknown {
   try {
-    const cleaned = raw
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```\s*$/i, "")
-      .trim();
-    return { data: JSON.parse(cleaned) as Record<string, unknown>, parseError: false };
-  } catch {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(
+      `JSON.parse failed: ${err instanceof Error ? err.message : String(err)}\n` +
+      `Input (first 500 chars): ${text.slice(0, 500)}`,
+    );
+  }
+}
+
+/**
+ * Wrapper keys the model may use when it nests the extraction inside an
+ * envelope object instead of returning it at the top level.
+ */
+const WRAPPER_KEYS = ["data", "result", "extraction", "document", "parsedDocument"] as const;
+
+/**
+ * Robustly parse the raw string returned by the AI model.
+ *
+ * Handles:
+ *   • Raw JSON object at the top level
+ *   • JSON wrapped in ```json … ``` or ``` … ``` fences
+ *   • The entire JSON returned as a double-encoded string
+ *   • Extraction nested under: data | result | extraction | document | parsedDocument
+ *
+ * Logs the raw model response and the parsed result so every parse attempt
+ * is visible in the server console.
+ *
+ * Returns { data, parseError, parseErrorMessage } so callers can surface the
+ * exact failure without swallowing it.
+ */
+function safeParseJson(raw: string): {
+  data: Record<string, unknown>;
+  parseError: boolean;
+  parseErrorMessage?: string;
+} {
+  console.log("rawResponse:", raw);
+
+  try {
+    // ── Step 1: strip markdown fences ────────────────────────────────────────
+    const cleaned = stripMarkdownFences(raw);
+
+    // ── Step 2: parse the outer JSON ─────────────────────────────────────────
+    let parsed = tryJsonParse(cleaned);
+
+    // ── Step 3: if the model double-encoded JSON as a string, unwrap it ──────
+    if (typeof parsed === "string") {
+      parsed = tryJsonParse(stripMarkdownFences(parsed));
+    }
+
+    // ── Step 4: must be a plain object at this point ──────────────────────────
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error(
+        `Expected a JSON object, received ${Array.isArray(parsed) ? "array" : typeof parsed}`,
+      );
+    }
+
+    let obj = parsed as Record<string, unknown>;
+
+    // ── Step 5: unwrap known envelope keys if top-level lacks docType ─────────
+    if (!("docType" in obj)) {
+      for (const key of WRAPPER_KEYS) {
+        const candidate = obj[key];
+        if (
+          candidate !== null &&
+          typeof candidate === "object" &&
+          !Array.isArray(candidate) &&
+          "docType" in (candidate as object)
+        ) {
+          logger.info({ wrapperKey: key }, "AI response unwrapped from envelope key");
+          obj = candidate as Record<string, unknown>;
+          break;
+        }
+      }
+    }
+
+    console.log("parsedResponse:", JSON.stringify(obj, null, 2));
+
+    return { data: obj, parseError: false };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.log("parsedResponse: [PARSE FAILED]", message);
     return {
       data: { docType: "Unknown", classificationConfidence: 0, fields: {} },
       parseError: true,
+      parseErrorMessage: message,
     };
   }
 }
@@ -456,12 +549,16 @@ router.post(
         rawJson = await extractFromImage(normalized.buffer, abort.signal);
       }
 
-      const { data: rawParsed, parseError } = safeParseJson(rawJson);
+      const { data: rawParsed, parseError, parseErrorMessage } = safeParseJson(rawJson);
       if (parseError) {
-        logger.warn({ file: originalname }, "AI returned non-JSON scanner response");
+        logger.warn({ file: originalname, parseError: parseErrorMessage }, "AI returned non-JSON scanner response");
+        console.log(
+          "Expected:\n{ type, data }\n\nReceived:\n" + rawJson.slice(0, 1000),
+        );
         res.status(422).json({
           stage: "ai_json_parse",
           error: "The document processor returned an unreadable response. Please try again.",
+          detail: parseErrorMessage,
         });
         return;
       }
@@ -477,9 +574,15 @@ router.post(
           { file: originalname, fieldErrors: validation.body.fieldErrors },
           "AI scanner output failed schema validation",
         );
+        console.log(
+          "Expected:\n{ type, data }\n\nReceived:\n" +
+          JSON.stringify(rawParsed, null, 2).slice(0, 1000),
+        );
+        console.log("Validation field errors:", JSON.stringify(validation.body.fieldErrors, null, 2));
         res.status(422).json({
           ...validation.body,
           error: "The document processor returned an unrecognized response format. Please try again.",
+          detail: validation.body.fieldErrors,
         });
         return;
       }
