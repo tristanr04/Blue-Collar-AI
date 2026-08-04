@@ -37,19 +37,20 @@ All DTI uses **gross** monthly income (`monthlyGross`). Thresholds: 15% excellen
 - GET/GET `:id` `/api/jobs` — auth + user-scoped background job polling
 
 ## Document Scanner — AI Response Parsing
-`safeParseJson` in `artifacts/api-server/src/routes/scan.ts` handles all model output shapes:
-1. Raw JSON object
-2. Markdown-fenced (` ```json … ``` ` or ` ``` … ``` `)
-3. Double-encoded string (string whose content is JSON)
-4. Extraction nested under `data | result | extraction | document | parsedDocument`
-**Why:** The model (`gpt-5.6-terra`) occasionally wraps its output in envelope objects or code fences; silently failing caused "unrecognized response format" for all users.
-Logs: `rawResponse` → `parsedResponse` (or `[PARSE FAILED] <exception>`) on every scan.
+`extractFromImage`/`extractFromText` return the **full response object** (not just the content string).
+Handler applies: `getModelOutput(aiResponse)` → `unwrapDocumentResponse(modelOutput)` → parse.
+`getModelOutput` handles `output_text` (Responses API), `choices[0].message.content` (Chat API), `content[0].text`, `output[0].content[0].text`, and others.
+**Why:** `gpt-5.6-terra` may return `output_text` instead of `choices[0].message.content`; the old code silently yielded `"{}"` which failed Zod validation for every scan.
 
-## Auto Loan — Canonical Field Names
-Server normalizes Auto Loan fields BEFORE sending to frontend (`normalizeAutoLoanFields` in `scan.ts`).
+## Auto Loan — Two-Path Response
+Auto Loan documents use a **vehicle-loan fast path** that bypasses Zod validation entirely.
+- Server detects `docType === "Auto Loan"` (or presence of `balanceOwed`/`loanTerm`/`paymentsMade` without `docType`)
+- Calls `normalizeVehicleLoanExtraction(flattenWrappedFields(rawExtraction))`
+- Returns `{ success, documentType: "vehicleLoan", type: "vehicleLoan", data, extraction, docType: "Auto Loan", fields: {} }`
+- Derives `monthsRemaining = loanTerm - paymentsMade` when not explicit; converts US dates to ISO
+- Frontend detects via `result.type === 'vehicleLoan'` and builds `fieldMap` from `result.data` (flat values, NOT wrapped)
 Canonical keys: `loanName`, `accountLast4`, `balanceOwed`, `originalAmount`, `apr`, `monthlyPayment`, `monthsRemaining`, `nextDueDate`.
-**Why:** AI uses many alternate labels (e.g. `interestRate`, `remainingBalance`, `remainingTerm`); without normalization only `monthlyPayment` populated.
-Personal Loan and Student Loan still use old field names (`currentBalance`, `lastFour`, `remainingTermMonths`) — Task #22 covers alignment.
+Personal Loan and Student Loan still use old field names — known debt.
 
 ## drizzle-zod Compatibility
 drizzle-zod@0.8.3 expects Zod v4 `_zod` internals but project uses Zod v3.25.76.

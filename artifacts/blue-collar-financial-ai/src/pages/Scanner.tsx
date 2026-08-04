@@ -505,25 +505,73 @@ export default function Scanner() {
         }
       }
 
+      // ── Vehicle-loan fast path ──────────────────────────────────────────────
+      // The server returns { type: 'vehicleLoan', data: { loanName, ... } } for
+      // Auto Loan documents, bypassing the generic wrapped-fields format.
+      const isVehicleLoan =
+        (result as any).type === 'vehicleLoan' ||
+        (result as any).documentType === 'vehicleLoan';
+
       const fieldMap: Record<string, { value: string; confidence: number }> = {};
-      for (const [k, v] of Object.entries(result.fields ?? {})) {
-        // Use getFieldValue so null fields and flat values never crash
-        const { value, confidence } = getFieldValue(v);
-        if (value != null) {
-          fieldMap[k] = { value, confidence };
+
+      if (isVehicleLoan) {
+        // Accept the extraction from any of the response locations the server may use
+        const extracted =
+          (result as any).data?.data ??
+          (result as any).data?.extraction ??
+          (result as any).data?.result ??
+          (result as any).data ??
+          (result as any).extraction ??
+          (result as any).result ??
+          result;
+
+        if (!extracted || typeof extracted !== 'object') {
+          throw new Error('The document processor returned an unrecognized response format.');
+        }
+
+        // Map flat vehicle-loan extraction into the fieldMap the review UI reads.
+        // Use !== null / !== undefined — never truthy — so zero values are preserved.
+        const vehicleFields: Array<keyof typeof extracted> = [
+          'loanName', 'accountLast4', 'balanceOwed', 'originalAmount',
+          'apr', 'monthlyPayment', 'monthsRemaining', 'nextDueDate',
+        ];
+        for (const key of vehicleFields) {
+          const val = (extracted as any)[key];
+          if (val !== null && val !== undefined) {
+            fieldMap[key as string] = { value: String(val), confidence: 80 };
+          }
+        }
+
+        if (import.meta.env.DEV) {
+          console.group(`[Scanner] Vehicle loan extraction — ${(result as any).fileName ?? ''}`);
+          console.log('raw result:', JSON.stringify(result, null, 2));
+          console.log('extracted:', JSON.stringify(extracted, null, 2));
+          console.log('fieldMap:', JSON.stringify(fieldMap, null, 2));
+          console.groupEnd();
+        }
+      } else {
+        for (const [k, v] of Object.entries(result.fields ?? {})) {
+          // Use getFieldValue so null fields and flat values never crash
+          const { value, confidence } = getFieldValue(v);
+          if (value != null) {
+            fieldMap[k] = { value, confidence };
+          }
         }
       }
+
       // Extract institution info returned by the server normalizer
       const inst = result.institution;
-      const institutionName = inst?.normalizedName || inst?.rawName || '';
+      const institutionName = inst?.normalizedName || inst?.rawName ||
+        (isVehicleLoan ? ((result as any).data?.loanName ?? '') : '');
       const institutionUnknown = !inst?.isKnownInstitution && !!institutionName;
       const institutionCategory = inst?.institutionCategory ?? null;
+      const resolvedDocType = isVehicleLoan ? 'Auto Loan' : (result.docType ?? 'Unknown');
 
       setDocs(prev => prev.map(d => d.id === docId ? {
         ...d,
         status: 'done',
         result,
-        docType: result.docType ?? 'Unknown',
+        docType: resolvedDocType,
         fields: fieldMap,
         institutionName,
         institutionUnknown,

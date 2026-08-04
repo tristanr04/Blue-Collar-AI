@@ -27,6 +27,20 @@ export interface UnknownField {
   confidence: number | null;
 }
 
+/** Normalized vehicle-loan extraction returned when docType is Auto Loan. */
+export interface VehicleLoanExtraction {
+  documentType: "vehicleLoan";
+  loanName: string | null;
+  accountLast4: string | null;
+  balanceOwed: number | null;
+  originalAmount: number | null;
+  apr: number | null;
+  monthlyPayment: number | null;
+  monthsRemaining: number | null;
+  nextDueDate: string | null;
+  confidence: Record<string, number>;
+}
+
 export interface ScanResult {
   docType: string;
   classificationConfidence: number;
@@ -36,6 +50,12 @@ export interface ScanResult {
   fileName: string;
   mimeType: string;
   error?: string;
+  /** Set when the server used the vehicle-loan fast path. */
+  success?: boolean;
+  type?: string;
+  documentType?: string;
+  data?: VehicleLoanExtraction | Record<string, unknown>;
+  extraction?: VehicleLoanExtraction | Record<string, unknown>;
 }
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
