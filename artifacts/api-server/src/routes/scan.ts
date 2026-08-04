@@ -3,7 +3,6 @@ import multer from "multer";
 import OpenAI from "openai";
 import { createRequire } from "node:module";
 const _require = createRequire(import.meta.url);
-// pdf-parse v1 is CJS; use createRequire to avoid ESM default-export issue
 const pdfParse: (buf: Buffer) => Promise<{ text: string }> = _require("pdf-parse");
 import { logger } from "../lib/logger.js";
 import { normalizeInstitution } from "../lib/institution-registry.js";
@@ -12,15 +11,13 @@ const router: IRouter = Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+  limits: { fileSize: 20 * 1024 * 1024 },
 });
 
 const openai = new OpenAI({
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
 });
-
-// ─── MIME detection from magic bytes ─────────────────────────────────────────
 
 function detectMime(buffer: Buffer): string {
   const h = buffer.subarray(0, 16);
@@ -29,144 +26,201 @@ function detectMime(buffer: Buffer): string {
   if (h[0] === 0x47 && h[1] === 0x49 && h[2] === 0x46) return "image/gif";
   if (h[0] === 0x52 && h[1] === 0x49 && h[2] === 0x46 && h[3] === 0x46) return "image/webp";
   if (h[0] === 0x25 && h[1] === 0x50 && h[2] === 0x44 && h[3] === 0x46) return "application/pdf";
-  // HEIC/HEIF: ftyp box at offset 4
-  if (buffer.length > 12) {
-    const ftyp = buffer.subarray(4, 8).toString("ascii");
-    if (ftyp === "ftyp") return "image/heic";
-  }
+  if (buffer.length > 12 && buffer.subarray(4, 8).toString("ascii") === "ftyp") return "image/heic";
   return "application/octet-stream";
 }
 
-// ─── Extraction prompt ────────────────────────────────────────────────────────
+const SYSTEM_PROMPT = `You are a financial document extraction AI. Analyze the document and respond with exactly one valid JSON object. Do not use markdown, code fences, commentary, or multiple objects.
 
-const SYSTEM_PROMPT = `You are a financial document extraction AI. Analyze the document and respond with ONLY valid JSON (no markdown, no code fences, no explanation).
+Classify docType as exactly one of:
+Paystub | Checking Account | Savings Account | High-Yield Savings | Money Market Account | Certificate of Deposit | Cash Management Account | Bank Statement | Credit Card | Credit Card Statement | Line of Credit | Auto Loan | Personal Loan | Mortgage | HELOC | Student Loan | Brokerage Account | Margin Account | Robo-Adviser Account | Employee Stock Plan | 401(k) | Roth 401(k) | 403(b) | 457(b) | Traditional IRA | Roth IRA | SEP IRA | SIMPLE IRA | Rollover IRA | Pension | Thrift Savings Plan | HSA Investment Account | Monthly Bill | Utility Bill | Unknown
 
-STEP 1 — Classify docType as exactly one of:
-Paystub |
-Checking Account | Savings Account | High-Yield Savings | Money Market Account | Certificate of Deposit | Cash Management Account | Bank Statement |
-Credit Card | Credit Card Statement | Line of Credit |
-Auto Loan | Personal Loan | Mortgage | HELOC | Student Loan |
-Brokerage Account | Margin Account | Robo-Adviser Account | Employee Stock Plan |
-401(k) | Roth 401(k) | 403(b) | 457(b) | Traditional IRA | Roth IRA | SEP IRA | SIMPLE IRA | Rollover IRA | Pension | Thrift Savings Plan | HSA Investment Account |
-Monthly Bill | Utility Bill | Unknown
+Extract the institution exactly as printed. Unknown institutions are valid.
+Return only fields clearly visible. Never estimate or calculate. Use plain numbers without currency symbols, commas, or percent signs. Dates must be YYYY-MM-DD. Set unclear values to null.
 
-STEP 2 — Extract the institution. Look for bank name, brokerage name, plan administrator, servicer, employer plan sponsor, or credit union name. Capture the name exactly as printed. ANY institution name is valid including unknown ones — never reject for an unrecognized provider.
-
-STEP 3 — Extract document fields. Return ONLY fields clearly visible. Set unclear fields to null.
-
-CRITICAL RULES:
-- Never invent, estimate, or calculate. If not visible → null.
-- Confidence 90-100: clearly shown. 60-89: likely correct. Below 60 → null.
-- Numbers: plain number only (no $, commas, %). Dates: YYYY-MM-DD. Percentages: number (5.5 not "5.5%").
-- Do NOT confuse: employee contributions vs employer match | account value vs vested balance | buying power vs cash | 401(k) loan vs retirement balance | Roth 401(k) vs Roth IRA | brokerage cash vs checking cash.
-- Preserve any labeled field not in the list below in unknownFields.
-
-Respond with this exact shape:
+Return this shape:
 {
-  "docType": "401(k)",
-  "classificationConfidence": 92,
-  "institution": {
-    "rawName": "Fidelity NetBenefits",
-    "isKnownInstitution": true
-  },
+  "docType": "Credit Card Statement",
+  "classificationConfidence": 95,
+  "institution": { "rawName": "Example Bank", "isKnownInstitution": false },
   "fields": {
-    "currentBalance": { "value": 48216.83, "confidence": 95, "sourceText": "Total Account Value $48,216.83" },
-    "employeeContributionRate": { "value": 6, "confidence": 88, "sourceText": "Your Contribution 6%" }
+    "currentBalance": { "value": 1200.25, "confidence": 95, "sourceText": "Current Balance $1,200.25" }
   },
-  "unknownFields": [
-    { "label": "Vested Balance", "value": 38000.00, "confidence": 90 }
-  ]
+  "unknownFields": []
 }
 
-Fields to extract by document type:
-
+Relevant fields:
 PAYSTUB: employer, payDate, payPeriodStart, payPeriodEnd, hourlyRate, regularHours, overtimeHours, doubleTimeHours, perDiem, standbyPay, bonus, grossPay, federalTax, stateTax, socialSecurity, medicare, unionDues, insuranceDeductions, retirementContribution, retirementRate, otherDeductions, netPay
+BANKING: institution, accountType, accountName, lastFour, currentBalance, availableBalance, pendingBalance, apy, interestEarned, statementDate, statementStartDate, statementEndDate, openingBalance, closingBalance, totalDeposits, totalWithdrawals
+CREDIT CARD: issuer, accountName, lastFour, currentBalance, statementBalance, creditLimit, availableCredit, apr, minimumPayment, dueDate, autopay
+LOANS: lender, servicer, loanName, loanType, lastFour, currentBalance, originalAmount, apr, interestRate, monthlyPayment, remainingTermMonths, originalTermMonths, nextDueDate, payoffAmount
+MORTGAGE/HELOC: lender, propertyAddress, principalBalance, originalLoanAmount, interestRate, monthlyPayment, principalAndInterest, escrowAmount, nextDueDate, remainingTermMonths, propertyValue, creditLimit, currentBalance, availableCredit, drawPeriodEnd
+BROKERAGE/INVESTMENT: institution, accountType, lastFour, totalValue, securitiesValue, cashBalance, buyingPower, marginBalance, marginAvailable, marginInterestRate, dayChange, totalReturn, unrealizedGain, realizedGain, statementDate
+RETIREMENT: institution, employer, planName, planType, lastFour, currentBalance, vestedBalance, employeeContributionRate, rothContributionRate, pretaxContributionRate, employeeYtdContributions, employerYtdContributions, employerMatchFormula, employerMatchAmount, vestingPercent, vestingSchedule, outstandingLoanBalance, loanPayment, statementDate
+BILLS: provider, category, amountDue, dueDate, billingFrequency, billingPeriod, recurringFrequency, autopay, lastFour`;
 
-CHECKING ACCOUNT / CASH MANAGEMENT ACCOUNT: institution, accountType, accountName, lastFour, currentBalance, availableBalance, pendingBalance, apy, interestEarned, statementDate, accountStatus
+type ExtractionAttempt = {
+  raw: string;
+  finishReason: string | null;
+  promptTokens?: number;
+  completionTokens?: number;
+};
 
-SAVINGS ACCOUNT / HIGH-YIELD SAVINGS / MONEY MARKET ACCOUNT: institution, accountType, accountName, lastFour, currentBalance, availableBalance, apy, interestEarned, statementDate
-
-CERTIFICATE OF DEPOSIT: institution, accountName, lastFour, currentBalance, apy, maturityDate, termMonths, interestEarned, penaltyForEarlyWithdrawal
-
-BANK STATEMENT: institution, accountType, accountName, lastFour, statementStartDate, statementEndDate, openingBalance, closingBalance, totalDeposits, totalWithdrawals
-
-CREDIT CARD / CREDIT CARD STATEMENT: issuer, accountName, lastFour, currentBalance, statementBalance, creditLimit, availableCredit, apr, minimumPayment, dueDate, autopay
-
-LINE OF CREDIT: lender, accountName, lastFour, creditLimit, currentBalance, availableCredit, apr, minimumPayment, dueDate
-
-AUTO LOAN / PERSONAL LOAN / SECURED LOAN: lender, loanName, lastFour, currentBalance, originalAmount, apr, monthlyPayment, remainingTermMonths, originalTermMonths, nextDueDate, payoffAmount
-
-MORTGAGE: lender, propertyAddress, principalBalance, originalLoanAmount, interestRate, monthlyPayment, principalAndInterest, escrowAmount, nextDueDate, remainingTermMonths, propertyValue
-
-HELOC: lender, creditLimit, currentBalance, availableCredit, interestRate, monthlyPayment, drawPeriodEnd, repaymentPeriodMonths
-
-STUDENT LOAN: servicer, loanType, lastFour, currentBalance, originalAmount, interestRate, monthlyPayment, remainingTermMonths, nextDueDate, repaymentPlan
-
-BROKERAGE ACCOUNT / ROBO-ADVISER ACCOUNT: institution, accountType, lastFour, totalValue, securitiesValue, cashBalance, buyingPower, marginBalance, marginAvailable, marginInterestRate, dayChange, totalReturn, unrealizedGain, realizedGain, statementDate
-
-MARGIN ACCOUNT: institution, accountType, lastFour, totalValue, securitiesValue, cashBalance, marginBalance, marginAvailable, marginInterestRate, buyingPower, unrealizedGain, statementDate
-
-EMPLOYEE STOCK PLAN: institution, employer, planType, totalValue, vestedValue, unvestedValue, sharesVested, sharesUnvested, grantDate, vestingSchedule, statementDate
-
-401(k) / ROTH 401(k) / 403(b) / 457(b) / THRIFT SAVINGS PLAN: institution, employer, planName, planType, lastFour, currentBalance, vestedBalance, employeeContributionRate, rothContributionRate, pretaxContributionRate, employeeYtdContributions, employerYtdContributions, employerMatchFormula, employerMatchAmount, vestingPercent, vestingSchedule, outstandingLoanBalance, loanPayment, statementDate
-
-TRADITIONAL IRA / ROTH IRA / SEP IRA / SIMPLE IRA / ROLLOVER IRA: institution, accountType, lastFour, currentBalance, ytdContributions, contributionLimit, statementDate
-
-PENSION: institution, employer, planName, monthlyBenefit, vestedBenefit, retirementAge, yearsOfService, statementDate
-
-HSA INVESTMENT ACCOUNT: institution, currentBalance, investedBalance, cashBalance, ytdContributions, contributionLimit, statementDate
-
-MONTHLY BILL / UTILITY BILL: provider, category, amountDue, dueDate, billingFrequency, billingPeriod, recurringFrequency, autopay, lastFour
-
-If the document contains multiple unrelated financial documents, set docType to "Multiple Documents" and fields to {}.`;
-
-// ─── Build messages for GPT ───────────────────────────────────────────────────
-
-async function extractFromImage(buffer: Buffer, mimeType: string) {
+async function extractFromImage(buffer: Buffer, mimeType: string, retry = false): Promise<ExtractionAttempt> {
   const b64 = buffer.toString("base64");
-  const imgMime = mimeType === "image/heic" ? "image/jpeg" : mimeType;
   const response = await openai.chat.completions.create({
     model: "gpt-5.6-terra",
-    max_completion_tokens: 2048,
+    max_completion_tokens: retry ? 3072 : 2048,
+    response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       {
         role: "user",
         content: [
-          { type: "text", text: "Extract all financial data from this document." },
-          { type: "image_url", image_url: { url: `data:${imgMime};base64,${b64}`, detail: "high" } },
+          {
+            type: "text",
+            text: retry
+              ? "The previous extraction was malformed. Re-analyze this document and return exactly one complete valid JSON object using the required schema."
+              : "Extract all visible financial data from this document and return exactly one complete JSON object.",
+          },
+          { type: "image_url", image_url: { url: `data:${mimeType};base64,${b64}`, detail: "high" } },
         ],
       },
     ],
   });
-  return response.choices[0]?.message?.content ?? "{}";
+  return {
+    raw: response.choices[0]?.message?.content ?? "",
+    finishReason: response.choices[0]?.finish_reason ?? null,
+    promptTokens: response.usage?.prompt_tokens,
+    completionTokens: response.usage?.completion_tokens,
+  };
 }
 
-async function extractFromText(text: string, pageHint?: string) {
+async function extractFromText(text: string, pageHint?: string, retry = false): Promise<ExtractionAttempt> {
   const response = await openai.chat.completions.create({
     model: "gpt-5.6-terra",
-    max_completion_tokens: 2048,
+    max_completion_tokens: retry ? 3072 : 2048,
+    response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: `Extract all financial data from this document text${pageHint ? ` (${pageHint})` : ""}:\n\n${text.slice(0, 8000)}` },
+      {
+        role: "user",
+        content: `${retry ? "The previous extraction was malformed. " : ""}Extract all visible financial data from this document text${pageHint ? ` (${pageHint})` : ""} and return exactly one complete JSON object:\n\n${text.slice(0, 12000)}`,
+      },
     ],
   });
-  return response.choices[0]?.message?.content ?? "{}";
+  return {
+    raw: response.choices[0]?.message?.content ?? "",
+    finishReason: response.choices[0]?.finish_reason ?? null,
+    promptTokens: response.usage?.prompt_tokens,
+    completionTokens: response.usage?.completion_tokens,
+  };
 }
 
-function safeParseJson(raw: string): Record<string, unknown> {
-  try {
-    // Strip markdown code fences if present
-    const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-    return JSON.parse(cleaned);
-  } catch {
-    return { docType: "Unknown", classificationConfidence: 0, fields: {}, parseError: true };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractJsonCandidates(raw: string): string[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+
+  const candidates = new Set<string>();
+  candidates.add(trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
+
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  if (first >= 0 && last > first) candidates.add(trimmed.slice(first, last + 1));
+
+  const balanced: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < trimmed.length; i += 1) {
+    const ch = trimmed[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0 && start >= 0) balanced.push(trimmed.slice(start, i + 1));
+    }
   }
+  balanced.sort((a, b) => b.length - a.length).forEach(candidate => candidates.add(candidate));
+  return [...candidates];
 }
 
-// ─── POST /api/scan ───────────────────────────────────────────────────────────
+function parseExtraction(raw: string): Record<string, unknown> | null {
+  for (const candidate of extractJsonCandidates(raw)) {
+    const variants = [
+      candidate,
+      candidate.replace(/,\s*([}\]])/g, "$1"),
+    ];
+    for (const variant of variants) {
+      try {
+        const parsed: unknown = JSON.parse(variant);
+        if (isRecord(parsed)) return parsed;
+      } catch {
+        // Try the next repair candidate.
+      }
+    }
+  }
+  return null;
+}
 
-// Route registered at POST /api/scan-document (via app.use("/api", router))
+function validateExtraction(result: Record<string, unknown>): Record<string, unknown> | null {
+  if (typeof result.docType !== "string" || !result.docType.trim()) return null;
+  if (!isRecord(result.fields)) result.fields = {};
+  if (typeof result.classificationConfidence !== "number") result.classificationConfidence = 0;
+  return result;
+}
+
+async function runExtraction(
+  buffer: Buffer,
+  mime: string,
+  originalname: string,
+  pdfText?: string,
+): Promise<Record<string, unknown>> {
+  for (let attemptNumber = 1; attemptNumber <= 2; attemptNumber += 1) {
+    const retry = attemptNumber === 2;
+    const attempt = pdfText !== undefined
+      ? await extractFromText(pdfText, "PDF", retry)
+      : await extractFromImage(buffer, mime, retry);
+
+    const parsed = parseExtraction(attempt.raw);
+    const validated = parsed ? validateExtraction(parsed) : null;
+
+    logger.info({
+      file: originalname,
+      attempt: attemptNumber,
+      responseLength: attempt.raw.length,
+      finishReason: attempt.finishReason,
+      promptTokens: attempt.promptTokens,
+      completionTokens: attempt.completionTokens,
+      parsed: Boolean(validated),
+    }, "document extraction attempt");
+
+    if (validated) return validated;
+
+    logger.warn({
+      file: originalname,
+      attempt: attemptNumber,
+      finishReason: attempt.finishReason,
+      responsePreview: attempt.raw.slice(0, 1000),
+    }, "unrecognized document extraction response");
+  }
+
+  throw new Error("The document processor returned an unrecognized response format after two attempts.");
+}
+
 router.post("/scan-document", upload.single("file"), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ stage: "backend_receipt", error: "No file received. Please try again." });
@@ -174,8 +228,11 @@ router.post("/scan-document", upload.single("file"), async (req, res) => {
   }
 
   const { buffer, originalname } = req.file;
+  if (!buffer.length) {
+    res.status(422).json({ stage: "file_validation", error: "The uploaded file is empty." });
+    return;
+  }
 
-  // Detect MIME from magic bytes — ignore whatever the browser reported
   let mime: string;
   try {
     mime = detectMime(buffer);
@@ -185,8 +242,6 @@ router.post("/scan-document", upload.single("file"), async (req, res) => {
     return;
   }
 
-  // Normalize .jpg/.jpeg → image/jpeg when magic-byte detection falls back to
-  // octet-stream (can happen with some iOS-generated JPEGs that omit the SOI marker)
   if (mime === "application/octet-stream") {
     const ext = originalname.split(".").pop()?.toLowerCase() ?? "";
     if (ext === "jpg" || ext === "jpeg") mime = "image/jpeg";
@@ -195,57 +250,60 @@ router.post("/scan-document", upload.single("file"), async (req, res) => {
     else if (ext === "pdf") mime = "application/pdf";
   }
 
-  const supported = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/heic", "application/pdf"];
+  const supported = ["image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"];
   if (!supported.includes(mime)) {
     res.status(422).json({
       stage: "mime_validation",
-      error: `Unsupported file type (${mime}). Please upload JPG, PNG, HEIC, or PDF.`,
+      error: mime === "image/heic"
+        ? "HEIC images are not currently decoded safely. Convert the image to JPG or PNG and retry."
+        : `Unsupported file type (${mime}). Please upload JPG, PNG, WEBP, GIF, or PDF.`,
     });
     return;
   }
 
   try {
-    let rawJson: string;
+    let result: Record<string, unknown>;
 
     if (mime === "application/pdf") {
       let pdfText = "";
       try {
         const parsed = await pdfParse(buffer);
         pdfText = parsed.text;
-      } catch {
-        pdfText = "";
+      } catch (err) {
+        logger.warn({ err, file: originalname }, "PDF text extraction failed");
       }
 
-      if (pdfText.trim().length > 100) {
-        rawJson = await extractFromText(pdfText, "PDF");
-      } else {
+      if (pdfText.trim().length <= 100) {
         res.status(422).json({
           stage: "image_decode",
-          error: "This PDF appears to be image-only with no embedded text. Screenshot individual pages and upload as images.",
+          error: "This PDF appears to be image-only with no embedded text. Screenshot individual pages and upload them as images.",
         });
         return;
       }
+      result = await runExtraction(buffer, mime, originalname, pdfText);
     } else {
-      rawJson = await extractFromImage(buffer, mime);
+      result = await runExtraction(buffer, mime, originalname);
     }
 
-    const result = safeParseJson(rawJson);
-
-    // Normalize institution name server-side against the registry.
-    // Works for any institution — unknown ones pass through with isKnownInstitution=false.
     const rawInstitutionName =
-      (result.institution as any)?.rawName ??
-      (result.fields as any)?.institution?.value ??
-      null;
-    const institution = normalizeInstitution(rawInstitutionName as string | null);
+      (isRecord(result.institution) && typeof result.institution.rawName === "string"
+        ? result.institution.rawName
+        : null) ??
+      (isRecord(result.fields) && isRecord(result.fields.institution) && typeof result.fields.institution.value === "string"
+        ? result.fields.institution.value
+        : null);
+    const institution = normalizeInstitution(rawInstitutionName);
 
     logger.info({ docType: result.docType, file: originalname, institution: institution.normalizedName }, "scan complete");
     res.json({ ...result, institution, fileName: originalname, mimeType: mime });
   } catch (err) {
-    logger.error({ err }, "scan failed");
+    const message = err instanceof Error ? err.message : "Document analysis failed.";
+    logger.error({ err, file: originalname }, "scan failed");
     res.status(500).json({
-      stage: "ai_request",
-      error: "Document analysis failed. Please try again.",
+      stage: message.includes("unrecognized response") ? "response_validation" : "ai_request",
+      error: message.includes("unrecognized response")
+        ? message
+        : "Document analysis failed. Please try again.",
     });
   }
 });
