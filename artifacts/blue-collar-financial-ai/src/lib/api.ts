@@ -73,8 +73,6 @@ function validateScanResult(value: unknown, fallbackFileName: string): ScanResul
     ? value.fields as Record<string, ScanFieldValue>
     : {};
 
-  // A parse failure from the backend must be surfaced as a failed document,
-  // not accepted as a blank successful review card.
   if (value.parseError === true) {
     throw new Error(JSON.stringify({
       stage: "response_validation",
@@ -126,15 +124,9 @@ export async function scanFile(file: File): Promise<ScanResult> {
     }));
   }
 
-  // Scanner.tsx marks the document as processing immediately before this call.
-  // Yielding one frame prevents React's state updates from remaining batched while
-  // the first network request is pending, which previously left every card shown
-  // as "Queued" even though the processing loop had started.
   await waitForPaint();
 
   const form = new FormData();
-  // Always pass the filename explicitly so multer receives originalname correctly
-  // even when the browser omits it (common on iOS Safari).
   form.append("file", file, file.name || "document");
 
   const controller = new AbortController();
@@ -143,7 +135,6 @@ export async function scanFile(file: File): Promise<ScanResult> {
 
   let res: Response;
   try {
-    // Do NOT set Content-Type manually — let fetch generate the multipart boundary.
     res = await fetch(`${API_BASE}/scan-document`, {
       method: "POST",
       body: form,
@@ -202,42 +193,79 @@ export async function askAI(
   financialProfile: Record<string, unknown>,
   onDelta: (text: string) => void
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/ai/ask`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, financialProfile }),
-  });
+  const controller = new AbortController();
+  const timeoutMs = 90_000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!res.ok) {
-    const json = await res.json().catch(() => ({}));
-    throw new Error((json as any).error ?? "AI request failed");
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/ai/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, financialProfile }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const timedOut = err instanceof DOMException && err.name === "AbortError";
+    throw new Error(timedOut
+      ? `AI request timed out after ${timeoutMs / 1000} seconds.`
+      : err instanceof Error
+        ? err.message
+        : "AI request failed");
   }
 
-  const reader = res.body?.getReader();
-  if (!reader) throw new Error("No response stream");
+  try {
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw new Error(isRecord(json) && typeof json.error === "string"
+        ? json.error
+        : "AI request failed");
+    }
 
-  const decoder = new TextDecoder();
-  let buffer = "";
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("No response stream");
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    const decoder = new TextDecoder();
+    let buffer = "";
 
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
+    const handleLine = (line: string): boolean => {
+      if (!line.startsWith("data: ")) return false;
       const payload = line.slice(6).trim();
-      if (payload === "[DONE]") return;
+      if (payload === "[DONE]") return true;
+
+      let parsed: unknown;
       try {
-        const parsed = JSON.parse(payload);
-        if (parsed.delta) onDelta(parsed.delta);
-        if (parsed.error) throw new Error(parsed.error);
+        parsed = JSON.parse(payload);
       } catch {
-        // ignore parse errors on individual SSE lines
+        return false;
+      }
+
+      if (!isRecord(parsed)) return false;
+      if (typeof parsed.error === "string" && parsed.error) {
+        throw new Error(parsed.error);
+      }
+      if (typeof parsed.delta === "string" && parsed.delta) {
+        onDelta(parsed.delta);
+      }
+      return false;
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (handleLine(line)) return;
       }
     }
+
+    buffer += decoder.decode();
+    if (buffer.trim()) handleLine(buffer.trim());
+  } finally {
+    clearTimeout(timeout);
   }
 }
