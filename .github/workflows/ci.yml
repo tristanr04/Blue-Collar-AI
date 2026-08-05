@@ -20,13 +20,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: blue_collar_ai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U ci -d blue_collar_ai_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
     env:
       CI: "true"
       NODE_ENV: test
-      # Several source-level regression tests import the database package but
-      # never open a connection. Supply a valid inert URL so module loading is
-      # deterministic in CI without exposing a real database credential.
       DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/blue_collar_ai_test
+      AI_INTEGRATIONS_OPENAI_API_KEY: test-key-not-used-for-network-calls
+      AI_INTEGRATIONS_OPENAI_BASE_URL: https://example.invalid/v1
+      OPENAI_API_KEY: test-key-not-used-for-network-calls
 
     steps:
       - name: Check out repository
@@ -46,6 +61,9 @@ jobs:
 
       - name: Install dependencies from lockfile
         run: pnpm install --frozen-lockfile
+
+      - name: Prepare test database schema
+        run: pnpm --filter @workspace/db push-force
 
       - name: Typecheck
         run: pnpm run typecheck
