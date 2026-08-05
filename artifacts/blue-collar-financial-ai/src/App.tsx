@@ -28,6 +28,7 @@ import Banking from '@/pages/Banking';
 import Investments from '@/pages/Investments';
 import Scenario from '@/pages/Scenario';
 import AgeProgress from '@/pages/AgeProgress';
+import GrowthHub from '@/pages/GrowthHub';
 import TaxEstimator from '@/pages/TaxEstimator';
 import Settings from '@/pages/Settings';
 import AskAI from '@/pages/AskAI';
@@ -159,6 +160,7 @@ function Router() {
         <Route path="/investments" component={protectedPage(Investments)} />
         <Route path="/scenario" component={protectedPage(Scenario)} />
         <Route path="/age-progress" component={protectedPage(AgeProgress)} />
+        <Route path="/growth" component={protectedPage(GrowthHub)} />
         <Route path="/tax-estimator" component={protectedPage(TaxEstimator)} />
         <Route path="/settings" component={protectedPage(Settings)} />
         <Route path="/ask-ai" component={protectedPage(AskAI)} />
