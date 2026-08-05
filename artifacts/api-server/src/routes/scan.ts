@@ -503,6 +503,137 @@ interface FailureDiagnosis {
   rawTail: string;
 }
 
+// ─── Result codes & content classification ───────────────────────────────────
+
+/**
+ * Machine-readable outcome code included in every non-200 scan response.
+ * Stable values — do not rename; the frontend maps these for Retry visibility.
+ */
+export type ScanResultCode =
+  | "SUCCESS"
+  | "MULTIPLE_DOCUMENTS_DETECTED"
+  | "UNSUPPORTED_DOCUMENT"
+  | "UNREADABLE_DOCUMENT"
+  | "INCOMPLETE_DOCUMENT"
+  | "LOW_CONFIDENCE"
+  | "INVALID_STRUCTURED_RESPONSE"
+  | "PROVIDER_TIMEOUT"
+  | "PROVIDER_RATE_LIMITED"
+  | "PROCESSING_ERROR";
+
+interface ContentClassification {
+  code: ScanResultCode;
+  /** Safe user-facing message — never exposes internal details. */
+  message: string;
+  /** HTTP status code for the rejection response. */
+  status: number;
+  /** Whether the client should offer a Retry button for this failure. */
+  retryable: boolean;
+}
+
+/**
+ * Map a FailureCause (AI parse / schema failure) to the appropriate result
+ * code, user-facing message, and retryable flag.
+ */
+function mapFailureCauseToResult(cause: FailureCause): ContentClassification {
+  switch (cause) {
+    case "empty_response":
+      return {
+        code: "UNREADABLE_DOCUMENT",
+        message: "This document is too blurry, small, cropped, or unclear to read.",
+        status: 422,
+        retryable: true,
+      };
+    case "model_refusal":
+      return {
+        code: "UNSUPPORTED_DOCUMENT",
+        message: "We couldn't identify this as a supported financial document.",
+        status: 422,
+        retryable: false,
+      };
+    case "truncated_output":
+      return {
+        code: "INVALID_STRUCTURED_RESPONSE",
+        message: "Processing took too long. Please retry.",
+        status: 422,
+        retryable: true,
+      };
+    default:
+      // markdown_wrapping, multiple_json_objects, extra_explanatory_text,
+      // invalid_json_syntax, zod_schema_mismatch, unknown
+      return {
+        code: "INVALID_STRUCTURED_RESPONSE",
+        message: "We couldn't process this document correctly. Please retry.",
+        status: 422,
+        retryable: true,
+      };
+  }
+}
+
+/**
+ * Inspect the *semantic content* of a successfully-parsed extraction to detect
+ * cases that must be rejected rather than accepted:
+ *   - Multiple documents in one image → cannot combine; upload separately.
+ *   - Unknown type with low confidence → unsupported document.
+ *   - Any type with very low confidence → likely misclassified.
+ *
+ * Called BEFORE fast-path normalizers so these cases are caught before any
+ * values are extracted and returned to the client.
+ *
+ * Returns a ContentClassification to reject with, or null to continue normally.
+ */
+export function classifyContentResult(
+  raw: Record<string, unknown>,
+): ContentClassification | null {
+  const docType =
+    typeof raw.docType === "string"
+      ? raw.docType.trim().toLowerCase().replace(/\s+/g, " ")
+      : "";
+
+  const confidence =
+    typeof raw.classificationConfidence === "number"
+      ? raw.classificationConfidence
+      : null;
+
+  // Multiple documents in one image — never combine; must upload separately.
+  if (
+    docType === "multiple documents" ||
+    docType === "multiple" ||
+    docType.startsWith("multiple document")
+  ) {
+    return {
+      code: "MULTIPLE_DOCUMENTS_DETECTED",
+      message:
+        "This image appears to contain multiple documents. Upload each one separately.",
+      status: 422,
+      retryable: false,
+    };
+  }
+
+  // Unknown type with low confidence → not a recognised financial document.
+  if (docType === "unknown" && (confidence === null || confidence < 40)) {
+    return {
+      code: "UNSUPPORTED_DOCUMENT",
+      message: "We couldn't identify this as a supported financial document.",
+      status: 422,
+      retryable: false,
+    };
+  }
+
+  // Any type classified with very low confidence → likely misclassified.
+  if (confidence !== null && confidence <= 20) {
+    return {
+      code: "LOW_CONFIDENCE",
+      message:
+        "We couldn't extract this document confidently. Try a clearer image or review it manually.",
+      status: 422,
+      retryable: true,
+    };
+  }
+
+  return null;
+}
+
 /**
  * Categorise why a model response could not be turned into a valid extraction.
  *
@@ -655,9 +786,14 @@ export function buildDiagnosticFailureBody(opts: {
       ? `Retry produced the same failure cause: ${a2.diagnosis.cause}`
       : null;
 
+  const finalCause = (a2 ?? a1).diagnosis.cause;
+  const resultMapping = mapFailureCauseToResult(finalCause);
+
   return {
     stage: "ai_json_parse",
-    error: "The document processor returned an unrecognized response format. Please try again.",
+    resultCode: resultMapping.code,
+    error: resultMapping.message,
+    retryable: resultMapping.retryable,
     // ── Diagnostic payload (for developers / support) ─────────────────────
     // rawHead / rawTail are NOT included here — server logs have the full text.
     diagnosis: {
@@ -1099,7 +1235,9 @@ router.post(
       abort.clearTimeout();
       res.status(400).json({
         stage: "backend_receipt",
+        resultCode: "PROCESSING_ERROR",
         error: "No file received. Please choose one document and try again.",
+        retryable: true,
       });
       return;
     }
@@ -1123,9 +1261,11 @@ router.post(
         abort.clearTimeout();
         res.status(409).json({
           stage: "duplicate_document",
+          resultCode: "PROCESSING_ERROR",
           error:
             "This document has already been imported. Each file can only be added once per account. " +
             `(First imported: ${existingDoc.createdAt.toLocaleDateString()})`,
+          retryable: false,
         });
         return;
       }
@@ -1295,6 +1435,29 @@ router.post(
           );
           return;
         }
+      }
+
+      // ── Content-based rejection (before any normalization) ─────────────────
+      // Detect multiple documents, unsupported types, and very-low confidence
+      // before any fast-path normalizer or Zod validation touches the data.
+      const contentCheck = classifyContentResult(rawExtraction);
+      if (contentCheck !== null) {
+        logger.warn(
+          {
+            file: originalname,
+            code: contentCheck.code,
+            docType: rawExtraction.docType ?? null,
+            confidence: rawExtraction.classificationConfidence ?? null,
+          },
+          "[BCFAI] document rejected — content classification",
+        );
+        res.status(contentCheck.status).json({
+          stage: contentCheck.code.toLowerCase(),
+          resultCode: contentCheck.code,
+          error: contentCheck.message,
+          retryable: contentCheck.retryable,
+        });
+        return;
       }
 
       // ── Vehicle-loan fast path ──────────────────────────────────────────────
@@ -1572,7 +1735,9 @@ router.post(
         if (!res.headersSent) {
           res.status(504).json({
             stage: "scan_timeout",
+            resultCode: "PROVIDER_TIMEOUT" as ScanResultCode,
             error: "Document analysis timed out. Please try a smaller or clearer document.",
+            retryable: true,
           });
         }
         return;
@@ -1583,7 +1748,19 @@ router.post(
           { file: originalname, stage: error.stage, message: error.message },
           "[BCFAI] document failed — upload validation",
         );
-        res.status(error.status).json({ stage: error.stage, error: error.message });
+        // Most upload-validation failures are not retryable (wrong type, encrypted,
+        // too large, too many pages, image-only PDF). Decode/normalization errors
+        // are transient and may resolve on retry.
+        const uploadRetryable = (
+          error.stage === "image_decode" ||
+          error.stage === "image_normalization"
+        );
+        res.status(error.status).json({
+          stage: error.stage,
+          resultCode: "PROCESSING_ERROR" as ScanResultCode,
+          error: error.message,
+          retryable: uploadRetryable,
+        });
         return;
       }
 
@@ -1595,9 +1772,11 @@ router.post(
         );
         res.status(tooLarge ? 413 : 400).json({
           stage: tooLarge ? "file_size_limit" : "multipart_validation",
+          resultCode: "PROCESSING_ERROR" as ScanResultCode,
           error: tooLarge
             ? "File is too large. Maximum upload size is 10 MB."
             : "The upload request is malformed. Please choose one file and try again.",
+          retryable: !tooLarge,
         });
         return;
       }
@@ -1606,7 +1785,9 @@ router.post(
       if (!res.headersSent) {
         res.status(500).json({
           stage: "ai_request",
+          resultCode: "PROCESSING_ERROR" as ScanResultCode,
           error: "Document analysis failed. Please try again.",
+          retryable: true,
         });
       }
     } finally {

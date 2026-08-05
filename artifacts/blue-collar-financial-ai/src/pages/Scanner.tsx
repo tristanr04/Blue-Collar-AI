@@ -373,6 +373,8 @@ interface BatchDocument {
   result?: ScanResult;
   error?: string;
   errorStage?: string;
+  /** When false, the Retry button is hidden (non-transient failure). Undefined = retryable. */
+  errorRetryable?: boolean;
   retryAttempt?: number;
   retryWaitMs?: number;
   accepted: boolean;
@@ -403,12 +405,17 @@ function getFieldValue(raw: unknown): { value: string | null; confidence: number
   return { value: null, confidence: 0 };
 }
 
-/** Parse a structured JSON API error into stage + message. */
-function parseApiError(err: unknown): { stage: string; message: string } {
+/** Parse a structured JSON API error into stage, message, and retryable flag. */
+function parseApiError(err: unknown): { stage: string; message: string; retryable?: boolean } {
   if (err instanceof Error) {
     try {
       const parsed = JSON.parse(err.message);
-      return { stage: parsed.stage ?? 'unknown', message: parsed.message ?? err.message };
+      return {
+        stage: parsed.stage ?? 'unknown',
+        message: parsed.message ?? err.message,
+        // undefined means the server didn't send a flag → default to retryable
+        retryable: typeof parsed.retryable === 'boolean' ? parsed.retryable : undefined,
+      };
     } catch {
       return { stage: 'unknown', message: err.message };
     }
@@ -860,7 +867,7 @@ export default function Scanner() {
       }
 
       // Non-429 or all retries exhausted — terminal failure.
-      const { stage, message } = parseApiError(err);
+      const { stage, message, retryable } = parseApiError(err);
       console.error(
         `[BCFAI] document failed — "${doc.file.name}": stage=${stage} — ${message}`,
       );
@@ -871,6 +878,8 @@ export default function Scanner() {
               status: 'error',
               error: message,
               errorStage: stage,
+              // undefined = server didn't send flag → show Retry (safe default)
+              errorRetryable: retryable,
               docType: 'Unknown',
               fields: {},
               accepted: false,
@@ -954,6 +963,7 @@ export default function Scanner() {
             accepted: false,
             errorStage: 'duplicate_document',
             error: 'This document appears to be a duplicate of one you have already imported.',
+            errorRetryable: false,
           }
         : doc,
     );
@@ -1724,12 +1734,16 @@ export default function Scanner() {
                   {/* Retry / Remove for failed docs */}
                   {doc.status === 'error' && (
                     <div className="flex-shrink-0 flex flex-col gap-1">
-                      <button
-                        onClick={() => retryDoc(doc.id)}
-                        className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-900/50 transition-colors"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" /> Retry
-                      </button>
+                      {/* Only show Retry when the failure is transient/retryable.
+                          undefined = server didn't send flag → show Retry (safe default). */}
+                      {doc.errorRetryable !== false && (
+                        <button
+                          onClick={() => retryDoc(doc.id)}
+                          className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-900/50 transition-colors"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" /> Retry
+                        </button>
+                      )}
                       <button
                         onClick={() => removeDoc(doc.id)}
                         className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl font-medium bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"

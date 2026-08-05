@@ -133,6 +133,7 @@ export async function scanFile(
           ? err.message
           : "Network error — check your connection",
         filename: file.name,
+        retryable: true,
       }),
     );
   }
@@ -175,6 +176,9 @@ export async function scanFile(
           `Upload failed with HTTP ${res.status}`,
         filename: file.name,
         httpStatus: res.status,
+        // Pass retryable flag from server response so the frontend can decide
+        // whether to show a Retry button. Undefined = unknown (treat as retryable).
+        retryable: (json as any).retryable,
         ...(retryAfterHeader !== null ? { retryAfterHeader } : {}),
         ...(retryAfterBodyMs !== undefined ? { retryAfterBodyMs } : {}),
       }),

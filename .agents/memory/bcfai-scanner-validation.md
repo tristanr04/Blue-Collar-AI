@@ -23,6 +23,17 @@ description: Security fix and test additions from batch scanner end-to-end valid
 
 Financial data in the Pinia/React store is saved to localStorage without a userId namespace. If User A and User B share a browser, User B will see User A's scanned financial data. Server-side data (fingerprints, scanned document records) IS user-scoped. Client-side store is not. This is an architectural limitation, not a code bug.
 
+## Result codes and content classification (added in second pass)
+
+`ScanResultCode` type exported from `scan.ts` with 10 codes. `classifyContentResult()` exported for testing — runs BEFORE fast-path normalizers, catches:
+- `Multiple Documents` docType → MULTIPLE_DOCUMENTS_DETECTED (retryable: false)
+- `Unknown` docType + confidence < 40 → UNSUPPORTED_DOCUMENT (retryable: false)
+- any docType + confidence ≤ 20 → LOW_CONFIDENCE (retryable: true)
+
+`mapFailureCauseToResult()` maps FailureCause to specific messages (no more generic "unrecognized response format").
+
+`retryable: boolean` added to EVERY error response (422, 409, 413, 400, 500, 504, UploadValidationError). Frontend reads it via `parseApiError()` and stores it as `errorRetryable?: boolean` on `BatchDocument`. Retry button only shown when `errorRetryable !== false`.
+
 ## Test files added/updated
 
 - `artifacts/api-server/src/__tests__/scan-route-validation.test.ts` — NEW (14 tests)
