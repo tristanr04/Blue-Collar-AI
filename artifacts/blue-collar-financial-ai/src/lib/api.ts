@@ -453,3 +453,78 @@ export async function deleteRecord(
     method: "DELETE",
   });
 }
+
+// ─── Tax Scenarios ─────────────────────────────────────────────────────────────
+
+export interface TaxScenario {
+  id: string;
+  name: string;
+  taxYear: number;
+  inputs: Record<string, unknown>;
+  result: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+async function taxFetch(
+  path: string,
+  token: string,
+  options: RequestInit = {},
+): Promise<Response> {
+  const res = await fetch(`/api${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(options.method && options.method !== "GET"
+        ? { "Content-Type": "application/json" }
+        : {}),
+      ...(options.headers ?? {}),
+    },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(
+      (body as { error?: string }).error ?? `Tax scenario request failed (${res.status})`,
+    );
+  }
+  return res;
+}
+
+/** List all saved tax scenarios for the authenticated user. */
+export async function listTaxScenarios(token: string): Promise<TaxScenario[]> {
+  const res = await taxFetch("/tax-scenarios", token);
+  const body = (await res.json()) as { scenarios: TaxScenario[] };
+  return body.scenarios;
+}
+
+/** Save a new tax scenario. */
+export async function createTaxScenario(
+  token: string,
+  data: { name: string; taxYear: number; inputs: Record<string, unknown>; result: Record<string, unknown> },
+): Promise<TaxScenario> {
+  const res = await taxFetch("/tax-scenarios", token, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+  const body = (await res.json()) as { scenario: TaxScenario };
+  return body.scenario;
+}
+
+/** Update an existing tax scenario (name / inputs / result). */
+export async function updateTaxScenario(
+  token: string,
+  id: string,
+  data: Partial<{ name: string; inputs: Record<string, unknown>; result: Record<string, unknown> }>,
+): Promise<TaxScenario> {
+  const res = await taxFetch(`/tax-scenarios/${id}`, token, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+  const body = (await res.json()) as { scenario: TaxScenario };
+  return body.scenario;
+}
+
+/** Soft-delete a saved tax scenario. */
+export async function deleteTaxScenario(token: string, id: string): Promise<void> {
+  await taxFetch(`/tax-scenarios/${id}`, token, { method: "DELETE" });
+}

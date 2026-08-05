@@ -1,0 +1,91 @@
+Build a production-ready Tax Estimator for Blue Collar AI.
+
+The estimator must use existing scanned paystub data and also allow full manual entry.
+
+Core calculations:
+- Estimated annual gross income
+- Regular wages
+- Overtime wages
+- Double-time wages
+- Bonuses
+- Standby/on-call pay
+- Taxable per diem versus non-taxable per diem
+- Federal taxable income
+- Federal income tax estimate
+- Social Security tax
+- Medicare tax
+- Additional Medicare tax when applicable
+- Oklahoma state income tax
+- Estimated total annual tax liability
+- Taxes already withheld
+- Expected refund or amount owed
+- Effective tax rate
+- Marginal tax bracket
+- Remaining estimated tax per paycheck
+
+Support:
+- Weekly, biweekly, semimonthly, and monthly pay schedules
+- Variable work hours
+- Storm weeks and irregular overtime
+- W-2 and 1099 income
+- Filing status
+- Dependents
+- Standard deduction
+- Pre-tax 401(k)
+- Roth 401(k)
+- Traditional IRA
+- HSA contributions
+- Health insurance deductions
+- Other pre-tax payroll deductions
+- Multiple jobs
+- Spouse income
+- Federal and Oklahoma withholding
+- Year-to-date earnings and withholding
+
+Build two calculation modes:
+
+1. Quick Estimate
+Uses the latest paystub and annualizes current earnings.
+
+2. Detailed Estimate
+Uses year-to-date figures, projected remaining work, contributions, deductions, filing status, dependents, and additional income.
+
+Create scenario comparison:
+- Current contribution rate
+- Increased 401(k) contribution
+- Maximum 401(k)
+- With and without overtime
+- W-2 only versus W-2 plus 1099 income
+
+Display:
+- Estimated refund or amount owed prominently
+- Calculation breakdown
+- Monthly and annual figures
+- Confidence level based on data completeness
+- Missing-information warnings
+- Tax-saving opportunities
+- Disclaimer that estimates are informational and not professional tax advice
+
+Accuracy requirements:
+- Store tax-year-specific federal and Oklahoma tax rules separately
+- Never hard-code tax rules directly inside UI components
+- Create a versioned tax rules/calculation module
+- Make future tax-year updates easy
+- Use exact progressive tax-bracket calculations
+- Prevent double-counting paystub records
+- Distinguish taxable wages from gross cash received
+- Do not treat qualifying non-taxable per diem as taxable income
+- Do not assume deductions that the user did not enter
+
+Integration:
+- Read existing paystub data from PostgreSQL
+- Allow users to select which paystubs and income sources are included
+- Save tax scenarios to the user account
+- Add a Tax Estimator navigation item
+- Add a tax summary card to the enhanced dashboard after its task is merged
+- Follow existing Clerk authentication, Drizzle ORM, audit logging, rate limiting, and design system patterns
+
+Testing:
+- Add unit tests for tax brackets, payroll taxes, deductions, irregular overtime, multiple jobs, and refund/amount-owed calculations
+- Add edge-case tests for incomplete paystubs, duplicate paystubs, negative values, unusually high overtime, and mixed W-2/1099 income
+- Run typecheck and build before completion

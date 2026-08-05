@@ -7,6 +7,7 @@ import scanRouter from "./scan.js";
 import aiAskRouter from "./ai-ask.js";
 import backgroundJobsRouter from "./background-jobs.js";
 import profileContextRouter from "./profile-context.js";
+import taxScenariosRouter from "./tax-scenarios.js";
 
 const router: IRouter = Router();
 
@@ -18,5 +19,6 @@ router.use(scanRouter);
 router.use(aiAskRouter);
 router.use(backgroundJobsRouter);
 router.use(profileContextRouter);
+router.use(taxScenariosRouter);
 
 export default router;

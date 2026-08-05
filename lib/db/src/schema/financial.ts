@@ -338,6 +338,31 @@ export const aiUsageRecordsTable = pgTable(
   (table) => [index("ai_usage_user_created_idx").on(table.userId, table.createdAt)],
 );
 
+/**
+ * User-saved tax estimate scenarios.
+ *
+ * Inputs and results are stored as JSONB snapshots so future changes to the
+ * tax engine do not require schema migrations.
+ */
+export const taxScenariosTable = pgTable(
+  "tax_scenarios",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    taxYear: integer("tax_year").notNull().default(2026),
+    inputs: jsonb("inputs").notNull().$type<Record<string, unknown>>(),
+    result: jsonb("result").notNull().$type<Record<string, unknown>>(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    index("tax_scenarios_user_idx").on(table.userId, table.deletedAt),
+  ],
+);
+
 export const usersRelations = relations(usersTable, ({ one, many }) => ({
   profile: one(profilesTable),
   paystubs: many(paystubsTable),
@@ -391,3 +416,4 @@ export type DebtRecord = typeof debtsTable.$inferSelect;
 export type BillRecord = typeof billsTable.$inferSelect;
 export type AssetRecord = typeof assetsTable.$inferSelect;
 export type ScannedDocumentRecord = typeof scannedDocumentsTable.$inferSelect;
+export type TaxScenarioRecord = typeof taxScenariosTable.$inferSelect;
