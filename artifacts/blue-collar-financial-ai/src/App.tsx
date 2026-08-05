@@ -12,7 +12,7 @@ import { Shell } from '@/components/layout/Shell';
 import Welcome from '@/pages/Welcome';
 import Onboarding from '@/pages/Onboarding';
 import Scanner from '@/pages/Scanner';
-import Dashboard from '@/pages/Dashboard';
+import Dashboard from '@/pages/RetentionDashboard';
 import Documents from '@/pages/Documents';
 import DocumentsReview from '@/pages/DocumentsReview';
 import Paystubs from '@/pages/Paystubs';
