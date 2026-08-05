@@ -23,6 +23,10 @@ jobs:
     env:
       CI: "true"
       NODE_ENV: test
+      # Several source-level regression tests import the database package but
+      # never open a connection. Supply a valid inert URL so module loading is
+      # deterministic in CI without exposing a real database credential.
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/blue_collar_ai_test
 
     steps:
       - name: Check out repository
