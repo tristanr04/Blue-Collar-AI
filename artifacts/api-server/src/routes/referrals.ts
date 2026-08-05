@@ -73,21 +73,12 @@ router.post("/referrals/visit", async (req, res) => {
 
 router.use("/referrals", requireAuthenticatedUser);
 
-// Creates or returns the signed-in user's stable personal code.
+// Creates or returns the signed-in user's stable personal code. Read-only
+// retrieval is intentionally not written to the mutation audit log.
 router.post("/referrals/code", async (req: AuthenticatedRequest, res) => {
   try {
     const uid = userId(req);
     const code = await getOrCreateReferralCode(uid);
-
-    appendAuditEvent({
-      userId: uid,
-      action: "read",
-      entityType: "referral_code",
-      entityId: code.id,
-      requestId: requestId(req),
-      source: "api",
-    }).catch(() => {});
-
     return res.json({ code: code.code, isActive: code.isActive });
   } catch (error) {
     return handleError(res, error);
