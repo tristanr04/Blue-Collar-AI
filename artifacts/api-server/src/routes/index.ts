@@ -4,6 +4,7 @@ import scanRouter from "./scan.js";
 import aiAskRouter from "./ai-ask.js";
 import spendingInsightsRouter from "./spending-insights.js";
 import transactionImportRouter from "./transaction-import.js";
+import transactionStatementImportRouter from "./transaction-statement-import.js";
 
 const router: IRouter = Router();
 
@@ -12,5 +13,6 @@ router.use(scanRouter);
 router.use(aiAskRouter);
 router.use(spendingInsightsRouter);
 router.use(transactionImportRouter);
+router.use(transactionStatementImportRouter);
 
 export default router;
