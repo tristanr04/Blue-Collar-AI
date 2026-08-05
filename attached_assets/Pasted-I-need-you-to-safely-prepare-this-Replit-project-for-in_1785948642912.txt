@@ -1,0 +1,119 @@
+I need you to safely prepare this Replit project for integration with the GitHub feature branches in:
+
+tristanr04/Blue-Collar-AI
+
+Your only task in this step is to create a complete backup and inspect the repository state.
+
+Do not merge any feature branches yet.
+Do not modify working application code unless required to create the backup commit.
+Do not deploy or publish anything.
+
+Safety rules:
+- Do not use git reset --hard.
+- Do not use git clean -fd.
+- Do not use force pull.
+- Do not use force push.
+- Do not discard, overwrite, restore, or delete local changes.
+- Do not switch branches until all current work is safely committed.
+- Preserve the current tax estimator and every current Replit change.
+
+Follow this exact process:
+
+1. Inspect and record:
+- Current Git branch
+- Git status
+- Git remotes
+- Untracked files
+- Modified files
+- Staged files
+- Current HEAD commit SHA
+
+2. Make sure the GitHub remote points to:
+tristanr04/Blue-Collar-AI
+
+Do not replace the remote automatically if it points somewhere else. Stop and report the mismatch instead.
+
+3. Create a new backup branch using this naming format:
+replit-backup-before-feature-merge-YYYYMMDD-HHMM
+
+Use the current local state as the starting point.
+
+4. Stage all current project changes, including untracked files, except:
+- Environment files containing secrets
+- Node modules
+- Build output
+- Temporary cache files
+- Any files already excluded by .gitignore
+
+Do not add secrets to Git.
+
+5. Before committing, inspect the staged files for likely secrets such as:
+- API keys
+- Clerk secrets
+- Stripe secrets
+- Database URLs
+- OpenAI keys
+- Private tokens
+- Passwords
+
+If any possible secret is staged, unstage that file and report it. Do not commit it.
+
+6. Commit the complete safe backup with this message:
+Backup current Replit work before GitHub feature integration
+
+7. Push the backup branch to origin.
+
+Do not force push.
+
+8. Verify that the backup branch exists remotely and that the remote commit SHA matches the local backup commit SHA.
+
+9. Fetch all remote branches without merging anything.
+
+10. List every remote branch beginning with:
+origin/agent/
+
+11. Identify the open feature branches related to:
+- Hardened scanner
+- Subscription and billing
+- Overtime tax backend
+- Insurance scanner and financial guide
+- Personalized spending coach
+- CSV, PDF, and screenshot transaction imports
+- Multistate tax context
+- Age progress
+- Financial Command Center
+- AI memory
+- Momentum tracking
+- Retention notifications
+
+Do not guess missing branch names.
+Do not merge anything.
+
+12. Stop after inspection and give me a final report containing:
+
+BACKUP
+- Original working branch
+- Backup branch name
+- Local backup commit SHA
+- Remote backup commit SHA
+- Whether the backup push was verified
+
+CURRENT WORK
+- Any uncommitted files remaining
+- Any files excluded because they may contain secrets
+- Any errors encountered
+
+REMOTE FEATURE BRANCHES
+- Full list of origin/agent/* branches
+- Which requested features appear to exist
+- Which requested features could not be matched confidently
+
+MERGE RISK
+- Files most likely to conflict
+- Whether the tax estimator touches the same files as any feature branches
+- Whether database schema files are likely to conflict
+- Whether route index files are likely to conflict
+- Whether package or configuration files are likely to conflict
+
+Do not perform any merges, rebases, resets, conflict resolutions, deployments, or pushes beyond the verified backup branch.
+Wait for my approval before continuing.
