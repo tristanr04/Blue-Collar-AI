@@ -1,0 +1,223 @@
+Complete the financial extraction accuracy and reconciliation gate for Blue Collar AI.
+
+Do not redesign the application and do not add unrelated features.
+
+PRIMARY GOAL
+
+No uncertain, contradictory, implausible, or incorrectly matched extracted value may silently become trusted financial data.
+
+1. Field-level extraction record
+
+For every extracted field preserve these separately:
+
+- rawValue
+- normalizedValue
+- confidence
+- sourceText
+- sourceDocumentId
+- sourceFilename
+- userEditedValue
+- finalConfirmedValue
+- validationStatus
+- validationWarnings
+
+Never destroy or overwrite the original extracted value after a user edits it.
+
+2. Confidence rules
+
+Define required fields and minimum confidence thresholds by document category:
+
+- Paystub
+- Banking
+- Credit card
+- Loan
+- Mortgage/HELOC
+- Brokerage
+- Retirement
+- Bill
+
+High-impact fields such as balances, payments, interest rates, net pay, gross pay, credit limits, due dates, and account identifiers must require stronger confidence than optional descriptive fields.
+
+Low-confidence or missing required fields must be placed into review and must never auto-save.
+
+3. Reconciliation rules
+
+Add deterministic reconciliation for:
+
+BANKING
+- openingBalance + deposits - withdrawals ≈ closingBalance
+- currentBalance and closingBalance conflicts
+- statement date order
+- negative balances and overdrafts
+- credits and reversals
+
+PAYSTUBS
+- grossPay - taxes - deductions + non-taxable reimbursements/per diem ≈ netPay
+- regular, overtime, and double-time hours must be non-negative
+- hourly rate and hours must be mathematically plausible compared with gross pay
+- tax and deduction totals must not exceed plausible limits without a warning
+
+CREDIT CARDS
+- availableCredit ≈ creditLimit - currentBalance
+- minimum payment must be plausible relative to balance
+- APR must be between 0 and 100 unless explicitly flagged
+- preserve statement credits and negative balances
+- detect current balance versus statement balance conflicts
+
+LOANS
+- balance, APR, payment, and remaining term must be mathematically plausible
+- original amount must not normally be below current balance without a warning
+- remaining term must not exceed original term
+- distinguish payoff amount from principal balance
+
+MORTGAGE / HELOC
+- distinguish mortgage principal from HELOC balance and credit limit
+- principalAndInterest + escrow should approximately equal monthlyPayment when all fields exist
+- available HELOC credit ≈ creditLimit - currentBalance
+- validate term and rate ranges
+
+INVESTMENTS / RETIREMENT
+- totalValue should approximately reconcile with securitiesValue + cashBalance - marginBalance where fields exist
+- distinguish vested balance from total balance
+- do not merge retirement and brokerage accounts solely because the institution matches
+- preserve negative day changes and losses
+
+BILLS
+- validate amount, due date, provider, billing period, and frequency
+- distinguish account balance from amount currently due
+- detect duplicate monthly bills and revised bills
+
+Use reasonable currency tolerances for rounding. Do not require exact equality where statement rounding is normal.
+
+4. Error-pattern detection
+
+Detect and flag likely:
+
+- Decimal shifts
+- Missing decimal points
+- Sign reversals
+- OCR digit substitutions such as 0/O, 1/I, 5/S, 8/B
+- Percentage scaling errors
+- Currency comma errors
+- MM/DD versus DD/MM date confusion
+- Two-digit year ambiguity
+- Values copied from the wrong table row
+- Statement-period conflicts
+- Totals that are mathematically impossible
+
+Do not automatically change an ambiguous value. Suggest a corrected value and require confirmation.
+
+5. Account matching safety
+
+Never match or overwrite records using institution name alone.
+
+Use combinations of:
+
+- Account type
+- Last four digits
+- Normalized institution
+- User ownership
+- Existing record ID
+- Statement period
+- Explicit user selection
+
+When identifiers are missing or conflicting, create a review conflict instead of updating an existing record.
+
+Support multiple accounts from one institution in the same batch.
+
+Older statements must not overwrite newer values without explicit confirmation.
+
+6. Review summary
+
+Before saving, show a concise batch summary containing:
+
+- New records
+- Existing records to update
+- Unchanged records
+- Low-confidence fields
+- Reconciliation failures
+- Account-match conflicts
+- Duplicate documents
+- Rejected fields
+
+The user must be able to edit each flagged field.
+
+The exact edited values displayed at final confirmation must be the values saved.
+
+7. Save safety and rollback
+
+- Confirm each accepted document exactly once.
+- Use idempotency keys for confirmation.
+- A page refresh or back navigation must not duplicate records.
+- Store an import transaction ID connecting all changes from the batch.
+- Add one-click undo for a confirmed batch.
+- Undo must restore previous values and remove newly created records where safe.
+- Undo must never affect unrelated later records.
+
+8. Deterministic fixture suite
+
+Create fixtures with expected values for every supported category.
+
+Include:
+
+- Clean document
+- Sideways 90 degrees
+- Upside down 180 degrees
+- 270-degree rotation
+- Blurry image
+- Cropped image
+- Low contrast
+- Glare
+- Multiple accounts at one institution
+- Joint account
+- Negative balance
+- Statement credit
+- Zero balance
+- Multiple statement periods
+- Duplicate document
+- Decimal error
+- Sign error
+- Date-format ambiguity
+- Percentage error
+- Contradictory totals
+- Missing account identifier
+- User-corrected value
+
+Fixtures must use fake information only.
+
+9. Accuracy reporting
+
+Report:
+
+- Document classification accuracy
+- Field-level exact-match accuracy
+- Field-level tolerance-match accuracy
+- False-positive save rate
+- Incorrect overwrite count
+- Duplicate-save count
+- Unresolved-review rate
+- Reconciliation detection rate
+- User-edit persistence accuracy
+
+Launch gate:
+
+- Zero incorrect account overwrites
+- Zero duplicate saves
+- Zero silent high-impact reconciliation failures
+- 100% user-edit persistence
+- No low-confidence high-impact value auto-saved
+
+10. Verification
+
+Run and separately report:
+
+- Frontend tests
+- API tests
+- Reconciliation tests
+- Fixture test totals
+- Authorization/security tests
+- TypeScript checks
+- Production builds
+- Any skipped or flaky tests
+
+Make the implementation directly. Do not only provide recommendations.
