@@ -12,6 +12,9 @@ import taxContextRouter from "./tax-context.js";
 import spendingInsightsRouter from "./spending-insights.js";
 import transactionImportRouter from "./transaction-import.js";
 import transactionStatementImportRouter from "./transaction-statement-import.js";
+import commandCenterRouter from "./command-center.js";
+import financialMemoryRouter from "./financial-memory.js";
+import retentionNotificationsRouter from "./retention-notifications.js";
 
 const router: IRouter = Router();
 
@@ -28,5 +31,8 @@ router.use(taxContextRouter);
 router.use(spendingInsightsRouter);
 router.use(transactionImportRouter);
 router.use(transactionStatementImportRouter);
+router.use(commandCenterRouter);
+router.use(financialMemoryRouter);
+router.use(retentionNotificationsRouter);
 
 export default router;
