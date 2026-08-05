@@ -19,6 +19,7 @@ import financialGuideRouter from "./financial-guide.js";
 import insuranceScanRouter from "./insurance-scan.js";
 import subscriptionsRouter from "./subscriptions.js";
 import overtimeTaxRouter from "./overtime-tax.js";
+import referralsRouter from "./referrals.js";
 
 const router: IRouter = Router();
 
@@ -42,5 +43,6 @@ router.use(financialGuideRouter);
 router.use(insuranceScanRouter);
 router.use(subscriptionsRouter);
 router.use(overtimeTaxRouter);
+router.use(referralsRouter);
 
 export default router;
