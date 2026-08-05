@@ -1,12 +1,46 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health.js";
+import authRouter from "./auth.js";
+import financialDataRouter from "./financial-data.js";
+import migrateRouter from "./migrate.js";
 import scanRouter from "./scan.js";
 import aiAskRouter from "./ai-ask.js";
+import backgroundJobsRouter from "./background-jobs.js";
+import profileContextRouter from "./profile-context.js";
+import taxScenariosRouter from "./tax-scenarios.js";
+import taxContextRouter from "./tax-context.js";
+import spendingInsightsRouter from "./spending-insights.js";
+import transactionImportRouter from "./transaction-import.js";
+import transactionStatementImportRouter from "./transaction-statement-import.js";
+import commandCenterRouter from "./command-center.js";
+import financialMemoryRouter from "./financial-memory.js";
+import retentionNotificationsRouter from "./retention-notifications.js";
+import financialGuideRouter from "./financial-guide.js";
+import insuranceScanRouter from "./insurance-scan.js";
+import subscriptionsRouter from "./subscriptions.js";
+import overtimeTaxRouter from "./overtime-tax.js";
 
 const router: IRouter = Router();
 
 router.use(healthRouter);
+router.use(authRouter);
+router.use(financialDataRouter);
+router.use(migrateRouter);
 router.use(scanRouter);
 router.use(aiAskRouter);
+router.use(backgroundJobsRouter);
+router.use(profileContextRouter);
+router.use(taxScenariosRouter);
+router.use(taxContextRouter);
+router.use(spendingInsightsRouter);
+router.use(transactionImportRouter);
+router.use(transactionStatementImportRouter);
+router.use(commandCenterRouter);
+router.use(financialMemoryRouter);
+router.use(retentionNotificationsRouter);
+router.use(financialGuideRouter);
+router.use(insuranceScanRouter);
+router.use(subscriptionsRouter);
+router.use(overtimeTaxRouter);
 
 export default router;

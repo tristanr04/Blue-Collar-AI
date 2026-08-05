@@ -1,46 +1,47 @@
 ---
-name: Blue Collar Financial AI — Architecture
-description: Key decisions, routing, and integration details for the BCFAI project.
+name: BCFAI Architecture
+description: Frontend-only localStorage app + API server for AI scan/chat; key routing and integration details.
 ---
 
-# Blue Collar Financial AI Architecture
-
-## Structure
-- Frontend: `artifacts/blue-collar-financial-ai` — React + Vite, all user data in `localStorage` via `StoreProvider` (`src/lib/store.tsx`)
-- API Server: `artifacts/api-server` — Express, handles file scan (OpenAI Vision) and AI chat (streaming SSE)
-- No database — demo mode and real mode both use `localStorage`
-
-## AI Integration
-- Uses Replit AI Integrations (no user API key needed): env vars `AI_INTEGRATIONS_OPENAI_BASE_URL` + `AI_INTEGRATIONS_OPENAI_API_KEY`
-- Model used: `gpt-5.6-terra` for both scan extraction and AI chat
-- Scan: `POST /api/scan` — multer memory storage, MIME detected from magic bytes, image→base64→Vision, PDF→pdf-parse text→GPT
-- AI chat: `POST /api/ai/ask` — streaming SSE, receives confirmed financial profile JSON + question
-- `GET /api/capabilities` — returns `{"ai":true}` when OpenAI is configured
-
-## Frontend API client
-- `src/lib/api.ts` — calls `/api-server/api/...` (absolute path routes through Replit shared proxy)
-- `scanFile(file)` — POST FormData to `/api/scan`
-- `askAI(question, profile, onDelta)` — streaming SSE consumer
+## Stack
+- Frontend: React + Vite (`artifacts/blue-collar-financial-ai`)
+- Backend: Express (`artifacts/api-server`)
+- Auth: Clerk (VITE_CLERK_PUBLISHABLE_KEY / CLERK_SECRET_KEY)
+- Storage: localStorage only (no database)
 
 ## Key routing
-- `/` and `/welcome` → Welcome page (full screen, no Shell nav)
-- `/scanner` → Scanner wizard (full screen, no Shell nav)
-- `/ask-ai` → AskAI chat page (shown in Shell with nav)
-- Shell hides on: `'/'`, `'/welcome'`, `'/onboarding'`, and paths starting with `'/scanner'`
+- Frontend served at `/blue-collar-financial-ai` (preview path)
+- API server at `/api-server` (preview path)
+- Scanner page: `/scanner` inside the frontend
 
-## PDF handling
-- Uses `pdf-parse@1.1.1` (NOT v2 — v2 broke ESM default export with esbuild)
-- Import via `createRequire` in scan.ts to avoid esbuild ESM resolution issue
-- Scanned PDFs with no embedded text are rejected with a helpful message
+## Scanner batch architecture (added)
+- `BatchDocument` replaces old `ProcessedDoc` — `isDuplicate` is now required (not optional)
+- `BatchDocumentStatus` replaces `ProcessStatus`  
+- Module-level pure helpers: `mergeUniqueFiles`, `runWithConcurrency`, `normalizeScanResult`, `getFieldValue`, `parseApiError`
+- Constants: `MAX_BATCH_FILES=20`, `MAX_FILE_BYTES=10MB`, `SCAN_CONCURRENCY=2`
+- `runWithConcurrency` runs SCAN_CONCURRENCY slots simultaneously; processDoc self-catches so one failure doesn't abort the batch
+- `savableDocuments = docs.filter(d => d.status==='done' && d.accepted)` is the source of truth for confirmAndSave and the review footer
+- Preview URL lifecycle: upload-step previews revoked at startProcessing start; doc previews revoked in removeDoc; all revoked on unmount via refs
 
-## Scanner flow
-- Upload → `scanFile()` per file sequentially → Review (per-doc classification + editable fields) → Confirm saves to store
-- Per-document type has its own field definitions in `DOC_FIELDS` map
-- After confirm: Paystub→addPaystub, Bank→addAsset(Cash), CC/Loan/Mortgage→addDebt, Investment/Retirement→addAsset(Investment), Bill→addBill
+## AI response parsing
+- `extractFromImage`/`extractFromText` return full response object (not just content)
+- `getModelOutput()` tries `output_text → choices[0].message.content → content[0].text → …`
+- Vehicle loan and bank statement bypass Zod validation (fast paths in scan.ts)
 
-## Dashboard Health Score
-- Calculated from: cash flow, emergency fund coverage, credit utilization, DTI, high-interest debt, retirement
-- Only penalizes categories where confirmed data exists (no paystubs = no score)
-- Uses recharts `BarChart` for monthly cash flow visualization
+## Test commands
+- Frontend: `cd artifacts/blue-collar-financial-ai && pnpm vitest run`
+- API: `cd artifacts/api-server && pnpm test`  (needs `--import tsx/esm` flag — use `pnpm test` not bare `node --test`)
+- API typecheck: `cd artifacts/api-server && pnpm typecheck`
+- Frontend typecheck: `cd artifacts/blue-collar-financial-ai && pnpm tsc --noEmit`
 
-**Why:** These decisions are not obvious from code alone and will affect any future changes to file handling, AI routing, or nav structure.
+## drizzle-zod
+- Do NOT use drizzle-zod@0.8.3 with Zod v3 — use plain `z.object()` instead
+
+## Rate-limit retry (added)
+- `is429Error(err)` — detects HTTP 429 / "too many requests" from the structured JSON error thrown by `scanFile`; returns `{ retryAfterMs }` (0 = use back-off table) or null
+- `scanWithRetry(file, token, onRetrying)` — wraps `scanFile` with up to 3 retries on 429; honors `Retry-After` header (ms = seconds × 1000); otherwise uses RETRY_DELAYS_MS [2000, 4000, 8000]
+- `processDoc` calls `scanWithRetry`; `onRetrying` callback sets doc status to `'retrying'` with `retryAttempt` + `retryWaitMs`
+- `BatchDocumentStatus` includes `'retrying'` — retrying docs do NOT count toward `finishedCount`; `activeCount = processingCount + retryingCount + pendingCount`
+- Confirm button disabled when `docs.some(d => d.status === 'processing' || d.status === 'retrying')`
+- `api.ts` non-OK error throw now includes `httpStatus: res.status` and `retryAfter: number` (from Retry-After header)
+- Tests: 27 frontend tests total (was 15 scanner-batch; added 12 rate-limit regression tests, tests 16–27)

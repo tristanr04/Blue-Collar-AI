@@ -1,0 +1,544 @@
+Fix the document processor error that says:
+
+“The document processor returned an unrecognized response format.”
+
+The uploaded image reaches the backend, but the frontend rejects the AI response before classification.
+
+Find the document-processing API route and replace the current response parsing logic with the code below.
+
+Add these helpers:
+
+function stripCodeFence(value: string): string {
+  return value
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+function parsePossibleJson(value: unknown): any {
+  if (value === null || value === undefined) return null;
+
+  if (typeof value === "object") return value;
+
+  if (typeof value !== "string") return null;
+
+  const cleaned = stripCodeFence(value);
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        return JSON.parse(
+          cleaned.slice(firstBrace, lastBrace + 1)
+        );
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+}
+
+function getModelOutput(response: any): unknown {
+  return (
+    response?.output_text ??
+    response?.choices?.[0]?.message?.content ??
+    response?.content?.[0]?.text ??
+    response?.message?.content ??
+    response?.output?.[0]?.content?.[0]?.text ??
+    response
+  );
+}
+
+function unwrapDocumentResponse(raw: unknown): any {
+  const parsed = parsePossibleJson(raw) ?? raw;
+
+  const candidates = [
+    (parsed as any)?.data,
+    (parsed as any)?.result,
+    (parsed as any)?.extraction,
+    (parsed as any)?.document,
+    (parsed as any)?.parsedDocument,
+    (parsed as any)?.output,
+    (parsed as any)?.response,
+    (parsed as any)?.content,
+    parsed
+  ];
+
+  for (const candidate of candidates) {
+    const resolved = parsePossibleJson(candidate) ?? candidate;
+
+    if (
+      resolved &&
+      typeof resolved === "object" &&
+      !Array.isArray(resolved)
+    ) {
+      return resolved;
+    }
+  }
+
+  return null;
+}
+
+function firstDefined(...values: unknown[]) {
+  return (
+    values.find(
+      (value) =>
+        value !== undefined &&
+        value !== null &&
+        value !== ""
+    ) ?? null
+  );
+}
+
+function parseMoney(value: unknown): number | null {
+  if (
+    typeof value === "number" &&
+    Number.isFinite(value)
+  ) {
+    return value;
+  }
+
+  if (typeof value !== "string") return null;
+
+  const cleaned = value.replace(/[$,\s]/g, "");
+  const parsed = Number.parseFloat(cleaned);
+
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseApr(value: unknown): number | null {
+  if (
+    typeof value === "number" &&
+    Number.isFinite(value)
+  ) {
+    return value;
+  }
+
+  if (typeof value !== "string") return null;
+
+  const match = value.match(/\d+(?:\.\d+)?/);
+
+  if (!match) return null;
+
+  const parsed = Number.parseFloat(match[0]);
+
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseInteger(value: unknown): number | null {
+  if (
+    typeof value === "number" &&
+    Number.isFinite(value)
+  ) {
+    return Math.round(value);
+  }
+
+  if (typeof value !== "string") return null;
+
+  const match = value.match(/\d+/);
+
+  if (!match) return null;
+
+  const parsed = Number.parseInt(match[0], 10);
+
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getLast4(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const cleaned = String(value)
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .trim();
+
+  if (!cleaned) return null;
+
+  return cleaned.length >= 4
+    ? cleaned.slice(-4)
+    : cleaned;
+}
+
+function normalizeDate(value: unknown): string | null {
+  if (
+    value === undefined ||
+    value === null ||
+    value === ""
+  ) {
+    return null;
+  }
+
+  const text = String(value).trim();
+
+  const isoMatch = text.match(
+    /^(\d{4})-(\d{2})-(\d{2})$/
+  );
+
+  if (isoMatch) return text;
+
+  const usMatch = text.match(
+    /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/
+  );
+
+  if (usMatch) {
+    const month = usMatch[1].padStart(2, "0");
+    const day = usMatch[2].padStart(2, "0");
+    const year = usMatch[3];
+
+    return `${year}-${month}-${day}`;
+  }
+
+  return text;
+}
+
+function normalizeVehicleLoanExtraction(raw: any) {
+  const originalTerm = parseInteger(
+    firstDefined(
+      raw.loanTerm,
+      raw.termMonths,
+      raw.originalTerm
+    )
+  );
+
+  const paymentsMade = parseInteger(
+    firstDefined(
+      raw.paymentsMade,
+      raw.numberOfPaymentsMade
+    )
+  );
+
+  let monthsRemaining = parseInteger(
+    firstDefined(
+      raw.monthsRemaining,
+      raw.remainingMonths,
+      raw.remainingTerm,
+      raw.paymentsRemaining,
+      raw.monthsLeft
+    )
+  );
+
+  if (
+    monthsRemaining === null &&
+    originalTerm !== null &&
+    paymentsMade !== null
+  ) {
+    monthsRemaining = Math.max(
+      originalTerm - paymentsMade,
+      0
+    );
+  }
+
+  if (
+    monthsRemaining === null &&
+    originalTerm !== null
+  ) {
+    monthsRemaining = originalTerm;
+  }
+
+  return {
+    documentType: "vehicleLoan",
+
+    loanName: firstDefined(
+      raw.loanName,
+      raw.lenderName,
+      raw.lender,
+      raw.creditor,
+      raw.financeCompany,
+      raw.servicer,
+      raw.companyName,
+      raw.institutionName
+    ),
+
+    accountLast4: getLast4(
+      firstDefined(
+        raw.accountLast4,
+        raw.last4,
+        raw.lastFourDigits,
+        raw.accountNumber,
+        raw.accountId,
+        raw.loanNumber,
+        raw.contractNumber
+      )
+    ),
+
+    balanceOwed: parseMoney(
+      firstDefined(
+        raw.balanceOwed,
+        raw.remainingBalance,
+        raw.currentBalance,
+        raw.principalBalance,
+        raw.payoffBalance,
+        raw.amountOwed,
+        raw.totalAccountBalance
+      )
+    ),
+
+    originalAmount: parseMoney(
+      firstDefined(
+        raw.originalAmount,
+        raw.originalLoanAmount,
+        raw.amountFinanced,
+        raw.initialPrincipal,
+        raw.loanAmount
+      )
+    ),
+
+    apr: parseApr(
+      firstDefined(
+        raw.apr,
+        raw.interestRate,
+        raw.annualPercentageRate,
+        raw.rate
+      )
+    ),
+
+    monthlyPayment: parseMoney(
+      firstDefined(
+        raw.monthlyPayment,
+        raw.regularMonthlyPayment,
+        raw.regularPayment,
+        raw.scheduledPayment,
+        raw.paymentAmount,
+        raw.amountDue
+      )
+    ),
+
+    monthsRemaining,
+
+    nextDueDate: normalizeDate(
+      firstDefined(
+        raw.nextDueDate,
+        raw.paymentDueDate,
+        raw.nextPaymentDate,
+        raw.dueDate
+      )
+    ),
+
+    confidence: raw.confidence ?? {}
+  };
+}
+
+Immediately after the AI API call, use this exact flow:
+
+console.log("=== FULL AI RESPONSE ===");
+console.dir(aiResponse, { depth: null });
+
+const modelOutput = getModelOutput(aiResponse);
+
+console.log("=== MODEL OUTPUT ===");
+console.dir(modelOutput, { depth: null });
+
+const rawExtraction =
+  unwrapDocumentResponse(modelOutput);
+
+console.log(
+  "=== RAW EXTRACTION ===",
+  JSON.stringify(rawExtraction, null, 2)
+);
+
+if (!rawExtraction) {
+  throw new Error(
+    `Unable to parse document processor response. Received: ${
+      typeof modelOutput === "string"
+        ? modelOutput
+        : JSON.stringify(modelOutput)
+    }`
+  );
+}
+
+const normalizedExtraction =
+  normalizeVehicleLoanExtraction(rawExtraction);
+
+console.log(
+  "=== NORMALIZED EXTRACTION ===",
+  JSON.stringify(normalizedExtraction, null, 2)
+);
+
+Return this exact response shape to the frontend:
+
+return res.status(200).json({
+  success: true,
+  documentType: "vehicleLoan",
+  type: "vehicleLoan",
+  data: normalizedExtraction,
+  extraction: normalizedExtraction
+});
+
+Also update the frontend response handler so it accepts any of these response locations:
+
+const extracted =
+  response?.data?.data ??
+  response?.data?.extraction ??
+  response?.data?.result ??
+  response?.data ??
+  response?.extraction ??
+  response?.result ??
+  response;
+
+if (!extracted || typeof extracted !== "object") {
+  throw new Error(
+    "The document processor returned an unrecognized response format."
+  );
+}
+
+const documentType =
+  extracted.documentType ??
+  response?.data?.documentType ??
+  response?.data?.type ??
+  response?.documentType ??
+  response?.type ??
+  "vehicleLoan";
+
+Then update the vehicle-loan form with:
+
+setLoanForm((previous) => ({
+  ...previous,
+
+  loanName:
+    extracted.loanName ??
+    previous.loanName ??
+    "",
+
+  accountLast4:
+    extracted.accountLast4 ??
+    previous.accountLast4 ??
+    "",
+
+  balanceOwed:
+    extracted.balanceOwed ??
+    previous.balanceOwed ??
+    "",
+
+  originalAmount:
+    extracted.originalAmount ??
+    previous.originalAmount ??
+    "",
+
+  apr:
+    extracted.apr ??
+    previous.apr ??
+    "",
+
+  monthlyPayment:
+    extracted.monthlyPayment ??
+    previous.monthlyPayment ??
+    "",
+
+  monthsRemaining:
+    extracted.monthsRemaining ??
+    previous.monthsRemaining ??
+    "",
+
+  nextDueDate:
+    extracted.nextDueDate ??
+    previous.nextDueDate ??
+    ""
+}));
+
+Do not use truthy checks for numeric fields.
+
+Wrong:
+
+if (extracted.balanceOwed) {
+  form.balanceOwed = extracted.balanceOwed;
+}
+
+Correct:
+
+if (
+  extracted.balanceOwed !== null &&
+  extracted.balanceOwed !== undefined
+) {
+  form.balanceOwed = extracted.balanceOwed;
+}
+
+Update the AI extraction prompt to require ONLY JSON in this exact format:
+
+{
+  "loanName": null,
+  "accountNumber": null,
+  "balanceOwed": null,
+  "originalAmount": null,
+  "apr": null,
+  "monthlyPayment": null,
+  "loanTerm": null,
+  "paymentsMade": null,
+  "monthsRemaining": null,
+  "nextDueDate": null
+}
+
+Tell the AI:
+
+Extract vehicle-loan information from the document.
+
+Recognize these aliases:
+
+loanName:
+lender, creditor, finance company, financial institution, servicer, company name
+
+accountNumber:
+account number, account ID, loan number, contract number
+
+balanceOwed:
+remaining balance, current balance, total account balance, principal balance, payoff balance, amount owed
+
+originalAmount:
+original loan amount, original amount, amount financed, loan amount, initial principal
+
+apr:
+APR, annual percentage rate, interest rate
+
+monthlyPayment:
+monthly payment, regular monthly payment, scheduled payment, payment amount
+
+loanTerm:
+loan term, original term, term months
+
+paymentsMade:
+payments made, number of payments made
+
+monthsRemaining:
+months remaining, remaining term, payments remaining, months left
+
+nextDueDate:
+payment due date, next payment date, next due date, due date
+
+Return numbers without currency symbols, commas, percent signs, or words.
+
+Return dates as YYYY-MM-DD.
+
+Return null when a value is not visible.
+
+Do not include markdown, explanations, code fences, or commentary.
+
+Finally, test using this expected result:
+
+{
+  "documentType": "vehicleLoan",
+  "loanName": "Pioneer Auto Finance",
+  "accountLast4": "4922",
+  "balanceOwed": 16843.72,
+  "originalAmount": 28750,
+  "apr": 7.24,
+  "monthlyPayment": 478.56,
+  "monthsRemaining": 44,
+  "nextDueDate": "2025-08-05"
+}
+
+After making the fix:
+
+1. Show every file modified.
+2. Show the full raw AI response.
+3. Show the unwrapped response.
+4. Show the normalized response.
+5. Confirm the document is classified as vehicleLoan.
+6. Confirm all eight vehicle-loan fields appear in the review screen.
+7. Do not claim it works until the test has actually passed.

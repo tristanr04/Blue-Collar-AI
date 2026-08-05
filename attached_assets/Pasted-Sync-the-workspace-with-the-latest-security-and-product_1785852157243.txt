@@ -1,0 +1,81 @@
+Sync the workspace with the latest security-and-production-hardening branch from GitHub.
+
+First run:
+
+git status
+git branch --show-current
+git fetch origin
+git pull --ff-only origin security-and-production-hardening
+
+Do not overwrite uncommitted work. If the pull cannot fast-forward, stop and report the exact conflict before changing files.
+
+Then complete these tasks:
+
+1. Verify the new files exist:
+- artifacts/blue-collar-financial-ai/src/lib/age-benchmarks.ts
+- artifacts/blue-collar-financial-ai/src/lib/age-benchmark-data.ts
+- artifacts/blue-collar-financial-ai/src/components/AgeBenchmarkCard.tsx
+- lib/db/src/schema/background-jobs.ts
+- lib/db/src/schema/audit.ts
+
+2. Wire AgeBenchmarkCard into Dashboard.tsx.
+
+Use:
+- profile birth date for age;
+- deterministic annual gross income from monthlyGross × 12;
+- deterministic net worth from computed.netWorth;
+- the sourced benchmark dataset;
+- ageFromBirthDate();
+- findAgeBenchmark();
+- compareToAgeMedian();
+- overallAgeBenchmarkScore().
+
+3. Do not display the feature when birth date is missing.
+Instead show a small setup state asking the user to add their date of birth.
+
+4. Keep the wording accurate:
+- say “compared with the median for your age group”;
+- do not call the score a percentile;
+- do not call it a credit score or financial grade;
+- display the dataset year and source.
+
+5. Make sure the profile model actually stores birthDate.
+If it does not:
+- add an optional date-of-birth field to the profile schema;
+- add the required Drizzle migration;
+- add onboarding/profile editing support;
+- validate that the date is not in the future and implies an age from 18 to 120.
+
+6. Review and apply the new pending database migrations for:
+- audit_events;
+- background_jobs;
+- any birthDate profile column added during this task.
+
+Do not drop or recreate existing tables.
+
+7. Run:
+pnpm install
+pnpm run typecheck
+pnpm test
+pnpm run build
+pnpm --filter @workspace/db db:generate
+
+8. Test these cases:
+- age 22 with income and net worth;
+- exact birthday today;
+- birthday tomorrow;
+- missing birth date;
+- future birth date;
+- missing income;
+- negative net worth;
+- age-band boundary transitions;
+- 65+ benchmark selection.
+
+9. Report:
+- files changed;
+- migration files created or applied;
+- dashboard placement;
+- screenshots or description of the rendered card;
+- every failing test or remaining limitation.
+
+Do not publish or deploy automatically.

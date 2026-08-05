@@ -1,20 +1,25 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useLocation } from 'wouter';
 import {
   Shield, Trash2, RefreshCw, User, Lock, AlertTriangle,
   ChevronRight, Download, Upload, CheckCircle2, History,
-  RotateCcw, ChevronDown, ChevronUp,
+  RotateCcw, ChevronDown, ChevronUp, Calculator,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
 import { useStore, PayFrequency, FilingContext, FinancialChangeRecord } from '@/lib/store';
+import { US_STATE_CODES, TAX_FILING_STATUSES } from '@/lib/profile-context-api';
 
 export default function Settings() {
   const [_, setLocation] = useLocation();
-  const { profile, updateProfile, resetToDemo, clearAll, changeHistory, undoImport, restoreFieldValue } = useStore();
+  const {
+    profile, updateProfile, resetToDemo, clearAll, changeHistory, undoImport, restoreFieldValue,
+    profileContext, saveProfileContext, profileContextSaving, profileContextError,
+  } = useStore();
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [saved, setSaved] = useState(false);
   const [importMsg, setImportMsg] = useState('');
@@ -22,6 +27,81 @@ export default function Settings() {
   const importRef = useRef<HTMLInputElement>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [expandedImport, setExpandedImport] = useState<string | null>(null);
+
+  // ── Profile context form ─────────────────────────────────────────────────────
+  // Use loose string types so Select.onValueChange (which returns string) can write freely.
+  const [ctxForm, setCtxForm] = useState<{
+    birthDate: string;
+    stateCode: string;
+    taxFilingStatus: string;
+    qualifyingChildren: number;
+    otherDependents: number;
+    spouseHasIncome: boolean;
+    additionalAnnualIncome: number;
+    annualPreTaxDeductions: number;
+  }>({
+    birthDate: profileContext?.birthDate ?? '',
+    stateCode: profileContext?.stateCode ?? '',
+    taxFilingStatus: profileContext?.taxFilingStatus ?? 'Single',
+    qualifyingChildren: profileContext?.qualifyingChildren ?? 0,
+    otherDependents: profileContext?.otherDependents ?? 0,
+    spouseHasIncome: profileContext?.spouseHasIncome ?? false,
+    additionalAnnualIncome: profileContext?.additionalAnnualIncome ?? 0,
+    annualPreTaxDeductions: profileContext?.annualPreTaxDeductions ?? 0,
+  });
+  const [ctxDirty, setCtxDirty] = useState(false);
+  const [ctxSaved, setCtxSaved] = useState(false);
+  const [ctxLocalError, setCtxLocalError] = useState('');
+
+  // Sync form from server when context first loads — but never overwrite unsaved edits.
+  useEffect(() => {
+    if (profileContext && !ctxDirty) {
+      setCtxForm({
+        birthDate: profileContext.birthDate ?? '',
+        stateCode: profileContext.stateCode ?? '',
+        taxFilingStatus: profileContext.taxFilingStatus,
+        qualifyingChildren: profileContext.qualifyingChildren,
+        otherDependents: profileContext.otherDependents,
+        spouseHasIncome: profileContext.spouseHasIncome,
+        additionalAnnualIncome: profileContext.additionalAnnualIncome,
+        annualPreTaxDeductions: profileContext.annualPreTaxDeductions,
+      });
+    }
+  }, [profileContext, ctxDirty]);
+
+  const handleCtxSave = async () => {
+    if (ctxForm.birthDate) {
+      const parsed = new Date(`${ctxForm.birthDate}T00:00:00Z`);
+      const today = new Date();
+      if (!Number.isFinite(parsed.getTime())) { setCtxLocalError('Enter a valid date (YYYY-MM-DD).'); return; }
+      if (parsed > today) { setCtxLocalError('Date of birth cannot be in the future.'); return; }
+      const age = today.getUTCFullYear() - parsed.getUTCFullYear();
+      if (age < 18 || age > 120) { setCtxLocalError('Age must be between 18 and 120.'); return; }
+    }
+    setCtxLocalError('');
+    try {
+      await saveProfileContext({
+        birthDate: ctxForm.birthDate || null,
+        stateCode: (ctxForm.stateCode || null) as any,
+        taxFilingStatus: ctxForm.taxFilingStatus as any,
+        qualifyingChildren: Number(ctxForm.qualifyingChildren),
+        otherDependents: Number(ctxForm.otherDependents),
+        spouseHasIncome: ctxForm.spouseHasIncome,
+        additionalAnnualIncome: Number(ctxForm.additionalAnnualIncome),
+        annualPreTaxDeductions: Number(ctxForm.annualPreTaxDeductions),
+      });
+      setCtxDirty(false);
+      setCtxSaved(true);
+      setTimeout(() => setCtxSaved(false), 2500);
+    } catch {
+      // Error surfaced via profileContextError from store
+    }
+  };
+
+  const setCtx = <K extends keyof typeof ctxForm>(key: K, value: (typeof ctxForm)[K]) => {
+    setCtxForm(f => ({ ...f, [key]: value }));
+    setCtxDirty(true);
+  };
 
   // Group change records by source document, newest first
   const importGroups = React.useMemo(() => {
@@ -40,14 +120,36 @@ export default function Settings() {
     hourlyRate: profile?.hourlyRate ?? 0,
     payFrequency: (profile?.payFrequency ?? 'Weekly') as PayFrequency,
     filingContext: (profile?.filingContext ?? 'Single') as FilingContext,
+    birthDate: profile?.birthDate ?? '',
   });
+  const [birthDateError, setBirthDateError] = useState('');
 
   const handleSave = () => {
+    // Validate birthDate if supplied.
+    if (form.birthDate) {
+      const today = new Date();
+      const parsed = new Date(`${form.birthDate}T00:00:00Z`);
+      if (!Number.isFinite(parsed.getTime())) {
+        setBirthDateError('Enter a valid date (YYYY-MM-DD).');
+        return;
+      }
+      if (parsed > today) {
+        setBirthDateError('Date of birth cannot be in the future.');
+        return;
+      }
+      const age = today.getUTCFullYear() - parsed.getUTCFullYear();
+      if (age < 18 || age > 120) {
+        setBirthDateError('Age must be between 18 and 120.');
+        return;
+      }
+    }
+    setBirthDateError('');
     updateProfile({
       name: form.name,
       hourlyRate: Number(form.hourlyRate),
       payFrequency: form.payFrequency,
       filingContext: form.filingContext,
+      birthDate: form.birthDate || undefined,
     });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -161,6 +263,20 @@ export default function Settings() {
               </SelectContent>
             </Select>
           </div>
+          <div className="space-y-1">
+            <Label>Date of Birth <span className="text-muted-foreground font-normal">(optional)</span></Label>
+            <Input
+              type="date"
+              value={form.birthDate}
+              onChange={e => { setForm(f => ({ ...f, birthDate: e.target.value })); setBirthDateError(''); }}
+              className="h-12"
+              max={new Date().toISOString().split('T')[0]}
+            />
+            {birthDateError && (
+              <p className="text-xs text-destructive mt-1">{birthDateError}</p>
+            )}
+            <p className="text-xs text-muted-foreground">Used to compare your finances against national medians for your age group.</p>
+          </div>
           <Button
             className="w-full h-12 bg-primary hover:bg-primary/90 text-primary-foreground"
             onClick={handleSave}
@@ -170,6 +286,144 @@ export default function Settings() {
             ) : (
               'Save Profile'
             )}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Tax & State Context */}
+      <Card className="border-border shadow-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Calculator className="w-5 h-5 text-primary" /> Tax &amp; State Context
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Used for age benchmarks, the tax estimator, and overtime analysis. All fields are optional — add what you have now and update later.
+          </p>
+
+          {/* Birth date */}
+          <div className="space-y-1">
+            <Label>Date of Birth <span className="text-muted-foreground font-normal">(optional)</span></Label>
+            <Input
+              type="date"
+              value={ctxForm.birthDate}
+              max={new Date().toISOString().split('T')[0]}
+              onChange={e => { setCtx('birthDate', e.target.value); setCtxLocalError(''); }}
+              className="h-12"
+            />
+            {ctxLocalError && <p className="text-xs text-destructive">{ctxLocalError}</p>}
+            <p className="text-xs text-muted-foreground">Age 18–120 · YYYY-MM-DD · Not in the future</p>
+          </div>
+
+          {/* State */}
+          <div className="space-y-1">
+            <Label>State <span className="text-muted-foreground font-normal">(optional)</span></Label>
+            <Select value={ctxForm.stateCode || '__none__'} onValueChange={v => setCtx('stateCode', v === '__none__' ? '' : v)}>
+              <SelectTrigger className="h-12"><SelectValue placeholder="Select state…" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">— Not specified —</SelectItem>
+                {US_STATE_CODES.map(code => (
+                  <SelectItem key={code} value={code}>{code}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">State income tax is currently supported for Oklahoma only.</p>
+          </div>
+
+          {/* Tax filing status */}
+          <div className="space-y-1">
+            <Label>Tax Filing Status</Label>
+            <Select value={ctxForm.taxFilingStatus} onValueChange={v => setCtx('taxFilingStatus', v)}>
+              <SelectTrigger className="h-12"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {TAX_FILING_STATUSES.map(s => (
+                  <SelectItem key={s} value={s}>{s}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Dependents */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <Label>Qualifying Children</Label>
+              <Input
+                type="number"
+                min={0} max={20}
+                value={ctxForm.qualifyingChildren}
+                onChange={e => setCtx('qualifyingChildren', Math.min(20, Math.max(0, Number(e.target.value))))}
+                className="h-12"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Other Dependents</Label>
+              <Input
+                type="number"
+                min={0} max={20}
+                value={ctxForm.otherDependents}
+                onChange={e => setCtx('otherDependents', Math.min(20, Math.max(0, Number(e.target.value))))}
+                className="h-12"
+              />
+            </div>
+          </div>
+
+          {/* Spouse has income */}
+          <div className="flex items-center gap-3 py-1">
+            <Checkbox
+              id="spouseHasIncome"
+              checked={ctxForm.spouseHasIncome}
+              onCheckedChange={v => setCtx('spouseHasIncome', Boolean(v))}
+              className="w-5 h-5"
+            />
+            <Label htmlFor="spouseHasIncome" className="cursor-pointer font-normal">Spouse / partner also has income</Label>
+          </div>
+
+          {/* Additional income & pretax deductions */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <Label>Additional Annual Income ($)</Label>
+              <Input
+                type="number"
+                min={0}
+                value={ctxForm.additionalAnnualIncome}
+                onChange={e => setCtx('additionalAnnualIncome', Math.max(0, Number(e.target.value)))}
+                className="h-12"
+                placeholder="0"
+              />
+              <p className="text-xs text-muted-foreground">Side income, rental, etc.</p>
+            </div>
+            <div className="space-y-1">
+              <Label>Annual Pre-Tax Deductions ($)</Label>
+              <Input
+                type="number"
+                min={0}
+                value={ctxForm.annualPreTaxDeductions}
+                onChange={e => setCtx('annualPreTaxDeductions', Math.max(0, Number(e.target.value)))}
+                className="h-12"
+                placeholder="0"
+              />
+              <p className="text-xs text-muted-foreground">401k, HSA, etc.</p>
+            </div>
+          </div>
+
+          {/* Server error */}
+          {profileContextError && (
+            <div className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded-xl p-3">
+              <AlertTriangle className="w-4 h-4 shrink-0" /> {profileContextError}
+            </div>
+          )}
+
+          <Button
+            className="w-full h-12 bg-primary hover:bg-primary/90 text-primary-foreground"
+            onClick={handleCtxSave}
+            disabled={profileContextSaving}
+          >
+            {ctxSaved
+              ? <><CheckCircle2 className="w-4 h-4 mr-2" /> Saved!</>
+              : profileContextSaving
+              ? 'Saving…'
+              : 'Save Tax Context'}
           </Button>
         </CardContent>
       </Card>

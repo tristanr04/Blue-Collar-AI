@@ -1,0 +1,66 @@
+Verify that the batch financial document scanner works correctly from beginning to end. Do not only inspect the code—run the application and perform real tests.
+
+Test the scanner with at least 9 image documents in one batch.
+
+Confirm all of the following:
+
+1. Every selected file appears in the upload list.
+2. Pressing the scan button immediately starts processing.
+3. The progress counter changes from 0 of 9 as files complete.
+4. Each document changes through the correct status flow:
+   Queued → Processing → Completed
+   or
+   Queued → Processing → Failed
+5. No document remains queued or processing indefinitely.
+6. Every file sends an actual request to the scan API.
+7. The backend receives each uploaded file.
+8. The AI extraction response is returned to the frontend.
+9. Extracted document types, institutions, balances, payments, due dates, account details, and other available fields appear on the review screen.
+10. One failed or unsupported document does not stop the rest of the batch.
+11. A timed-out document is marked failed and processing continues.
+12. The retry button successfully reprocesses failed documents.
+13. PNG, JPG, JPEG, PDF, HEIC, and files with missing MIME types are handled correctly when supported.
+14. The scanner works on mobile Safari and desktop browsers.
+15. No duplicate requests, duplicate documents, blank review cards, frozen loading screens, or unhandled console errors occur.
+16. The app does not move to the review page until every document has either completed or failed.
+17. Completed results can be reviewed, edited, accepted, rejected, and saved correctly.
+18. Uploaded files are not permanently stored after processing unless explicitly required by the application.
+
+Add clear frontend and backend logs for:
+
+- files selected
+- queue created
+- processing started
+- current filename
+- API request sent
+- backend file received
+- AI request started
+- AI response received
+- extraction completed
+- document failed
+- timeout triggered
+- batch completed
+
+Use a 60-second timeout per document. Process files sequentially for reliability unless there is already a proven safe concurrency system.
+
+Test these failure cases:
+
+- invalid file
+- empty file
+- unsupported format
+- corrupted image
+- backend unavailable
+- AI provider unavailable
+- malformed AI response
+- network timeout
+- one failed file in the middle of a valid batch
+
+Do not report success based only on compilation or code review. Continue debugging until a real 9-document batch progresses beyond 0 of 9, every file exits the queued state, and the review screen displays the completed extraction results.
+
+At the end, provide:
+
+1. The root cause of any issue found.
+2. The exact files changed.
+3. A summary of the fix.
+4. The test results for every test case.
+5. Any remaining limitations or failures.

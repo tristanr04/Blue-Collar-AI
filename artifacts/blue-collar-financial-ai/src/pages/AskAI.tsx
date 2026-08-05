@@ -1,7 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Send, Sparkles, User, Loader2, AlertTriangle, ChevronRight } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Send, Sparkles, User, Loader2, AlertTriangle, ChevronRight, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useStore } from '@/lib/store';
+import { useAuth } from '@clerk/react';
 import { askAI } from '@/lib/api';
 
 interface Message {
@@ -22,70 +23,9 @@ const SUGGESTED_QUESTIONS = [
   "What is my best financial move this month?",
 ];
 
-function buildFinancialProfile(store: ReturnType<typeof useStore>): Record<string, unknown> {
-  const { profile, paystubs, debts, bills, assets } = store;
-
-  const monthlyGross = profile?.payFrequency === 'Weekly'
-    ? (paystubs[0]?.grossPay ?? 0) * 4.33
-    : profile?.payFrequency === 'Bi-Weekly'
-    ? (paystubs[0]?.grossPay ?? 0) * 2.17
-    : paystubs[0]?.grossPay ?? 0;
-
-  const monthlyNet = profile?.payFrequency === 'Weekly'
-    ? (paystubs[0]?.netPay ?? 0) * 4.33
-    : profile?.payFrequency === 'Bi-Weekly'
-    ? (paystubs[0]?.netPay ?? 0) * 2.17
-    : paystubs[0]?.netPay ?? 0;
-
-  const totalBills = bills.reduce((s, b) => s + b.amount, 0);
-  const totalDebtMins = debts.reduce((s, d) => s + d.minimumPayment, 0);
-  const freeCashFlow = monthlyNet - totalBills - totalDebtMins;
-  const liquidCash = assets.filter(a => a.type === 'Cash').reduce((s, a) => s + a.value, 0);
-  const totalDebt = debts.reduce((s, d) => s + d.balance, 0);
-  const netWorth = assets.reduce((s, a) => s + a.value, 0) - totalDebt;
-
-  return {
-    profile: profile
-      ? {
-          name: profile.name,
-          hourlyRate: profile.hourlyRate,
-          payFrequency: profile.payFrequency,
-          filingContext: profile.filingContext,
-        }
-      : null,
-    mostRecentPaystub: paystubs[0] ?? null,
-    calculations: {
-      estimatedMonthlyGross: Math.round(monthlyGross),
-      estimatedMonthlyNet: Math.round(monthlyNet),
-      totalMonthlyBills: totalBills,
-      totalMinimumDebtPayments: totalDebtMins,
-      freeCashFlow: Math.round(freeCashFlow),
-      liquidCash,
-      totalDebt,
-      netWorth,
-    },
-    debts: debts.map(d => ({
-      name: d.name,
-      balance: d.balance,
-      aprPercent: d.interestRate,
-      minimumPayment: d.minimumPayment,
-    })),
-    bills: bills.map(b => ({
-      name: b.name,
-      amount: b.amount,
-      dueDay: b.dueDate,
-      autoPay: b.isAutoPay,
-    })),
-    assets: assets.map(a => ({
-      name: a.name,
-      type: a.type,
-      value: a.value,
-    })),
-  };
-}
-
 export default function AskAI() {
   const store = useStore();
+  const { getToken } = useAuth();
   const [messages, setMessages] = useState<Message[]>([
     {
       id: 'intro',
@@ -99,12 +39,24 @@ export default function AskAI() {
   const [isLoading, setIsLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // AbortController for the current in-flight AI request.
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const send = async (text: string) => {
+  // Cancel the in-flight request (user pressed the ✕ button).
+  const cancel = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setIsLoading(false);
+    setMessages(prev => prev.map(m =>
+      m.loading ? { ...m, content: '_(cancelled)_', loading: false } : m,
+    ));
+  }, []);
+
+  const send = useCallback(async (text: string) => {
     const q = text.trim();
     if (!q || isLoading) return;
 
@@ -115,26 +67,46 @@ export default function AskAI() {
     setInput('');
     setIsLoading(true);
 
-    const financialProfile = buildFinancialProfile(store);
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const token = await getToken().catch(() => null);
+
+    // Guard: Clerk token missing means the session has expired.
+    if (!token) {
+      setMessages(prev => prev.map(m =>
+        m.id === aiMsg.id
+          ? { ...m, content: 'Your session has expired. Please reload the page and sign in again.', loading: false }
+          : m,
+      ));
+      setIsLoading(false);
+      return;
+    }
 
     try {
       let accumulated = '';
-      await askAI(q, financialProfile, (delta) => {
+      await askAI(q, (delta) => {
         accumulated += delta;
         setMessages(prev => prev.map(m =>
-          m.id === aiMsg.id ? { ...m, content: accumulated, loading: false } : m
+          m.id === aiMsg.id ? { ...m, content: accumulated, loading: false } : m,
         ));
-      });
+      }, { token, signal: controller.signal });
     } catch (err) {
+      if ((err as any)?.name === 'AbortError') return; // cancelled — already handled
       setMessages(prev => prev.map(m =>
         m.id === aiMsg.id
-          ? { ...m, content: `Sorry, something went wrong: ${err instanceof Error ? err.message : 'Unknown error'}`, loading: false }
-          : m
+          ? {
+              ...m,
+              content: `Sorry, something went wrong: ${err instanceof Error ? err.message : 'Unknown error'}`,
+              loading: false,
+            }
+          : m,
       ));
     } finally {
+      abortRef.current = null;
       setIsLoading(false);
     }
-  };
+  }, [isLoading, store, getToken]);
 
   return (
     <div className="flex flex-col h-[calc(100dvh-4rem)] md:h-[calc(100dvh-0rem)] bg-background">
@@ -183,7 +155,7 @@ export default function AskAI() {
           </div>
         ))}
 
-        {/* Suggested questions (shown only when idle) */}
+        {/* Suggested questions (shown only when idle at start) */}
         {messages.length <= 1 && !isLoading && (
           <div className="space-y-2 pt-2">
             <p className="text-xs text-muted-foreground px-1">Try asking:</p>
@@ -205,7 +177,7 @@ export default function AskAI() {
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
+      {/* Input bar */}
       <div className="flex-shrink-0 border-t border-border p-4 bg-card">
         <form
           className="flex gap-3"
@@ -220,16 +192,24 @@ export default function AskAI() {
             disabled={isLoading}
             className="flex-1 h-12 px-4 rounded-xl border border-border bg-background text-foreground placeholder:text-muted-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
           />
-          <Button
-            type="submit"
-            disabled={!input.trim() || isLoading}
-            className="h-12 w-12 rounded-xl p-0 bg-primary hover:bg-primary/90"
-          >
-            {isLoading
-              ? <Loader2 className="w-5 h-5 animate-spin" />
-              : <Send className="w-5 h-5" />
-            }
-          </Button>
+          {isLoading ? (
+            <Button
+              type="button"
+              onClick={cancel}
+              className="h-12 w-12 rounded-xl p-0 bg-red-600 hover:bg-red-700"
+              title="Cancel"
+            >
+              <X className="w-5 h-5" />
+            </Button>
+          ) : (
+            <Button
+              type="submit"
+              disabled={!input.trim()}
+              className="h-12 w-12 rounded-xl p-0 bg-primary hover:bg-primary/90"
+            >
+              <Send className="w-5 h-5" />
+            </Button>
+          )}
         </form>
         <p className="text-[10px] text-muted-foreground text-center mt-2">
           Blue Collar AI is not a licensed financial adviser. Always verify important decisions.

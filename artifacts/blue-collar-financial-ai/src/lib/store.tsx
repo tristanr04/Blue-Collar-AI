@@ -1,4 +1,24 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
+import { useAuth } from '@clerk/react';
+import { sortPaystubsNewestFirst } from './financial-calculations';
+import {
+  loadSnapshot,
+  saveProfile,
+  createRecord,
+  updateRecord,
+  deleteRecord,
+  startMigration,
+  getMigrationStatus,
+  type FinancialSnapshot,
+} from './api';
+import {
+  loadProfileContext as loadProfileContextApi,
+  saveProfileContext as saveProfileContextApi,
+  type ProfileContext as ServerProfileContext,
+  type ProfileContextInput,
+} from './profile-context-api';
+
+export type { ServerProfileContext, ProfileContextInput };
 
 export type PayFrequency = 'Weekly' | 'Bi-Weekly' | 'Semi-Monthly' | 'Monthly';
 export type FilingContext = 'Single' | 'Married' | 'Head of Household';
@@ -9,6 +29,8 @@ export interface Profile {
   hourlyRate: number;
   filingContext: FilingContext;
   hasCompletedOnboarding: boolean;
+  /** ISO-8601 date string YYYY-MM-DD. Optional; used for age-benchmark card. */
+  birthDate?: string;
 }
 
 export interface Paystub {
@@ -31,6 +53,10 @@ export interface Debt {
   balance: number;
   interestRate: number;
   minimumPayment: number;
+  /** Set from scanned revolving-credit accounts */
+  isRevolving?: boolean;
+  /** Credit card / revolving account limit */
+  creditLimit?: number;
   /** Optional — set from scanned docs for smart matching */
   institutionName?: string;
   lastFour?: string;
@@ -65,6 +91,8 @@ export interface ScannedDocument {
   type: 'Paystub' | 'Bill' | 'Other';
   status: 'Pending Review' | 'Processed' | 'Rejected';
   data?: any;
+  /** SHA-256 hex fingerprint — used for client-side and server-side duplicate detection */
+  fingerprint?: string;
 }
 
 /** One field-level change created by a confirmed document import. */
@@ -94,6 +122,7 @@ export interface ComputedMetrics {
   totalDebt: number;
   netWorth: number;
   healthScore: number;
+  /** Debt-to-income ratio using GROSS monthly income (lender-standard). */
   dti: number;
   emergencyMonths: number;
 }
@@ -107,7 +136,7 @@ export function computeMetrics(
   const freqMult: Record<string, number> = { Weekly: 4.33, 'Bi-Weekly': 2.17, 'Semi-Monthly': 2, Monthly: 1 };
   const mult = freqMult[profile?.payFrequency ?? 'Weekly'] ?? 4.33;
 
-  const latest = paystubs[paystubs.length - 1];
+  const latest = sortPaystubsNewestFirst(paystubs)[0];
   const monthlyNet = Math.round((latest?.netPay ?? 0) * mult);
   const monthlyGross = Math.round((latest?.grossPay ?? 0) * mult);
   const totalBills = bills.reduce((s, b) => s + (b.amount ?? 0), 0);
@@ -120,23 +149,27 @@ export function computeMetrics(
     .reduce((s, a) => s + a.value, 0);
   const totalDebt = debts.reduce((s, d) => s + d.balance, 0);
   const netWorth = assets.reduce((s, a) => s + a.value, 0) - totalDebt;
-  const dti = monthlyNet > 0 ? (totalDebtMin / monthlyNet) * 100 : 0;
+  const dti = monthlyGross > 0 ? (totalDebtMin / monthlyGross) * 100 : 0;
   const monthlyExpenses = totalBills + totalDebtMin;
-  const emergencyMonths = monthlyExpenses > 0 ? Math.round((liquidCash / monthlyExpenses) * 10) / 10 : 0;
+  // When the user has cash but no monthly expenses, coverage is effectively infinite
+  // rather than zero (dividing by zero would show "0 months" which is wrong).
+  const emergencyMonths = monthlyExpenses > 0
+    ? Math.round((liquidCash / monthlyExpenses) * 10) / 10
+    : liquidCash > 0 ? Infinity : 0;
 
-  // Health score (mirrors Dashboard.tsx)
   let healthScore = 0;
   if (monthlyNet > 0 && paystubs.length > 0) {
     let score = 0;
     const maxPts = 90;
     const ratio = freeCashFlow / monthlyNet;
     if (ratio >= 0.2) score += 20; else if (ratio > 0) score += Math.round((ratio / 0.2) * 20);
-    const emM = monthlyExpenses > 0 ? liquidCash / monthlyExpenses : 0;
+    // Same Infinity guard: no expenses + cash present → maximum emergency score.
+    const emM = monthlyExpenses > 0 ? liquidCash / monthlyExpenses : (liquidCash > 0 ? Infinity : 0);
     if (emM >= 6) score += 20; else if (emM >= 3) score += 14; else if (emM >= 1) score += 7;
     const hiB = debts.filter(d => (d.interestRate ?? 0) > 10).reduce((s, d) => s + d.balance, 0);
     const util = Math.min(hiB / 10000, 1);
     if (util < 0.3) score += 15; else if (util < 0.6) score += 8;
-    const dtiR = monthlyNet > 0 ? totalDebtMin / monthlyNet : 1;
+    const dtiR = monthlyGross > 0 ? totalDebtMin / monthlyGross : 1;
     if (dtiR <= 0.15) score += 15; else if (dtiR <= 0.28) score += 10; else if (dtiR <= 0.36) score += 5;
     const hiCount = debts.filter(d => (d.interestRate ?? 0) > 15).length;
     if (hiCount === 0) score += 10; else if (hiCount === 1) score += 4;
@@ -182,14 +215,23 @@ interface StoreContextType extends StoreState {
   addDocument: (doc: Omit<ScannedDocument, 'id' | 'date'>) => void;
   updateDocument: (id: string, updates: Partial<ScannedDocument>) => void;
   removeDocument: (id: string) => void;
-  /** Record a batch of field-level changes and recompute metrics. */
   addChangeRecords: (records: FinancialChangeRecord[]) => void;
-  /** Reverse all changes from a single import (identified by sourceDocumentId). */
   undoImport: (sourceDocumentId: string) => void;
-  /** Restore a single field to its previous value. */
   restoreFieldValue: (changeId: string) => void;
   resetToDemo: () => void;
   clearAll: () => void;
+  isLoadingFromServer: boolean;
+  migrationPending: boolean;
+  migrateLocalToServer: () => Promise<void>;
+  dismissMigration: () => void;
+  // ─── Profile context ────────────────────────────────────────────────────────
+  profileContext: ServerProfileContext | null;
+  profileContextLoading: boolean;
+  profileContextSaving: boolean;
+  profileContextError: string | null;
+  loadProfileContext: () => Promise<void>;
+  saveProfileContext: (input: ProfileContextInput) => Promise<void>;
+  clearProfileContext: () => void;
 }
 
 // ─── Demo & default state ─────────────────────────────────────────────────────
@@ -206,7 +248,7 @@ const DEMO_BASE = {
   }],
   debts: [
     { id: 'd1', name: 'F-150 Auto Loan', balance: 24500, interestRate: 5.5, minimumPayment: 480 },
-    { id: 'd2', name: 'Credit Card (Tools)', balance: 3200, interestRate: 19.9, minimumPayment: 110 },
+    { id: 'd2', name: 'Credit Card (Tools)', balance: 3200, interestRate: 19.9, minimumPayment: 110, isRevolving: true, creditLimit: 5000 },
   ],
   bills: [
     { id: 'b1', name: 'Rent', amount: 1600, dueDate: 1, isAutoPay: true },
@@ -219,15 +261,12 @@ const DEMO_BASE = {
     { id: 'a3', name: 'Union 401k', type: 'Investment' as const, value: 14500 },
   ],
   documents: [
-    { id: 'doc1', date: new Date().toISOString(), type: 'Paystub' as const, status: 'Pending Review' as const, data: { netPay: 1400, grossPay: 1900 } },
+    { id: 'doc1', date: new Date().toISOString(), type: 'Paystub' as const, status: 'Pending Review' as const },
   ],
   changeHistory: [] as FinancialChangeRecord[],
 };
 
-const DEMO_STATE: StoreState = {
-  ...DEMO_BASE,
-  computed: computeMetrics(DEMO_BASE),
-};
+const DEMO_STATE: StoreState = { ...DEMO_BASE, computed: computeMetrics(DEMO_BASE) };
 
 const DEFAULT_STATE: StoreState = {
   profile: null, paystubs: [], debts: [], bills: [], assets: [], documents: [],
@@ -238,28 +277,130 @@ const DEFAULT_STATE: StoreState = {
 
 const StoreContext = createContext<StoreContextType | null>(null);
 
-/** Re-hydrate old stored state that may be missing newer fields. */
 function migrateState(raw: any): StoreState {
-  return {
-    ...DEFAULT_STATE,
-    ...raw,
+  const base = {
+    ...DEFAULT_STATE, ...raw,
     changeHistory: raw.changeHistory ?? [],
-    computed: raw.computed ?? computeMetrics(raw),
-    // Ensure arrays are always present
     paystubs: raw.paystubs ?? [],
     debts: raw.debts ?? [],
     bills: raw.bills ?? [],
     assets: raw.assets ?? [],
     documents: raw.documents ?? [],
   };
+  base.computed = computeMetrics(base);
+  return base;
 }
 
-/** Apply an update to the mutable parts of state and recompute metrics. */
 function withComputed(patch: Partial<StoreState>, prev: StoreState): StoreState {
   const next = { ...prev, ...patch };
   next.computed = computeMetrics(next);
   return next;
 }
+
+// ─── Server ↔ Store data mappers ──────────────────────────────────────────────
+
+function mapSnapshotToState(snapshot: FinancialSnapshot): Partial<StoreState> {
+  const prof = snapshot.profile as any;
+  return {
+    profile: prof ? {
+      name: prof.name ?? '',
+      payFrequency: (prof.payFrequency ?? 'Weekly') as PayFrequency,
+      hourlyRate: Number(prof.hourlyRate ?? 0),
+      filingContext: (prof.filingContext ?? 'Single') as FilingContext,
+      hasCompletedOnboarding: Boolean(prof.hasCompletedOnboarding),
+      birthDate: prof.birthDate ?? undefined,
+    } : null,
+    paystubs: (snapshot.paystubs as any[]).map((p) => ({
+      id: p.id,
+      date: p.payDate ? String(p.payDate) : new Date().toISOString(),
+      employer: p.employer ?? '',
+      regularHours: Number(p.regularHours ?? 0),
+      overtimeHours: Number(p.overtimeHours ?? 0),
+      doubleTimeHours: Number(p.doubleTimeHours ?? 0),
+      perDiem: Number(p.perDiem ?? 0),
+      grossPay: Number(p.grossPay ?? 0),
+      netPay: Number(p.netPay ?? 0),
+      taxes: Number(p.taxes ?? 0),
+      deductions: Number(p.deductions ?? 0),
+    })),
+    debts: (snapshot.debts as any[]).map((d) => ({
+      id: d.id,
+      name: d.name,
+      balance: Number(d.balance ?? 0),
+      interestRate: Number(d.interestRate ?? 0),
+      minimumPayment: Number(d.minimumPayment ?? 0),
+      isRevolving: Boolean(d.isRevolving),
+      creditLimit: d.creditLimit != null ? Number(d.creditLimit) : undefined,
+      institutionName: d.institutionName ?? undefined,
+      lastFour: d.lastFour ?? undefined,
+    })),
+    bills: (snapshot.bills as any[]).map((b) => ({
+      id: b.id,
+      name: b.name,
+      amount: Number(b.amount ?? 0),
+      dueDate: Number(b.dueDay ?? 1),
+      isAutoPay: Boolean(b.isAutoPay),
+      providerNormalized: b.providerNormalized ?? undefined,
+    })),
+    assets: (snapshot.assets as any[]).map((a) => ({
+      id: a.id,
+      name: a.name,
+      type: (a.type ?? 'Other') as 'Cash' | 'Investment' | 'Other',
+      value: Number(a.value ?? 0),
+      institutionName: a.institutionName ?? undefined,
+      lastFour: a.lastFour ?? undefined,
+    })),
+  };
+}
+
+function paystubToApi(p: Omit<Paystub, 'id'>): Record<string, unknown> {
+  return {
+    employer: p.employer, payDate: p.date,
+    regularHours: p.regularHours, overtimeHours: p.overtimeHours,
+    doubleTimeHours: p.doubleTimeHours, perDiem: p.perDiem,
+    grossPay: p.grossPay, netPay: p.netPay,
+    taxes: p.taxes, deductions: p.deductions,
+  };
+}
+function debtToApi(d: Partial<Omit<Debt, 'id'>>): Record<string, unknown> {
+  return {
+    ...(d.name !== undefined && { name: d.name }),
+    ...(d.balance !== undefined && { balance: d.balance }),
+    ...(d.interestRate !== undefined && { interestRate: d.interestRate }),
+    ...(d.minimumPayment !== undefined && { minimumPayment: d.minimumPayment }),
+    isRevolving: d.isRevolving ?? false,
+    creditLimit: d.creditLimit ?? null,
+    institutionName: d.institutionName ?? null,
+    lastFour: d.lastFour ?? null,
+  };
+}
+function billToApi(b: Partial<Omit<Bill, 'id'>>): Record<string, unknown> {
+  return {
+    ...(b.name !== undefined && { name: b.name }),
+    ...(b.amount !== undefined && { amount: b.amount }),
+    ...(b.dueDate !== undefined && { dueDay: b.dueDate }),
+    ...(b.isAutoPay !== undefined && { isAutoPay: b.isAutoPay }),
+    providerNormalized: b.providerNormalized ?? null,
+  };
+}
+function assetToApi(a: Partial<Omit<Asset, 'id'>>): Record<string, unknown> {
+  return {
+    ...(a.name !== undefined && { name: a.name }),
+    ...(a.type !== undefined && { type: a.type }),
+    ...(a.value !== undefined && { value: a.value }),
+    institutionName: a.institutionName ?? null,
+    lastFour: a.lastFour ?? null,
+  };
+}
+function profileToApi(p: Profile): Record<string, unknown> {
+  return {
+    name: p.name, payFrequency: p.payFrequency, hourlyRate: p.hourlyRate,
+    filingContext: p.filingContext, hasCompletedOnboarding: p.hasCompletedOnboarding,
+    birthDate: p.birthDate ?? null,
+  };
+}
+
+// ─── StoreProvider ────────────────────────────────────────────────────────────
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<StoreState>(() => {
@@ -276,71 +417,386 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('bcf_state', JSON.stringify(state));
   }, [state]);
 
-  const updateProfile = useCallback((profileUpdates: Partial<Profile>) => {
-    setState(prev => withComputed({
-      profile: prev.profile
-        ? { ...prev.profile, ...profileUpdates }
-        : { name: '', payFrequency: 'Weekly', hourlyRate: 0, filingContext: 'Single', hasCompletedOnboarding: false, ...profileUpdates } as Profile,
-    }, prev));
+  // ─── Auth ─────────────────────────────────────────────────────────────────
+
+  const { isLoaded, isSignedIn, getToken } = useAuth();
+  const tokenRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn) { tokenRef.current = null; return; }
+    const refresh = () => getToken().then(t => { tokenRef.current = t; }).catch(() => {});
+    refresh();
+    const id = setInterval(refresh, 50_000);
+    return () => clearInterval(id);
+  }, [isLoaded, isSignedIn, getToken]);
+
+  // ─── Local→Server UUID resolution map ─────────────────────────────────────
+  // Maps a temporary local UUID to a Promise that resolves with the server UUID.
+  // delete/update operations chain on this promise so they always use the real UUID.
+  const idPendingMap = useRef<Map<string, Promise<string>>>(new Map());
+
+  // ─── Server snapshot on sign-in ───────────────────────────────────────────
+
+  const [serverSynced, setServerSynced] = useState(false);
+  const [isLoadingFromServer, setIsLoadingFromServer] = useState(false);
+  const [migrationPending, setMigrationPending] = useState(false);
+  const stateRef = useRef(state);
+  useEffect(() => { stateRef.current = state; });
+
+  // ─── Profile context state ───────────────────────────────────────────────
+  const [profileContext, setProfileContext] = useState<ServerProfileContext | null>(null);
+  const [profileContextLoading, setProfileContextLoading] = useState(false);
+  const [profileContextSaving, setProfileContextSaving] = useState(false);
+  const [profileContextError, setProfileContextError] = useState<string | null>(null);
+  const profileContextLoadingRef = useRef(false);
+
+  useEffect(() => {
+    if (isLoaded && !isSignedIn) {
+      setServerSynced(false);
+      setMigrationPending(false);
+      setProfileContext(null);
+      setProfileContextError(null);
+    }
+  }, [isLoaded, isSignedIn]);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || serverSynced) return;
+    let cancelled = false;
+    (async () => {
+      const token = await getToken();
+      if (!token || cancelled) return;
+      setIsLoadingFromServer(true);
+      try {
+        const snapshot = await loadSnapshot(token);
+        if (cancelled) return;
+        const hasServerData = Boolean(
+          snapshot.profile || snapshot.paystubs?.length ||
+          snapshot.debts?.length || snapshot.bills?.length || snapshot.assets?.length,
+        );
+        if (hasServerData) {
+          setState(migrateState({ ...DEFAULT_STATE, ...mapSnapshotToState(snapshot) }));
+        } else {
+          const cur = stateRef.current;
+          const hasLocalData = cur.paystubs.length > 0 || cur.debts.length > 0 ||
+            cur.bills.length > 0 || cur.assets.length > 0;
+          if (hasLocalData) setMigrationPending(true);
+        }
+      } catch (err) {
+        console.error('[store] Failed to load server snapshot:', err);
+      } finally {
+        if (!cancelled) { setIsLoadingFromServer(false); setServerSynced(true); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isLoaded, isSignedIn, serverSynced, getToken]);
+
+  // ─── Profile context load (after first server sync) ──────────────────────
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || !serverSynced) return;
+    if (profileContextLoadingRef.current || profileContext !== null) return;
+    profileContextLoadingRef.current = true;
+    setProfileContextLoading(true);
+    getToken()
+      .then(token => token ? loadProfileContextApi(token) : null)
+      .then(ctx => { setProfileContext(ctx); })
+      .catch(err => {
+        console.error('[store] profile context load failed:', err);
+        setProfileContextError(err instanceof Error ? err.message : 'Failed to load profile context');
+      })
+      .finally(() => {
+        setProfileContextLoading(false);
+        profileContextLoadingRef.current = false;
+      });
+  }, [isLoaded, isSignedIn, serverSynced, getToken, profileContext]);
+
+  const loadProfileContext = useCallback(async () => {
+    const token = tokenRef.current;
+    if (!token || profileContextLoadingRef.current) return;
+    profileContextLoadingRef.current = true;
+    setProfileContextLoading(true);
+    setProfileContextError(null);
+    try {
+      const ctx = await loadProfileContextApi(token);
+      setProfileContext(ctx);
+    } catch (err) {
+      setProfileContextError(err instanceof Error ? err.message : 'Failed to load profile context');
+    } finally {
+      setProfileContextLoading(false);
+      profileContextLoadingRef.current = false;
+    }
   }, []);
 
-  const addPaystub = useCallback((paystub: Omit<Paystub, 'id'>): string => {
-    const id = crypto.randomUUID();
-    setState(prev => withComputed({ paystubs: [...prev.paystubs, { ...paystub, id }] }, prev));
-    return id;
+  const saveProfileContext = useCallback(async (input: ProfileContextInput) => {
+    const token = tokenRef.current;
+    if (!token) throw new Error('Not signed in');
+    setProfileContextSaving(true);
+    setProfileContextError(null);
+    try {
+      const ctx = await saveProfileContextApi(token, input);
+      setProfileContext(ctx);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to save profile context';
+      setProfileContextError(msg);
+      throw err;
+    } finally {
+      setProfileContextSaving(false);
+    }
   }, []);
+
+  const clearProfileContext = useCallback(() => {
+    setProfileContext(null);
+    setProfileContextError(null);
+  }, []);
+
+  // ─── Migration (idempotent) ────────────────────────────────────────────────
+  //
+  // The idempotency key is a UUID generated once and persisted in localStorage
+  // (MIGRATION_IDEM_KEY) separately from the main state blob.  This key survives
+  // page refreshes and disconnects, so a retry always reuses the same key and the
+  // server can return the original result without creating duplicates.
+  //
+  // Flow:
+  //   1. Check if an existing key committed while offline → apply result and done.
+  //   2. Generate a new key if none exists, persist to localStorage.
+  //   3. POST /api/migrate — server runs everything in one DB transaction.
+  //   4. Poll GET /api/migrate/status/:key every 2 s until committed or failed.
+  //   5. On committed: clear key, clear pending UUID map, reload from server.
+  //   6. On failed: clear key (next call generates a fresh one), throw error.
+
+  const MIGRATION_IDEM_KEY = 'bcf_migration_idem_key';
+
+  const migrateLocalToServer = useCallback(async () => {
+    const token = tokenRef.current;
+    if (!token) throw new Error('Not signed in — please reload and try again.');
+
+    // ── Step 1: check if a prior migration already committed while we were offline ──
+    let idempotencyKey = localStorage.getItem(MIGRATION_IDEM_KEY);
+    if (idempotencyKey) {
+      try {
+        const existing = await getMigrationStatus(token, idempotencyKey);
+        if (existing.status === 'committed') {
+          // Already done — just reload server data.
+          localStorage.removeItem(MIGRATION_IDEM_KEY);
+          idPendingMap.current.clear();
+          setMigrationPending(false);
+          setServerSynced(false);
+          return;
+        }
+        if (existing.status === 'failed') {
+          // Previous attempt failed cleanly — generate a fresh key below.
+          localStorage.removeItem(MIGRATION_IDEM_KEY);
+          idempotencyKey = null;
+        }
+        // 'pending' → re-POST with the same key; server serialises concurrent requests.
+      } catch {
+        // Status check failed (network error, 404) — proceed with the existing key.
+      }
+    }
+
+    // ── Step 2: mint a key if we don't have one ───────────────────────────────
+    if (!idempotencyKey) {
+      idempotencyKey = crypto.randomUUID();
+      localStorage.setItem(MIGRATION_IDEM_KEY, idempotencyKey);
+    }
+
+    // ── Step 3: build payload and submit ─────────────────────────────────────
+    const cur = stateRef.current;
+    const payload = {
+      idempotencyKey,
+      profile: cur.profile ? profileToApi(cur.profile) : undefined,
+      paystubs: cur.paystubs.map(p => ({ clientId: p.id, ...paystubToApi(p) })),
+      debts:    cur.debts.map(d    => ({ clientId: d.id, ...debtToApi(d) })),
+      bills:    cur.bills.map(b    => ({ clientId: b.id, ...billToApi(b) })),
+      assets:   cur.assets.map(a   => ({ clientId: a.id, ...assetToApi(a) })),
+    };
+
+    let response = await startMigration(token, payload);
+
+    // ── Step 4: poll until committed or failed (handles disconnect after submit) ──
+    const MAX_POLLS = 60; // 2 min at 2-second intervals
+    for (let i = 0; i < MAX_POLLS && response.status === 'pending'; i++) {
+      await new Promise<void>(resolve => setTimeout(resolve, 2000));
+      response = await getMigrationStatus(token, idempotencyKey);
+    }
+
+    // ── Step 5 / 6: apply result or surface failure ───────────────────────────
+    if (response.status !== 'committed') {
+      localStorage.removeItem(MIGRATION_IDEM_KEY);
+      throw new Error(
+        response.errorMessage ?? 'Migration timed out. Please try again.',
+      );
+    }
+
+    localStorage.removeItem(MIGRATION_IDEM_KEY);
+    idPendingMap.current.clear();
+    setMigrationPending(false);
+    setServerSynced(false); // triggers full snapshot reload, replacing local IDs with server IDs
+  }, []);
+
+  const dismissMigration = useCallback(() => setMigrationPending(false), []);
+
+  // ─── Sync helpers ─────────────────────────────────────────────────────────
+
+  /**
+   * Fire a simple background write (profile save, or any non-create operation
+   * that doesn't need UUID resolution).
+   */
+  const bgSync = useCallback((fn: (token: string) => Promise<unknown>) => {
+    const token = tokenRef.current;
+    if (!token) return;
+    fn(token).catch(err => console.error('[store] sync failed:', err));
+  }, []);
+
+  /**
+   * Fire a CREATE call in the background. When the server responds with the
+   * real UUID, replace the temporary localId in state and in changeHistory.
+   * The Promise in idPendingMap resolves with the server UUID so that any
+   * delete/update queued before the response arrives uses the correct ID.
+   */
+  const bgCreate = useCallback(<T extends { id: string }>(
+    localId: string,
+    section: 'paystubs' | 'debts' | 'bills' | 'assets',
+    fn: (token: string) => Promise<T>,
+    buildPatch: (prev: StoreState, serverId: string) => Partial<StoreState>,
+  ) => {
+    const token = tokenRef.current;
+    if (!token) return;
+
+    const promise = fn(token)
+      .then(result => {
+        const serverId = result.id;
+        setState(prev => withComputed(buildPatch(prev, serverId), prev));
+        idPendingMap.current.delete(localId);
+        return serverId;
+      })
+      .catch(err => {
+        console.error(`[store] ${section} create sync failed:`, err);
+        idPendingMap.current.delete(localId);
+        return localId; // keep local ID on failure — next server load will reconcile
+      });
+
+    idPendingMap.current.set(localId, promise);
+  }, []);
+
+  /**
+   * Fire a DELETE or UPDATE call, waiting for any in-flight create on the same
+   * record to finish first so the server UUID is always used.
+   */
+  const bgWithIdSync = useCallback((
+    localId: string,
+    fn: (token: string, resolvedId: string) => Promise<unknown>,
+  ) => {
+    const token = tokenRef.current;
+    if (!token) return;
+
+    const exec = (serverId: string) =>
+      fn(token, serverId).catch(err => console.error('[store] sync failed:', err));
+
+    const pending = idPendingMap.current.get(localId);
+    if (pending) {
+      pending.then(exec).catch(() => {});
+    } else {
+      exec(localId);
+    }
+  }, []);
+
+  // ─── Profile ──────────────────────────────────────────────────────────────
+
+  const updateProfile = useCallback((profileUpdates: Partial<Profile>) => {
+    setState(prev => {
+      const next = prev.profile
+        ? { ...prev.profile, ...profileUpdates }
+        : { name: '', payFrequency: 'Weekly' as PayFrequency, hourlyRate: 0, filingContext: 'Single' as FilingContext, hasCompletedOnboarding: false, birthDate: undefined, ...profileUpdates } as Profile;
+      bgSync(t => saveProfile(t, profileToApi(next)));
+      return withComputed({ profile: next }, prev);
+    });
+  }, [bgSync]);
+
+  // ─── Paystubs ─────────────────────────────────────────────────────────────
+
+  const addPaystub = useCallback((paystub: Omit<Paystub, 'id'>): string => {
+    const localId = crypto.randomUUID();
+    setState(prev => withComputed({ paystubs: [...prev.paystubs, { ...paystub, id: localId }] }, prev));
+    bgCreate(localId, 'paystubs', t => createRecord(t, 'paystubs', paystubToApi(paystub)), (prev, serverId) => ({
+      paystubs: prev.paystubs.map(p => p.id === localId ? { ...p, id: serverId } : p),
+      changeHistory: prev.changeHistory.map(r => r.recordId === localId ? { ...r, recordId: serverId } : r),
+    }));
+    return localId;
+  }, [bgCreate]);
 
   const removePaystub = useCallback((id: string) => {
     setState(prev => withComputed({ paystubs: prev.paystubs.filter(p => p.id !== id) }, prev));
-  }, []);
+    bgWithIdSync(id, (t, serverId) => deleteRecord(t, 'paystubs', serverId));
+  }, [bgWithIdSync]);
+
+  // ─── Debts ────────────────────────────────────────────────────────────────
 
   const addDebt = useCallback((debt: Omit<Debt, 'id'>): string => {
-    const id = crypto.randomUUID();
-    setState(prev => withComputed({ debts: [...prev.debts, { ...debt, id }] }, prev));
-    return id;
-  }, []);
+    const localId = crypto.randomUUID();
+    setState(prev => withComputed({ debts: [...prev.debts, { ...debt, id: localId }] }, prev));
+    bgCreate(localId, 'debts', t => createRecord(t, 'debts', debtToApi(debt)), (prev, serverId) => ({
+      debts: prev.debts.map(d => d.id === localId ? { ...d, id: serverId } : d),
+      changeHistory: prev.changeHistory.map(r => r.recordId === localId ? { ...r, recordId: serverId } : r),
+    }));
+    return localId;
+  }, [bgCreate]);
 
   const removeDebt = useCallback((id: string) => {
     setState(prev => withComputed({ debts: prev.debts.filter(d => d.id !== id) }, prev));
-  }, []);
+    bgWithIdSync(id, (t, serverId) => deleteRecord(t, 'debts', serverId));
+  }, [bgWithIdSync]);
 
   const updateDebt = useCallback((id: string, updates: Partial<Debt>) => {
-    setState(prev => withComputed({
-      debts: prev.debts.map(d => d.id === id ? { ...d, ...updates } : d),
-    }, prev));
-  }, []);
+    setState(prev => withComputed({ debts: prev.debts.map(d => d.id === id ? { ...d, ...updates } : d) }, prev));
+    bgWithIdSync(id, (t, serverId) => updateRecord(t, 'debts', serverId, debtToApi(updates)));
+  }, [bgWithIdSync]);
+
+  // ─── Bills ────────────────────────────────────────────────────────────────
 
   const addBill = useCallback((bill: Omit<Bill, 'id'>): string => {
-    const id = crypto.randomUUID();
-    setState(prev => withComputed({ bills: [...prev.bills, { ...bill, id }] }, prev));
-    return id;
-  }, []);
+    const localId = crypto.randomUUID();
+    setState(prev => withComputed({ bills: [...prev.bills, { ...bill, id: localId }] }, prev));
+    bgCreate(localId, 'bills', t => createRecord(t, 'bills', billToApi(bill)), (prev, serverId) => ({
+      bills: prev.bills.map(b => b.id === localId ? { ...b, id: serverId } : b),
+      changeHistory: prev.changeHistory.map(r => r.recordId === localId ? { ...r, recordId: serverId } : r),
+    }));
+    return localId;
+  }, [bgCreate]);
 
   const removeBill = useCallback((id: string) => {
     setState(prev => withComputed({ bills: prev.bills.filter(b => b.id !== id) }, prev));
-  }, []);
+    bgWithIdSync(id, (t, serverId) => deleteRecord(t, 'bills', serverId));
+  }, [bgWithIdSync]);
 
   const updateBill = useCallback((id: string, updates: Partial<Bill>) => {
-    setState(prev => withComputed({
-      bills: prev.bills.map(b => b.id === id ? { ...b, ...updates } : b),
-    }, prev));
-  }, []);
+    setState(prev => withComputed({ bills: prev.bills.map(b => b.id === id ? { ...b, ...updates } : b) }, prev));
+    bgWithIdSync(id, (t, serverId) => updateRecord(t, 'bills', serverId, billToApi(updates)));
+  }, [bgWithIdSync]);
+
+  // ─── Assets ───────────────────────────────────────────────────────────────
 
   const addAsset = useCallback((asset: Omit<Asset, 'id'>): string => {
-    const id = crypto.randomUUID();
-    setState(prev => withComputed({ assets: [...prev.assets, { ...asset, id }] }, prev));
-    return id;
-  }, []);
+    const localId = crypto.randomUUID();
+    setState(prev => withComputed({ assets: [...prev.assets, { ...asset, id: localId }] }, prev));
+    bgCreate(localId, 'assets', t => createRecord(t, 'assets', assetToApi(asset)), (prev, serverId) => ({
+      assets: prev.assets.map(a => a.id === localId ? { ...a, id: serverId } : a),
+      changeHistory: prev.changeHistory.map(r => r.recordId === localId ? { ...r, recordId: serverId } : r),
+    }));
+    return localId;
+  }, [bgCreate]);
 
   const removeAsset = useCallback((id: string) => {
     setState(prev => withComputed({ assets: prev.assets.filter(a => a.id !== id) }, prev));
-  }, []);
+    bgWithIdSync(id, (t, serverId) => deleteRecord(t, 'assets', serverId));
+  }, [bgWithIdSync]);
 
   const updateAsset = useCallback((id: string, updates: Partial<Asset>) => {
-    setState(prev => withComputed({
-      assets: prev.assets.map(a => a.id === id ? { ...a, ...updates } : a),
-    }, prev));
-  }, []);
+    setState(prev => withComputed({ assets: prev.assets.map(a => a.id === id ? { ...a, ...updates } : a) }, prev));
+    bgWithIdSync(id, (t, serverId) => updateRecord(t, 'assets', serverId, assetToApi(updates)));
+  }, [bgWithIdSync]);
+
+  // ─── Documents ────────────────────────────────────────────────────────────
 
   const addDocument = useCallback((doc: Omit<ScannedDocument, 'id' | 'date'>) => {
     setState(prev => ({
@@ -350,54 +806,37 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const updateDocument = useCallback((id: string, updates: Partial<ScannedDocument>) => {
-    setState(prev => ({
-      ...prev,
-      documents: prev.documents.map(d => d.id === id ? { ...d, ...updates } : d),
-    }));
+    setState(prev => ({ ...prev, documents: prev.documents.map(d => d.id === id ? { ...d, ...updates } : d) }));
   }, []);
 
   const removeDocument = useCallback((id: string) => {
     setState(prev => ({ ...prev, documents: prev.documents.filter(d => d.id !== id) }));
   }, []);
 
+  // ─── Change history ───────────────────────────────────────────────────────
+
   const addChangeRecords = useCallback((records: FinancialChangeRecord[]) => {
     if (records.length === 0) return;
-    setState(prev => ({
-      ...prev,
-      changeHistory: [...prev.changeHistory, ...records],
-      // metrics already current since the underlying add/update calls already ran withComputed
-    }));
+    setState(prev => ({ ...prev, changeHistory: [...prev.changeHistory, ...records] }));
   }, []);
 
   const undoImport = useCallback((sourceDocumentId: string) => {
     setState(prev => {
       const toUndo = prev.changeHistory.filter(r => r.sourceDocumentId === sourceDocumentId);
       if (toUndo.length === 0) return prev;
-
-      let assets = [...prev.assets];
-      let debts = [...prev.debts];
-      let bills = [...prev.bills];
-      let paystubs = [...prev.paystubs];
-
-      // Process in reverse so we undo later changes first
+      let assets = [...prev.assets], debts = [...prev.debts], bills = [...prev.bills], paystubs = [...prev.paystubs];
       for (const rec of [...toUndo].reverse()) {
         if (rec.field === 'created') {
-          // Delete the record that was created
           if (rec.destinationSection === 'assets') assets = assets.filter(a => a.id !== rec.recordId);
           else if (rec.destinationSection === 'debts') debts = debts.filter(d => d.id !== rec.recordId);
           else if (rec.destinationSection === 'bills') bills = bills.filter(b => b.id !== rec.recordId);
           else if (rec.destinationSection === 'paystubs') paystubs = paystubs.filter(p => p.id !== rec.recordId);
         } else if (rec.oldValue !== null && rec.oldValue !== undefined) {
-          // Only restore fields where we have a meaningful previous value
-          if (rec.destinationSection === 'assets')
-            assets = assets.map(a => a.id === rec.recordId ? { ...a, [rec.field]: rec.oldValue } : a);
-          else if (rec.destinationSection === 'debts')
-            debts = debts.map(d => d.id === rec.recordId ? { ...d, [rec.field]: rec.oldValue } : d);
-          else if (rec.destinationSection === 'bills')
-            bills = bills.map(b => b.id === rec.recordId ? { ...b, [rec.field]: rec.oldValue } : b);
+          if (rec.destinationSection === 'assets') assets = assets.map(a => a.id === rec.recordId ? { ...a, [rec.field]: rec.oldValue } : a);
+          else if (rec.destinationSection === 'debts') debts = debts.map(d => d.id === rec.recordId ? { ...d, [rec.field]: rec.oldValue } : d);
+          else if (rec.destinationSection === 'bills') bills = bills.map(b => b.id === rec.recordId ? { ...b, [rec.field]: rec.oldValue } : b);
         }
       }
-
       const changeHistory = prev.changeHistory.filter(r => r.sourceDocumentId !== sourceDocumentId);
       return withComputed({ assets, debts, bills, paystubs, changeHistory }, prev);
     });
@@ -406,20 +845,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const restoreFieldValue = useCallback((changeId: string) => {
     setState(prev => {
       const rec = prev.changeHistory.find(r => r.id === changeId);
-      // Skip: no record, creation records, or records with no meaningful old value
       if (!rec || rec.field === 'created' || rec.oldValue === null || rec.oldValue === undefined) return prev;
-
-      let assets = prev.assets;
-      let debts = prev.debts;
-      let bills = prev.bills;
-
-      if (rec.destinationSection === 'assets')
-        assets = assets.map(a => a.id === rec.recordId ? { ...a, [rec.field]: rec.oldValue } : a);
-      else if (rec.destinationSection === 'debts')
-        debts = debts.map(d => d.id === rec.recordId ? { ...d, [rec.field]: rec.oldValue } : d);
-      else if (rec.destinationSection === 'bills')
-        bills = bills.map(b => b.id === rec.recordId ? { ...b, [rec.field]: rec.oldValue } : b);
-
+      let assets = prev.assets, debts = prev.debts, bills = prev.bills;
+      if (rec.destinationSection === 'assets') assets = assets.map(a => a.id === rec.recordId ? { ...a, [rec.field]: rec.oldValue } : a);
+      else if (rec.destinationSection === 'debts') debts = debts.map(d => d.id === rec.recordId ? { ...d, [rec.field]: rec.oldValue } : d);
+      else if (rec.destinationSection === 'bills') bills = bills.map(b => b.id === rec.recordId ? { ...b, [rec.field]: rec.oldValue } : b);
       const changeHistory = prev.changeHistory.filter(r => r.id !== changeId);
       return withComputed({ assets, debts, bills, changeHistory }, prev);
     });
@@ -439,6 +869,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       addDocument, updateDocument, removeDocument,
       addChangeRecords, undoImport, restoreFieldValue,
       resetToDemo, clearAll,
+      isLoadingFromServer, migrationPending, migrateLocalToServer, dismissMigration,
+      profileContext, profileContextLoading, profileContextSaving, profileContextError,
+      loadProfileContext, saveProfileContext, clearProfileContext,
     }}>
       {children}
     </StoreContext.Provider>

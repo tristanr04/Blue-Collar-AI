@@ -200,18 +200,21 @@ export function buildUpdatePlan(
     }
 
     if (isDebtType(doc.docType)) {
+      // Auto Loan uses canonical field names (balanceOwed, accountLast4, monthsRemaining);
+      // other debt types fall back to the legacy names.
+      const debtLastFour = s('accountLast4') || lastFour;
       const bal =
-        n('currentBalance') || n('principalBalance') || n('statementBalance') ||
-        n('closingBalance');
+        n('balanceOwed') || n('currentBalance') || n('principalBalance') ||
+        n('statementBalance') || n('closingBalance');
       if (bal <= 0) continue;
 
       const name = buildDebtName(doc);
-      const statementDateStr = s('statementDate') || s('dueDate');
+      const statementDateStr = s('statementDate') || s('nextDueDate') || s('dueDate');
       const existingDebt = findMatchingDebt(
         store.debts,
         doc.docType,
-        doc.institutionName || s('issuer') || s('lender'),
-        lastFour,
+        doc.institutionName || s('loanName') || s('issuer') || s('lender'),
+        debtLastFour,
       );
 
       const isOlderStatement = existingDebt
@@ -224,7 +227,7 @@ export function buildUpdatePlan(
         interestRate: n('apr') || n('interestRate'),
         minimumPayment: n('minimumPayment') || n('monthlyPayment'),
         institutionName: doc.institutionName || undefined,
-        lastFour: lastFour || undefined,
+        lastFour: debtLastFour || undefined,
         lastUpdatedAt: new Date().toISOString(),
       };
 

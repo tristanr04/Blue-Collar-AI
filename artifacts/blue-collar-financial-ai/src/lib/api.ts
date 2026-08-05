@@ -1,10 +1,10 @@
-// API client — all calls go to the API server artifact at /api-server
-// In Replit path-based routing, this resolves correctly through the shared proxy.
-
+// API client — all calls go to the API server artifact at /api
 // Replit path routing: artifact.toml maps paths=["/api"] to the API server on
 // port 8080. The Vite dev server also proxies /api → 8080 (see vite.config.ts).
 // Never use /api-server/... — that prefix is not a registered service path.
 const API_BASE = "/api";
+
+// ─── Shared types ─────────────────────────────────────────────────────────────
 
 export interface ScanFieldValue {
   value: string | number | boolean | null;
@@ -27,6 +27,35 @@ export interface UnknownField {
   confidence: number | null;
 }
 
+/** Normalized vehicle-loan extraction returned when docType is Auto Loan. */
+export interface VehicleLoanExtraction {
+  documentType: "vehicleLoan";
+  loanName: string | null;
+  accountLast4: string | null;
+  balanceOwed: number | null;
+  originalAmount: number | null;
+  apr: number | null;
+  monthlyPayment: number | null;
+  monthsRemaining: number | null;
+  nextDueDate: string | null;
+  confidence: Record<string, number>;
+}
+
+/** Normalized bank-statement extraction returned for Bank Statement / Checking / Savings docs. */
+export interface BankStatementExtraction {
+  documentType: "bankStatement";
+  institution: string | null;
+  accountName: string | null;
+  lastFour: string | null;
+  closingBalance: number | null;
+  currentBalance: number | null;
+  availableBalance: number | null;
+  statementStartDate: string | null;
+  statementEndDate: string | null;
+  apy: number | null;
+  confidence: Record<string, number>;
+}
+
 export interface ScanResult {
   docType: string;
   classificationConfidence: number;
@@ -36,150 +65,142 @@ export interface ScanResult {
   fileName: string;
   mimeType: string;
   error?: string;
+  /** Set when the server used a document fast path. */
+  success?: boolean;
+  type?: string;
+  documentType?: string;
+  data?: VehicleLoanExtraction | BankStatementExtraction | Record<string, unknown>;
+  extraction?: VehicleLoanExtraction | BankStatementExtraction | Record<string, unknown>;
 }
 
-/** Let React commit the queued/processing UI before beginning a potentially long request. */
-function waitForPaint(): Promise<void> {
-  return new Promise(resolve => {
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(() => resolve());
-    } else {
-      setTimeout(resolve, 0);
-    }
-  });
+// ─── Auth helpers ─────────────────────────────────────────────────────────────
+
+/** Build an Authorization header object — omits the header when token is absent. */
+function authedHeaders(
+  token?: string | null,
+  extra?: Record<string, string>,
+): HeadersInit {
+  const h: Record<string, string> = { ...(extra ?? {}) };
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function validateScanResult(value: unknown, fallbackFileName: string): ScanResult {
-  if (!isRecord(value)) {
-    throw new Error(JSON.stringify({
-      stage: "response_validation",
-      message: "The scanner returned an invalid response.",
-      filename: fallbackFileName,
-    }));
-  }
-
-  const docType = typeof value.docType === "string" && value.docType.trim()
-    ? value.docType.trim()
-    : "Unknown";
-  const classificationConfidence = typeof value.classificationConfidence === "number"
-    && Number.isFinite(value.classificationConfidence)
-    ? value.classificationConfidence
-    : 0;
-  const fields = isRecord(value.fields)
-    ? value.fields as Record<string, ScanFieldValue>
-    : {};
-
-  if (value.parseError === true) {
-    throw new Error(JSON.stringify({
-      stage: "response_validation",
-      message: "The AI returned malformed extraction data. Retry this document.",
-      filename: fallbackFileName,
-    }));
-  }
-
-  return {
-    ...value,
-    docType,
-    classificationConfidence,
-    fields,
-    fileName: typeof value.fileName === "string" && value.fileName
-      ? value.fileName
-      : fallbackFileName,
-    mimeType: typeof value.mimeType === "string" ? value.mimeType : "",
-  } as ScanResult;
-}
-
-async function readJsonResponse(res: Response, fileName: string): Promise<unknown> {
-  const raw = await res.text();
-  if (!raw.trim()) {
-    throw new Error(JSON.stringify({
-      stage: "response_validation",
-      message: `Scanner returned an empty response (HTTP ${res.status}).`,
-      filename: fileName,
-    }));
-  }
-
-  try {
-    return JSON.parse(raw);
-  } catch {
-    throw new Error(JSON.stringify({
-      stage: "response_validation",
-      message: `Scanner returned non-JSON data (HTTP ${res.status}).`,
-      filename: fileName,
-    }));
-  }
-}
+// ─── Scan ─────────────────────────────────────────────────────────────────────
 
 /** Upload a single file and get AI extraction results. */
-export async function scanFile(file: File): Promise<ScanResult> {
-  if (!(file instanceof File) || file.size === 0) {
-    throw new Error(JSON.stringify({
-      stage: "file_validation",
-      message: "This file is empty or unreadable.",
-      filename: file?.name ?? "unknown",
-    }));
-  }
-
-  await waitForPaint();
-
+export async function scanFile(
+  file: File,
+  token?: string | null,
+  signal?: AbortSignal,
+): Promise<ScanResult> {
   const form = new FormData();
-  form.append("file", file, file.name || "document");
+  // Always pass filename explicitly so multer receives originalname correctly
+  // even when the browser omits it (common on iOS Safari).
+  form.append("file", file, file.name);
 
-  const controller = new AbortController();
-  const timeoutMs = 60_000;
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  console.log(
+    `[BCFAI] API request sent — ${file.name} ` +
+    `(${(file.size / 1024).toFixed(1)} KB, type="${file.type || "unknown"}")`,
+  );
 
   let res: Response;
   try {
+    // Do NOT set Content-Type manually — let fetch generate the multipart boundary.
     res = await fetch(`${API_BASE}/scan-document`, {
       method: "POST",
       body: form,
-      signal: controller.signal,
+      headers: authedHeaders(token),
+      signal,
     });
   } catch (err) {
-    const timedOut = err instanceof DOMException && err.name === "AbortError";
+    const isTimeout =
+      err instanceof DOMException && err.name === "TimeoutError";
+    const isAbort =
+      err instanceof DOMException && err.name === "AbortError";
+    if (isTimeout || isAbort) {
+      console.warn(
+        `[BCFAI] ${isTimeout ? "timeout" : "abort"} — ${file.name}`,
+      );
+    }
     throw new Error(
       JSON.stringify({
-        stage: timedOut ? "timeout" : "upload_request",
-        message: timedOut
-          ? `Scanning timed out after ${timeoutMs / 1000} seconds`
+        stage: isTimeout || isAbort ? "scan_timeout" : "upload_request",
+        message: isTimeout
+          ? "Document analysis timed out after 60 seconds. Please try a smaller or clearer document."
+          : isAbort
+          ? "Scan was cancelled."
           : err instanceof Error
-            ? err.message
-            : "Network error — check your connection",
+          ? err.message
+          : "Network error — check your connection",
         filename: file.name,
-      })
+        retryable: true,
+      }),
     );
-  } finally {
-    clearTimeout(timeout);
   }
 
-  const json = await readJsonResponse(res, file.name);
+  console.log(
+    `[BCFAI] API response received — ${file.name} — HTTP ${res.status}`,
+  );
+
+  let json: unknown;
+  try {
+    json = await res.clone().json();
+  } catch (parseErr) {
+    const rawText = await res.text().catch(() => "<could not read body>");
+    console.warn(
+      `[BCFAI] JSON parse error — ${file.name}: ${parseErr}`,
+      "body:", rawText.slice(0, 500),
+    );
+    throw new Error(
+      JSON.stringify({
+        stage: "json_parse",
+        message: `Response body is not valid JSON (HTTP ${res.status}): ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+        filename: file.name,
+      }),
+    );
+  }
 
   if (!res.ok) {
-    const errorJson = isRecord(json) ? json : {};
+    const retryAfterHeader = res.headers.get("retry-after");
+    // Some APIs return retryAfterMs (milliseconds) in the JSON body.
+    const retryAfterBodyMs =
+      typeof (json as any)?.retryAfterMs === "number"
+        ? ((json as any).retryAfterMs as number)
+        : undefined;
     throw new Error(
       JSON.stringify({
-        stage: typeof errorJson.stage === "string" ? errorJson.stage : "backend_receipt",
+        stage: (json as any).stage ?? "backend_receipt",
         message:
-          (typeof errorJson.error === "string" && errorJson.error) ||
-          (typeof errorJson.message === "string" && errorJson.message) ||
+          (json as any).error ??
+          (json as any).message ??
           `Upload failed with HTTP ${res.status}`,
         filename: file.name,
-      })
+        httpStatus: res.status,
+        // Pass retryable flag from server response so the frontend can decide
+        // whether to show a Retry button. Undefined = unknown (treat as retryable).
+        retryable: (json as any).retryable,
+        ...(retryAfterHeader !== null ? { retryAfterHeader } : {}),
+        ...(retryAfterBodyMs !== undefined ? { retryAfterBodyMs } : {}),
+      }),
     );
   }
-
-  return validateScanResult(json, file.name);
+  return json as ScanResult;
 }
 
-/** Check whether the AI backend is available. */
-export async function checkCapabilities(): Promise<{ ai: boolean }> {
+// ─── Capabilities ─────────────────────────────────────────────────────────────
+
+/**
+ * Check whether the AI backend is available.
+ * Requires a Clerk session token — without one the endpoint returns 401
+ * and we report AI as unavailable.
+ */
+export async function checkCapabilities(
+  token?: string | null,
+): Promise<{ ai: boolean }> {
   try {
-    const res = await fetch(`${API_BASE}/capabilities`);
+    const res = await fetch(`${API_BASE}/capabilities`, {
+      headers: authedHeaders(token),
+    });
     if (!res.ok) return { ai: false };
     return await res.json();
   } catch {
@@ -187,85 +208,323 @@ export async function checkCapabilities(): Promise<{ ai: boolean }> {
   }
 }
 
-/** Ask the AI financial assistant a question with the user's confirmed data. */
+// ─── Ask AI (SSE stream) ──────────────────────────────────────────────────────
+
+/**
+ * Ask the AI financial assistant a question with the user's confirmed data.
+ *
+ * Improvements over the previous version:
+ * - Reads non-OK HTTP responses before touching the stream.
+ * - Surfaces streamed `{ error }` SSE messages as thrown errors.
+ * - Accepts an AbortSignal for user cancellation.
+ * - Stops cleanly at `[DONE]` without auto-retry.
+ */
 export async function askAI(
   question: string,
-  financialProfile: Record<string, unknown>,
-  onDelta: (text: string) => void
+  onDelta: (text: string) => void,
+  options?: { token?: string | null; signal?: AbortSignal },
 ): Promise<void> {
-  const controller = new AbortController();
-  const timeoutMs = 90_000;
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const res = await fetch(`${API_BASE}/ai/ask`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authedHeaders(options?.token),
+    } as HeadersInit,
+    // financialProfile is intentionally omitted — the server loads the
+    // authenticated user's data directly from the database.
+    body: JSON.stringify({ question }),
+    signal: options?.signal,
+  });
 
-  let res: Response;
-  try {
-    res = await fetch(`${API_BASE}/ai/ask`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, financialProfile }),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    const timedOut = err instanceof DOMException && err.name === "AbortError";
-    throw new Error(timedOut
-      ? `AI request timed out after ${timeoutMs / 1000} seconds.`
-      : err instanceof Error
-        ? err.message
-        : "AI request failed");
+  if (!res.ok) {
+    // Read the error body before it's consumed by stream logic.
+    const json = await res.json().catch(() => ({}));
+    throw new Error(
+      (json as any).error ?? `AI request failed (${res.status})`,
+    );
   }
 
-  try {
-    if (!res.ok) {
-      const json = await res.json().catch(() => ({}));
-      throw new Error(isRecord(json) && typeof json.error === "string"
-        ? json.error
-        : "AI request failed");
-    }
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No response stream");
 
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error("No response stream");
+  const decoder = new TextDecoder();
+  let buffer = "";
 
-    const decoder = new TextDecoder();
-    let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
 
-    const handleLine = (line: string): boolean => {
-      if (!line.startsWith("data: ")) return false;
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
       const payload = line.slice(6).trim();
-      if (payload === "[DONE]") return true;
-
-      let parsed: unknown;
+      if (payload === "[DONE]") return;
+      let parsed: any;
       try {
         parsed = JSON.parse(payload);
       } catch {
-        return false;
+        continue; // malformed SSE line — skip silently
       }
-
-      if (!isRecord(parsed)) return false;
-      if (typeof parsed.error === "string" && parsed.error) {
-        throw new Error(parsed.error);
-      }
-      if (typeof parsed.delta === "string" && parsed.delta) {
-        onDelta(parsed.delta);
-      }
-      return false;
-    };
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        if (handleLine(line)) return;
-      }
+      // Surface stream-embedded errors immediately.
+      if (parsed.error) throw new Error(parsed.error);
+      if (parsed.delta) onDelta(parsed.delta);
     }
-
-    buffer += decoder.decode();
-    if (buffer.trim()) handleLine(buffer.trim());
-  } finally {
-    clearTimeout(timeout);
   }
+}
+
+// ─── Migration (idempotent bulk import) ───────────────────────────────────────
+
+export interface MigrationIdMap {
+  clientId: string;
+  serverId: string;
+}
+
+export interface MigrationResult {
+  paystubs: MigrationIdMap[];
+  debts: MigrationIdMap[];
+  bills: MigrationIdMap[];
+  assets: MigrationIdMap[];
+}
+
+export type MigrationStatus = "pending" | "committed" | "failed";
+
+export interface MigrationJobResponse {
+  idempotencyKey: string;
+  status: MigrationStatus;
+  result?: MigrationResult;
+  errorMessage?: string;
+  committedAt?: string;
+  createdAt?: string;
+}
+
+/**
+ * POST /api/migrate — submit a bulk local→server migration.
+ * Idempotent: re-submitting the same idempotencyKey returns the original result.
+ */
+export async function startMigration(
+  token: string,
+  payload: {
+    idempotencyKey: string;
+    profile?: Record<string, unknown>;
+    paystubs: Array<{ clientId: string } & Record<string, unknown>>;
+    debts: Array<{ clientId: string } & Record<string, unknown>>;
+    bills: Array<{ clientId: string } & Record<string, unknown>>;
+    assets: Array<{ clientId: string } & Record<string, unknown>>;
+  },
+): Promise<MigrationJobResponse> {
+  const res = await financialFetch("/migrate", token, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(
+      (json as any).error ?? `Migration failed (${res.status})`,
+    );
+  }
+  return res.json();
+}
+
+/**
+ * GET /api/migrate/status/:key — poll for migration result.
+ * Call this after a disconnect to check whether the server committed.
+ * Returns a MigrationJobResponse with status 'failed' if the key is not found.
+ */
+export async function getMigrationStatus(
+  token: string,
+  idempotencyKey: string,
+): Promise<MigrationJobResponse> {
+  const res = await financialFetch(
+    `/migrate/status/${encodeURIComponent(idempotencyKey)}`,
+    token,
+  );
+  if (res.status === 404) {
+    return {
+      idempotencyKey,
+      status: "failed",
+      errorMessage: "Migration not found. Please try again.",
+    };
+  }
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(
+      (json as any).error ?? `Status check failed (${res.status})`,
+    );
+  }
+  return res.json();
+}
+
+// ─── Financial API ─────────────────────────────────────────────────────────────
+// All financial endpoints require a verified Clerk session token.
+
+export interface FinancialSnapshot {
+  profile: Record<string, unknown> | null;
+  paystubs: Record<string, unknown>[];
+  debts: Record<string, unknown>[];
+  bills: Record<string, unknown>[];
+  assets: Record<string, unknown>[];
+}
+
+/**
+ * Base fetch wrapper for authenticated financial endpoints.
+ * Throws a descriptive Error on non-OK responses.
+ */
+async function financialFetch(
+  path: string,
+  token: string,
+  options: RequestInit = {},
+): Promise<Response> {
+  const isBodyless =
+    options.method === "DELETE" ||
+    options.method === "GET" ||
+    !options.method;
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      ...(isBodyless ? {} : { "Content-Type": "application/json" }),
+      Authorization: `Bearer ${token}`,
+      ...(options.headers ?? {}),
+    } as HeadersInit,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(
+      (body as any).error ?? `Financial API error ${res.status} at ${path}`,
+    );
+  }
+  return res;
+}
+
+/** Load the authenticated user's full financial snapshot. */
+export async function loadSnapshot(token: string): Promise<FinancialSnapshot> {
+  const res = await financialFetch("/financial/snapshot", token);
+  return res.json();
+}
+
+/** Upsert the authenticated user's profile. */
+export async function saveProfile(
+  token: string,
+  profile: Record<string, unknown>,
+): Promise<void> {
+  await financialFetch("/financial/profile", token, {
+    method: "PUT",
+    body: JSON.stringify(profile),
+  });
+}
+
+/** Create a financial record and return the server-assigned row. */
+export async function createRecord(
+  token: string,
+  section: "paystubs" | "debts" | "bills" | "assets",
+  data: Record<string, unknown>,
+): Promise<{ id: string }> {
+  const res = await financialFetch(`/financial/${section}`, token, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+  return res.json();
+}
+
+/** Update a financial record (debts, bills, assets only — paystubs are immutable). */
+export async function updateRecord(
+  token: string,
+  section: "debts" | "bills" | "assets",
+  id: string,
+  data: Record<string, unknown>,
+): Promise<void> {
+  await financialFetch(`/financial/${section}/${id}`, token, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+/** Soft-delete a financial record. */
+export async function deleteRecord(
+  token: string,
+  section: "paystubs" | "debts" | "bills" | "assets",
+  id: string,
+): Promise<void> {
+  await financialFetch(`/financial/${section}/${id}`, token, {
+    method: "DELETE",
+  });
+}
+
+// ─── Tax Scenarios ─────────────────────────────────────────────────────────────
+
+export interface TaxScenario {
+  id: string;
+  name: string;
+  taxYear: number;
+  inputs: Record<string, unknown>;
+  result: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+async function taxFetch(
+  path: string,
+  token: string,
+  options: RequestInit = {},
+): Promise<Response> {
+  const res = await fetch(`/api${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(options.method && options.method !== "GET"
+        ? { "Content-Type": "application/json" }
+        : {}),
+      ...(options.headers ?? {}),
+    },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(
+      (body as { error?: string }).error ?? `Tax scenario request failed (${res.status})`,
+    );
+  }
+  return res;
+}
+
+/** List all saved tax scenarios for the authenticated user. */
+export async function listTaxScenarios(token: string): Promise<TaxScenario[]> {
+  const res = await taxFetch("/tax-scenarios", token);
+  const body = (await res.json()) as { scenarios: TaxScenario[] };
+  return body.scenarios;
+}
+
+/** Save a new tax scenario. */
+export async function createTaxScenario(
+  token: string,
+  data: { name: string; taxYear: number; inputs: Record<string, unknown>; result: Record<string, unknown> },
+): Promise<TaxScenario> {
+  const res = await taxFetch("/tax-scenarios", token, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+  const body = (await res.json()) as { scenario: TaxScenario };
+  return body.scenario;
+}
+
+/** Update an existing tax scenario (name / inputs / result). */
+export async function updateTaxScenario(
+  token: string,
+  id: string,
+  data: Partial<{ name: string; inputs: Record<string, unknown>; result: Record<string, unknown> }>,
+): Promise<TaxScenario> {
+  const res = await taxFetch(`/tax-scenarios/${id}`, token, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+  const body = (await res.json()) as { scenario: TaxScenario };
+  return body.scenario;
+}
+
+/** Soft-delete a saved tax scenario. */
+export async function deleteTaxScenario(token: string, id: string): Promise<void> {
+  await taxFetch(`/tax-scenarios/${id}`, token, { method: "DELETE" });
 }

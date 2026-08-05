@@ -1,0 +1,179 @@
+Fix the document scanner’s generic “unrecognized response format” failure without changing the current UI design or weakening validation.
+
+Current behavior:
+- A valid-looking financial image and a collage containing multiple financial documents both returned:
+  “The document processor returned an unrecognized response format. Please try again.”
+- The scanner failed safely and saved nothing, but the error does not explain the actual problem.
+- Do not make the scanner guess or import uncertain data.
+
+Required work:
+
+1. Trace the full document-processing path
+- Locate the upload endpoint, OCR/vision call, AI extraction call, response parser, validation schema, retry logic, and frontend error mapping.
+- Identify every code path that can produce “unrecognized response format.”
+- Inspect server-side logs and the raw provider response for failed requests.
+- Never expose the raw response, stack trace, prompts, API keys, internal paths, or provider details to the frontend.
+
+2. Harden response parsing
+The parser must safely handle:
+- JSON returned directly
+- JSON wrapped in ```json markdown fences
+- leading or trailing explanatory text
+- nested provider response objects
+- stringified JSON
+- arrays when one object is expected
+- missing optional fields
+- null values
+- unexpected extra fields
+- truncated or malformed output
+- provider refusals
+- empty responses
+- timeouts and rate limits
+
+Use schema validation after normalization. Do not silently accept invalid required fields.
+
+3. Add explicit result categories
+Return a stable internal result type such as:
+
+- success
+- multiple_documents_detected
+- unsupported_document
+- unreadable_document
+- incomplete_document
+- low_confidence
+- invalid_structured_response
+- provider_timeout
+- provider_rate_limited
+- processing_error
+
+Each result must have:
+- a machine-readable code
+- a safe user-facing message
+- retryable: true or false
+- server-only diagnostic details
+
+4. Detect collage or multiple-document images
+Before normal extraction, determine whether the uploaded image contains more than one separate document or statement.
+
+When multiple documents are detected:
+- Do not combine values from them.
+- Do not select one at random.
+- Do not save anything.
+- Return:
+  code: MULTIPLE_DOCUMENTS_DETECTED
+  message: “This image appears to contain multiple documents. Upload each document as a separate image or PDF.”
+  retryable: false
+
+Be conservative. If detection is uncertain, return low confidence rather than inventing data.
+
+5. Improve user-facing errors
+Replace the generic message with specific safe messages:
+
+- Multiple documents:
+  “This image appears to contain multiple documents. Upload each one separately.”
+
+- Unsupported document:
+  “We couldn’t identify this as a supported financial document.”
+
+- Unreadable:
+  “This document is too blurry, small, cropped, or unclear to read.”
+
+- Incomplete:
+  “Part of this document appears to be missing. Upload the full page.”
+
+- Low confidence:
+  “We couldn’t extract this document confidently. Try a clearer image or review it manually.”
+
+- Invalid AI/provider structure:
+  “We couldn’t process this document correctly. Please retry.”
+
+- Timeout:
+  “Processing took too long. Please retry.”
+
+The frontend must continue showing Retry only when retryable is true. Keep Remove available.
+
+6. Add one controlled repair attempt
+If the provider response is present but malformed:
+- Normalize it first.
+- Attempt one structured repair/reformat pass.
+- Validate the repaired output.
+- Never loop indefinitely.
+- If repair fails, return INVALID_STRUCTURED_RESPONSE.
+
+Do not retry multiple-document, unsupported, unreadable, or incomplete inputs as though they were transient server failures.
+
+7. Preserve batch isolation
+Confirm:
+- One failed file never stops the rest of the batch.
+- No values from one document are assigned to another.
+- Failed documents cannot be included in the save count.
+- “Confirm & Save” remains disabled when zero valid documents exist.
+- Retrying one file only retries that file.
+- A retry cannot create duplicate records.
+
+8. Logging and privacy
+Add structured server-side logs containing:
+- request/correlation ID
+- document ID
+- normalized error code
+- processing stage
+- provider status
+- schema-validation issues
+- retry attempt count
+
+Do not log:
+- full account numbers
+- Social Security numbers
+- complete document text
+- raw image contents
+- API keys
+- authentication tokens
+
+Mask any sensitive values that must appear in diagnostics.
+
+9. Automated tests
+Add tests for:
+- valid direct JSON
+- fenced JSON
+- JSON with surrounding text
+- stringified JSON
+- nested response structure
+- missing optional fields
+- missing required fields
+- malformed JSON
+- truncated output
+- empty response
+- refusal response
+- timeout
+- rate limit
+- collage/multiple-document image
+- unsupported image
+- blurry image
+- cropped document
+- batch with valid, duplicate, malformed, and multiple-document files
+- retrying only one failed file
+- zero valid documents keeps Save disabled
+- no cross-document data contamination
+- no sensitive details in frontend error responses
+
+Use mocked provider responses where appropriate so tests are deterministic.
+
+10. Validation
+Run:
+- TypeScript checks
+- frontend build
+- API/server build
+- unit tests
+- integration tests
+- scanner/security tests
+
+Do not commit or push yet.
+
+Report back with:
+- root cause of the generic response-format error
+- exact files changed
+- normalization and validation logic added
+- all new error codes and messages
+- tests added
+- test/build results
+- any remaining risks

@@ -1,0 +1,19 @@
+kind = "design-system"
+previewPath = "/bcfai-ds/"
+title = "Blue Collar Financial AI Design System"
+description = "Design system for Blue Collar Financial AI — navy + emerald palette, Inter typeface, trust-first financial product for trade workers."
+version = "1.0.0"
+id = "artifacts/bcfai-ds"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/bcfai-ds/" ]
+localPort = 21720
+
+[services.development]
+run = "pnpm --filter @workspace/bcfai-ds run dev"
+
+[services.env]
+PORT = "21720"
+BASE_PATH = "/bcfai-ds/"

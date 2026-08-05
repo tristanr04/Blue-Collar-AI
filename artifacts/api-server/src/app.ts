@@ -1,10 +1,25 @@
 import express, { type Express } from "express";
-import cors from "cors";
 import pinoHttp from "pino-http";
-import router from "./routes";
-import { logger } from "./lib/logger";
+import { clerkMiddleware } from "@clerk/express";
+import {
+  CLERK_PROXY_PATH,
+  clerkProxyMiddleware,
+} from "./middlewares/clerkProxyMiddleware.js";
+import router from "./routes/index.js";
+import { logger } from "./lib/logger.js";
+import { makeCors } from "./middlewares/cors.js";
+import { generalLimiter } from "./middlewares/rate-limit.js";
+import { securityHeaders } from "./middlewares/security-headers.js";
+import { sensitiveResponseNoStore } from "./middlewares/sensitive-cache.js";
 
 const app: Express = express();
+const MAX_SCAN_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+app.disable("x-powered-by");
+app.use(securityHeaders);
+app.use(sensitiveResponseNoStore);
+
+// ─── Request logging ──────────────────────────────────────────────────────────
 
 app.use(
   pinoHttp({
@@ -25,14 +40,62 @@ app.use(
     },
   }),
 );
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+
+// ─── Clerk proxy — BEFORE body parsers (streams raw bytes) ────────────────────
+// Only active in production; no-op in development.
+
+app.use(CLERK_PROXY_PATH, clerkProxyMiddleware());
+
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+
+app.use(makeCors());
+
+// Reject obviously oversized multipart scans before Multer buffers the entire
+// request in memory. Multer retains its own file-size limit as a second line of
+// defense because Content-Length can be omitted or falsified.
+app.use("/api/scan-document", (req, res, next) => {
+  if (req.method !== "POST") {
+    next();
+    return;
+  }
+
+  const contentLength = Number(req.headers["content-length"] ?? 0);
+  if (Number.isFinite(contentLength) && contentLength > MAX_SCAN_UPLOAD_BYTES) {
+    logger.warn(
+      { contentLength, maxBytes: MAX_SCAN_UPLOAD_BYTES, ip: req.ip },
+      "scanner upload rejected before buffering",
+    );
+    res.status(413).json({
+      stage: "upload_size_limit",
+      error: "Document is too large. Maximum upload size is 10 MB.",
+    });
+    return;
+  }
+
+  next();
+});
+
+// ─── Body parsing (250 KB cap) ────────────────────────────────────────────────
+
+app.use(express.json({ limit: "250kb" }));
+app.use(express.urlencoded({ extended: true, limit: "250kb" }));
+
+// ─── General rate limiter (100 req / 15 min per IP) ───────────────────────────
+
+app.use("/api", generalLimiter);
+
+// ─── Clerk session middleware ─────────────────────────────────────────────────
+// Populates req.auth on every request. Routes call requireAuthenticatedUser()
+// to enforce it. Reads CLERK_PUBLISHABLE_KEY + CLERK_SECRET_KEY from env.
+
+app.use(clerkMiddleware());
+
+// ─── Routes ───────────────────────────────────────────────────────────────────
 
 app.use("/api", router);
 
-// Structured 404 for any /api path that didn't match a registered route.
-// Must come AFTER all API routes so it only fires for unknowns.
+// ─── Structured 404 ───────────────────────────────────────────────────────────
+
 app.use("/api", (req, res) => {
   res.status(404).json({
     stage: "route_not_found",

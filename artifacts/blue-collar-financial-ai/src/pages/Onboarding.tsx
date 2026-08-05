@@ -25,6 +25,16 @@ const formSchema = z.object({
   payFrequency: z.enum(['Weekly', 'Bi-Weekly', 'Semi-Monthly', 'Monthly']),
   hourlyRate: z.coerce.number().min(1, 'Hourly rate must be greater than 0'),
   filingContext: z.enum(['Single', 'Married', 'Head of Household']),
+  // Optional — validated only when provided.
+  birthDate: z.string().optional().refine((val) => {
+    if (!val) return true;
+    const today = new Date();
+    const parsed = new Date(`${val}T00:00:00Z`);
+    if (!Number.isFinite(parsed.getTime())) return false;
+    if (parsed > today) return false;
+    const age = today.getUTCFullYear() - parsed.getUTCFullYear();
+    return age >= 18 && age <= 120;
+  }, { message: 'Enter a valid date of birth (must be 18–120 years old, not in the future)' }),
   privacyConsent: z.boolean().refine(val => val === true, { message: 'Must acknowledge privacy policy' })
 });
 
@@ -39,6 +49,7 @@ export default function Onboarding() {
       payFrequency: 'Weekly',
       hourlyRate: 0,
       filingContext: 'Single',
+      birthDate: '',
       privacyConsent: false
     }
   });
@@ -49,6 +60,7 @@ export default function Onboarding() {
       payFrequency: values.payFrequency as PayFrequency,
       hourlyRate: values.hourlyRate,
       filingContext: values.filingContext as FilingContext,
+      birthDate: values.birthDate || undefined,
       hasCompletedOnboarding: true
     });
     setLocation('/dashboard');
@@ -141,6 +153,26 @@ export default function Onboarding() {
                     </SelectContent>
                   </Select>
                   <FormDescription>Used to estimate tax withholdings.</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="birthDate"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Date of Birth <span className="font-normal text-slate-400">(optional)</span></FormLabel>
+                  <FormControl>
+                    <Input
+                      type="date"
+                      className="h-12 bg-white dark:bg-slate-900 text-lg"
+                      max={new Date().toISOString().split('T')[0]}
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormDescription>Used to compare your finances against national medians for your age group. You can add this later in Settings.</FormDescription>
                   <FormMessage />
                 </FormItem>
               )}

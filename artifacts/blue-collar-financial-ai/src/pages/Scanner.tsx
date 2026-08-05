@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useLocation } from 'wouter';
 import {
   Upload, ScanLine, CheckCircle2, AlertTriangle, X, Plus, Trash2,
@@ -8,8 +8,10 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { useAuth } from '@clerk/react';
 import { useStore } from '@/lib/store';
 import { scanFile, ScanResult, ScanFieldValue, InstitutionInfo } from '@/lib/api';
+import { fingerprintFile, isDuplicateFingerprint } from '@/lib/account-matching';
 import { buildUpdatePlan, applyUpdatePlan, type UpdatePlan, type UpdatePlanEntry, type MatchChoice } from '@/lib/financialUpdater';
 import { fileIdempotencyKey } from '@/lib/financialMatcher';
 import { useJobQueue } from '@/lib/jobQueue';
@@ -128,14 +130,13 @@ const DOC_FIELDS: Record<string, Array<{ key: string; label: string; type?: stri
     { key: 'dueDate', label: 'Due Date' },
   ],
   'Auto Loan': [
-    { key: 'lender', label: 'Lender' },
-    { key: 'loanName', label: 'Loan Name' },
-    { key: 'lastFour', label: 'Last 4 Digits' },
-    { key: 'currentBalance', label: 'Balance Owed', type: 'number', prefix: '$' },
+    { key: 'loanName', label: 'Lender / Loan Name' },
+    { key: 'accountLast4', label: 'Last 4 Digits' },
+    { key: 'balanceOwed', label: 'Balance Owed', type: 'number', prefix: '$' },
     { key: 'originalAmount', label: 'Original Amount', type: 'number', prefix: '$' },
     { key: 'apr', label: 'APR (%)', type: 'number' },
     { key: 'monthlyPayment', label: 'Monthly Payment', type: 'number', prefix: '$' },
-    { key: 'remainingTermMonths', label: 'Months Remaining', type: 'number' },
+    { key: 'monthsRemaining', label: 'Months Remaining', type: 'number' },
     { key: 'nextDueDate', label: 'Next Due Date' },
   ],
   'Personal Loan': [
@@ -351,39 +352,259 @@ function ConfidenceDot({ score }: { score: number }) {
   return <span className={`inline-block w-2 h-2 rounded-full ${cls} flex-shrink-0`} title={`${score}% confidence`} />;
 }
 
+// ─── Batch constants ──────────────────────────────────────────────────────────
+
+const MAX_BATCH_FILES = 20;
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+const SCAN_CONCURRENCY = 2;
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ProcessStatus = 'pending' | 'processing' | 'done' | 'error';
+type BatchDocumentStatus = 'pending' | 'processing' | 'retrying' | 'done' | 'error';
 
-interface ProcessedDoc {
+interface BatchDocument {
   id: string;
   file: File;
   preview: string;
-  status: ProcessStatus;
-  error?: string;
-  errorStage?: string;
-  result?: ScanResult;
-  // Editable state
+  fingerprint?: string;
+  status: BatchDocumentStatus;
   docType: string;
   fields: Record<string, { value: string; confidence: number }>;
+  result?: ScanResult;
+  error?: string;
+  errorStage?: string;
+  /** When false, the Retry button is hidden (non-transient failure). Undefined = retryable. */
+  errorRetryable?: boolean;
+  retryAttempt?: number;
+  retryWaitMs?: number;
   accepted: boolean;
-  // Institution info
+  isDuplicate: boolean;
   institutionName: string;
   institutionUnknown: boolean;
   institutionCategory: string | null;
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
-
 type Step = 'upload' | 'processing' | 'review' | 'done';
+
+// ─── Module-level helpers ─────────────────────────────────────────────────────
+
+/** Normalise a null / primitive / wrapped AI field value to a consistent shape. */
+function getFieldValue(raw: unknown): { value: string | null; confidence: number } {
+  if (raw == null) return { value: null, confidence: 0 };
+  if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
+    return { value: String(raw), confidence: 70 };
+  }
+  if (typeof raw === 'object' && 'value' in (raw as object)) {
+    const obj = raw as { value?: unknown; confidence?: unknown };
+    const v = obj.value;
+    return {
+      value: v != null ? String(v) : null,
+      confidence: typeof obj.confidence === 'number' ? obj.confidence : 70,
+    };
+  }
+  return { value: null, confidence: 0 };
+}
+
+/** Parse a structured JSON API error into stage, message, and retryable flag. */
+function parseApiError(err: unknown): { stage: string; message: string; retryable?: boolean } {
+  if (err instanceof Error) {
+    try {
+      const parsed = JSON.parse(err.message);
+      return {
+        stage: parsed.stage ?? 'unknown',
+        message: parsed.message ?? err.message,
+        // undefined means the server didn't send a flag → default to retryable
+        retryable: typeof parsed.retryable === 'boolean' ? parsed.retryable : undefined,
+      };
+    } catch {
+      return { stage: 'unknown', message: err.message };
+    }
+  }
+  return { stage: 'unknown', message: String(err) };
+}
+
+/**
+ * Merge incoming files into the current list, deduplicating by name+size+mtime.
+ * Hard-caps the result at MAX_BATCH_FILES.
+ */
+function mergeUniqueFiles(current: File[], incoming: File[]): File[] {
+  const seen = new Set(current.map(f => `${f.name}:${f.size}:${f.lastModified}`));
+  const merged = [...current];
+  for (const file of incoming) {
+    const key = `${file.name}:${file.size}:${file.lastModified}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(file);
+    }
+  }
+  return merged.slice(0, MAX_BATCH_FILES);
+}
+
+// ─── Rate-limit retry helpers ─────────────────────────────────────────────────
+
+/** Exponential back-off delays (ms): 2 s, 4 s, 8 s. */
+const RETRY_DELAYS_MS = [2_000, 4_000, 8_000] as const;
+const MAX_RATE_LIMIT_RETRIES = 3;
+/** Retry delays are clamped to this window so a bad Retry-After can't stall the batch. */
+const CLAMP_MIN_MS = 1_000;
+const CLAMP_MAX_MS = 30_000;
+
+function clampRetryMs(ms: number): number {
+  return Math.max(CLAMP_MIN_MS, Math.min(CLAMP_MAX_MS, Math.round(ms)));
+}
+
+/**
+ * Detect whether `err` represents an HTTP 429 / rate-limit response and
+ * return the raw retry-hint values.  Returns null for all other errors.
+ */
+function is429Error(err: unknown): {
+  retryAfterHeader: string | null;
+  retryAfterBodyMs: number | undefined;
+} | null {
+  if (!(err instanceof Error)) return null;
+  try {
+    const parsed = JSON.parse(err.message) as Record<string, unknown>;
+    const status = parsed.httpStatus;
+    const msg = typeof parsed.message === 'string' ? parsed.message.toLowerCase() : '';
+    if (status === 429 || msg.includes('too many requests') || msg.includes('rate limit')) {
+      return {
+        retryAfterHeader:
+          typeof parsed.retryAfterHeader === 'string' ? parsed.retryAfterHeader : null,
+        retryAfterBodyMs:
+          typeof parsed.retryAfterBodyMs === 'number' ? parsed.retryAfterBodyMs : undefined,
+      };
+    }
+  } catch { /* not JSON — fall through to raw-string check */ }
+  const raw = err.message.toLowerCase();
+  if (raw.includes('429') || raw.includes('too many requests') || raw.includes('rate limit')) {
+    return { retryAfterHeader: null, retryAfterBodyMs: undefined };
+  }
+  return null;
+}
+
+/**
+ * Compute the retry wait in milliseconds, clamped to [CLAMP_MIN_MS, CLAMP_MAX_MS].
+ *
+ * Priority:
+ * 1. retryAfterBodyMs  — milliseconds from the JSON body
+ * 2. retryAfterHeader  as a numeric second count
+ * 3. retryAfterHeader  as an HTTP-date string
+ * 4. Exponential back-off from RETRY_DELAYS_MS
+ *
+ * @param attempt  0-indexed attempt count, used to index RETRY_DELAYS_MS.
+ */
+function parseRetryDelay(
+  retryAfterHeader: string | null,
+  retryAfterBodyMs: number | undefined,
+  attempt: number,
+): number {
+  // 1. Body milliseconds
+  if (retryAfterBodyMs !== undefined && retryAfterBodyMs > 0) {
+    return clampRetryMs(retryAfterBodyMs);
+  }
+
+  if (retryAfterHeader) {
+    // 2. Numeric seconds ("5", "30", "1550", …)
+    const trimmed = retryAfterHeader.trim();
+    const numSec = Number(trimmed);
+    if (!isNaN(numSec) && trimmed !== '') {
+      return clampRetryMs(numSec * 1_000);
+    }
+
+    // 3. HTTP-date (e.g. "Thu, 04 Aug 2026 19:00:00 GMT")
+    const dateMs = new Date(retryAfterHeader).getTime();
+    if (!isNaN(dateMs)) {
+      return clampRetryMs(dateMs - Date.now());
+    }
+  }
+
+  // 4. Exponential back-off
+  return RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
+}
+
+/**
+ * Normalise a ScanResult from any server fast-path or generic shape into the
+ * fields the UI and financial store need.
+ */
+function normalizeScanResult(result: ScanResult): {
+  resolvedDocType: string;
+  fieldMap: Record<string, { value: string; confidence: number }>;
+  institutionName: string;
+  institutionUnknown: boolean;
+  institutionCategory: string | null;
+} {
+  const r = result as any;
+  const isVehicleLoan = r.type === 'vehicleLoan' || r.documentType === 'vehicleLoan';
+  const isBankStatement = r.type === 'bankStatement' || r.documentType === 'bankStatement';
+
+  function resolveFlatData(res: any): Record<string, unknown> | null {
+    const d = res?.data?.data ?? res?.data?.extraction ?? res?.data?.result ??
+              res?.data ?? res?.extraction ?? res?.result;
+    return d && typeof d === 'object' && !Array.isArray(d) ? d : null;
+  }
+
+  function flatToFieldMap(
+    extracted: Record<string, unknown>,
+    keys: string[],
+    conf = 80,
+  ): Record<string, { value: string; confidence: number }> {
+    const map: Record<string, { value: string; confidence: number }> = {};
+    for (const key of keys) {
+      const val = extracted[key];
+      if (val !== null && val !== undefined) map[key] = { value: String(val), confidence: conf };
+    }
+    return map;
+  }
+
+  const fieldMap: Record<string, { value: string; confidence: number }> = {};
+
+  if (isVehicleLoan) {
+    const extracted = resolveFlatData(r);
+    if (!extracted) throw new Error('The document processor returned an unrecognized response format.');
+    Object.assign(fieldMap, flatToFieldMap(extracted, [
+      'loanName', 'accountLast4', 'balanceOwed', 'originalAmount',
+      'apr', 'monthlyPayment', 'monthsRemaining', 'nextDueDate',
+    ]));
+  } else if (isBankStatement) {
+    const extracted = resolveFlatData(r);
+    if (!extracted) throw new Error('The document processor returned an unrecognized response format.');
+    Object.assign(fieldMap, flatToFieldMap(extracted, [
+      'institution', 'accountName', 'lastFour',
+      'closingBalance', 'currentBalance', 'availableBalance',
+      'statementStartDate', 'statementEndDate', 'apy',
+    ]));
+  } else {
+    for (const [k, v] of Object.entries(result.fields ?? {})) {
+      const { value, confidence } = getFieldValue(v);
+      if (value != null) fieldMap[k] = { value, confidence };
+    }
+  }
+
+  const inst = result.institution;
+  const fastPathInstitution =
+    isVehicleLoan ? (r.data?.loanName ?? '') :
+    isBankStatement ? (r.data?.institution ?? '') : '';
+  const institutionName = inst?.normalizedName || inst?.rawName || fastPathInstitution || '';
+  const institutionUnknown = !inst?.isKnownInstitution && !!institutionName;
+  const institutionCategory = inst?.institutionCategory ?? null;
+  const resolvedDocType =
+    isVehicleLoan ? 'Auto Loan' :
+    isBankStatement ? 'Bank Statement' :
+    (result.docType ?? 'Unknown');
+
+  return { resolvedDocType, fieldMap, institutionName, institutionUnknown, institutionCategory };
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
 
 export default function Scanner() {
   const [_, setLocation] = useLocation();
+  const { getToken } = useAuth();
   const store = useStore();
   const {
     updateProfile, addPaystub, addDebt, addBill, addAsset,
     updateAsset, updateDebt, updateBill, addChangeRecords, undoImport,
-    assets, debts, bills,
+    assets, debts, bills, documents,
     profile,
   } = store;
   const { enqueue, updateJob } = useJobQueue();
@@ -392,7 +613,7 @@ export default function Scanner() {
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
   const [isDragging, setIsDragging] = useState(false);
-  const [docs, setDocs] = useState<ProcessedDoc[]>([]);
+  const [docs, setDocs] = useState<BatchDocument[]>([]);
   const [userName, setUserName] = useState(profile?.name ?? '');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [globalError, setGlobalError] = useState('');
@@ -401,140 +622,274 @@ export default function Scanner() {
   const [matchChoices, setMatchChoices] = useState<Record<string, MatchChoice>>({});
   const [lastImportDocId, setLastImportDocId] = useState<string | null>(null);
 
+  // ── Refs: preview cleanup, queue management, lifecycle ────────────────────
+
+  const previewsRef      = useRef<string[]>([]);
+  const docsRef          = useRef<BatchDocument[]>([]);
+  /** IDs waiting for a free slot. */
+  const queueRef         = useRef<string[]>([]);
+  /** Number of API calls in flight right now (0–SCAN_CONCURRENCY). */
+  const activeCountRef   = useRef(0);
+  /** Per-doc retry setTimeout handles — cancelled on remove / reset / unmount. */
+  const retryTimersRef   = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  /** Per-doc retry attempt count — reset when user manually retries. */
+  const retryAttemptsRef = useRef(new Map<string, number>());
+  /**
+   * Stable pointer to the latest render's dispatchNext so setTimeout callbacks
+   * always call the up-to-date version without capturing a stale closure.
+   */
+  const dispatchNextRef  = useRef<() => void>(() => {});
+  const isMountedRef     = useRef(true);
+
+  useEffect(() => { previewsRef.current = previews; }, [previews]);
+  useEffect(() => { docsRef.current = docs; }, [docs]);
+
+  // Cancel all retry timers, in-flight scan signals, and revoke object URLs on unmount.
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      retryTimersRef.current.forEach(t => clearTimeout(t));
+      retryTimersRef.current.clear();
+      scanSignalsRef.current.forEach(c => c.abort());
+      scanSignalsRef.current.clear();
+      previewsRef.current.forEach(url => { if (url) try { URL.revokeObjectURL(url); } catch {} });
+      docsRef.current.forEach(doc => { if (doc.preview) try { URL.revokeObjectURL(doc.preview); } catch {} });
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Advance to the review step automatically once every doc reaches a terminal
+  // state (done or error).  The queue dispatcher does NOT call setStep directly
+  // so that retrying docs (with pending timers) don't prematurely flip the step.
+  useEffect(() => {
+    if (step !== 'processing' || docs.length === 0) return;
+    if (docs.every(d => d.status === 'done' || d.status === 'error')) {
+      const doneCount  = docs.filter(d => d.status === 'done').length;
+      const errorCount = docs.filter(d => d.status === 'error').length;
+      console.log(
+        `[BCFAI] batch complete — ${doneCount} succeeded, ${errorCount} failed ` +
+        `(total ${docs.length})`,
+      );
+      setStep('review');
+    }
+  }, [docs, step]);
+
+  // ── Progress counts (derived from docs state) ──────────────────────────────
+
+  const totalCount      = docs.length;
+  const completedCount  = docs.filter(d => d.status === 'done').length;
+  const failedCount     = docs.filter(d => d.status === 'error').length;
+  const processingCount = docs.filter(d => d.status === 'processing').length;
+  const retryingCount   = docs.filter(d => d.status === 'retrying').length;
+  const pendingCount    = docs.filter(d => d.status === 'pending').length;
+  const finishedCount   = completedCount + failedCount;
+  const activeCount     = processingCount + retryingCount + pendingCount;
+
+  /** Documents that are confirmed-done AND accepted — the set the store will receive. */
+  const savableDocuments = docs.filter(d => d.status === 'done' && d.accepted);
+
   // ── File handling ──────────────────────────────────────────────────────────
 
   const addFiles = useCallback((newFiles: File[]) => {
-    // Accept files whose MIME starts with image/, PDF, HEIC/HEIF, or whose
-    // extension implies an image format. On iOS Safari, JPEG files from the
-    // Photos or Files app often arrive with f.type === "" — the extension
-    // check catches those so they aren't silently dropped.
     const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp|heic|heif)$/i;
-    const valid = newFiles.filter(f =>
+
+    // Accept files by MIME or extension (iOS Safari often has empty MIME type)
+    const typeValid = newFiles.filter(f =>
       f.type.startsWith('image/') ||
       f.type === 'application/pdf' ||
       IMAGE_EXT.test(f.name) ||
       /\.pdf$/i.test(f.name)
     );
 
-    // Generate previews OUTSIDE the state updater so URL.createObjectURL is
-    // never called twice (React 18 Strict Mode runs updaters twice in dev).
-    // Wrapped in try/catch because iOS Safari throws
-    // "The string did not match the expected pattern" for certain file types.
-    const newPreviews = valid.map(f => {
+    const oversized = typeValid.filter(f => f.size > MAX_FILE_BYTES);
+    const sizeValid  = typeValid.filter(f => f.size <= MAX_FILE_BYTES);
+
+    if (oversized.length > 0) {
+      setGlobalError(
+        `${oversized.length} file${oversized.length !== 1 ? 's' : ''} exceed the 10 MB limit and were not added.`,
+      );
+    }
+
+    // Generate preview URLs OUTSIDE the state updater (React 18 Strict Mode
+    // double-invokes updaters in dev, which would create duplicate object URLs).
+    const newPreviews = sizeValid.map(f => {
       try {
-        if (f.type.startsWith('image/') || IMAGE_EXT.test(f.name)) {
-          return URL.createObjectURL(f);
-        }
-      } catch {
-        // Silently fall back — preview is cosmetic, upload still works
-      }
+        if (f.type.startsWith('image/') || IMAGE_EXT.test(f.name)) return URL.createObjectURL(f);
+      } catch {}
       return '';
     });
 
-    setFiles(prev => [...prev, ...valid]);
-    setPreviews(prev => [...prev, ...newPreviews]);
+    setFiles(prev => {
+      const merged = mergeUniqueFiles(prev, sizeValid);
+      if (sizeValid.length > 0 && prev.length + sizeValid.length > MAX_BATCH_FILES && merged.length === MAX_BATCH_FILES) {
+        setTimeout(() => setGlobalError(e => e || `Batch limit of ${MAX_BATCH_FILES} files reached.`), 0);
+      }
+      return merged;
+    });
+    setPreviews(prev => [...prev, ...newPreviews].slice(0, MAX_BATCH_FILES));
   }, []);
 
   const removeFile = (i: number) => {
+    const url = previews[i];
+    if (url) try { URL.revokeObjectURL(url); } catch {}
     setFiles(prev => prev.filter((_, idx) => idx !== i));
     setPreviews(prev => prev.filter((_, idx) => idx !== i));
   };
 
-  // ── Parse structured API errors ────────────────────────────────────────────
+  // ── Concurrency-limited queue processor ───────────────────────────────────
+  //
+  // dispatchNext() and runOneScan() are plain function declarations so they are
+  // hoisted and can reference each other.  dispatchNextRef.current is updated
+  // on every render so setTimeout callbacks always call the latest closure.
+  //
+  // Key invariant: a retrying doc RELEASES its slot before its timer fires, so
+  // another queued doc can start immediately rather than waiting out the delay.
 
-  const parseApiError = (err: unknown): { stage: string; message: string } => {
-    if (err instanceof Error) {
-      try {
-        const parsed = JSON.parse(err.message);
-        return { stage: parsed.stage ?? 'unknown', message: parsed.message ?? err.message };
-      } catch {
-        return { stage: 'unknown', message: err.message };
-      }
+  function dispatchNext(): void {
+    if (!isMountedRef.current) return;
+    while (activeCountRef.current < SCAN_CONCURRENCY && queueRef.current.length > 0) {
+      const docId = queueRef.current.shift()!;
+      activeCountRef.current++;
+      console.log(
+        `[BCFAI] queue — dispatching slot ${activeCountRef.current}/${SCAN_CONCURRENCY} ` +
+        `docId=${docId} pending=${queueRef.current.length}`,
+      );
+      // .finally() releases the slot unconditionally — success, fatal error,
+      // AND the 429-release path all flow through here.
+      runOneScan(docId).finally(() => {
+        activeCountRef.current--;
+        dispatchNextRef.current();
+      });
     }
-    return { stage: 'unknown', message: String(err) };
-  };
+  }
+  dispatchNextRef.current = dispatchNext;
 
-  // ── Null-safe field value extractor ───────────────────────────────────────
-  // The AI can return fields in three shapes:
-  //   { value: ..., confidence: ... }   ← normal
-  //   null                              ← field not found (crashes on .value)
-  //   "string" | number | boolean       ← flat value without wrapper
-  // This helper normalises all three without ever throwing.
+  /** Per-doc AbortControllers for the 60-second fetch timeout. */
+  const scanSignalsRef = useRef(new Map<string, AbortController>());
 
-  const getFieldValue = (raw: unknown): { value: string | null; confidence: number } => {
-    if (raw == null) return { value: null, confidence: 0 };
-    if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
-      return { value: String(raw), confidence: 70 };
-    }
-    if (typeof raw === 'object' && 'value' in (raw as object)) {
-      const obj = raw as { value?: unknown; confidence?: unknown };
-      const v = obj.value;
-      return {
-        value: v != null ? String(v) : null,
-        confidence: typeof obj.confidence === 'number' ? obj.confidence : 70,
-      };
-    }
-    return { value: null, confidence: 0 };
-  };
+  async function runOneScan(docId: string): Promise<void> {
+    if (!isMountedRef.current) return;
+    const doc = docsRef.current.find(d => d.id === docId);
+    if (!doc) return; // Doc was removed while waiting in the queue
 
-  // ── Process a single file and update its doc entry ─────────────────────────
+    console.log(`[BCFAI] processing started — "${doc.file.name}" (id=${docId})`);
 
-  const processDoc = async (docId: string, file: File) => {
-    setDocs(prev => prev.map(d => d.id === docId ? { ...d, status: 'processing', error: undefined } : d));
+    setDocs(prev => prev.map(d =>
+      d.id === docId
+        ? { ...d, status: 'processing', error: undefined, errorStage: undefined,
+            retryAttempt: undefined, retryWaitMs: undefined }
+        : d,
+    ));
+
+    // 60-second per-document timeout.
+    const abortCtrl = new AbortController();
+    const timeoutId = setTimeout(() => {
+      console.warn(`[BCFAI] timeout triggered — "${doc.file.name}" (60 s)`);
+      abortCtrl.abort();
+    }, 60_000);
+    scanSignalsRef.current.set(docId, abortCtrl);
+
     try {
-      const result = await scanFile(file);
+      const token = await getToken().catch(() => null);
+      if (!isMountedRef.current) { clearTimeout(timeoutId); return; }
 
-      // Dev-mode logging for bill documents so the raw AI shape is visible
-      // in the browser console without exposing image data or account numbers.
-      if (import.meta.env.DEV) {
-        const dt = (result.docType ?? '').toLowerCase();
-        if (dt.includes('bill') || dt.includes('utility')) {
-          console.group(`[Scanner] Raw bill extraction — ${file.name}`);
-          console.log('docType:', result.docType);
-          console.log('classificationConfidence:', result.classificationConfidence);
-          console.log('fields (raw):', JSON.stringify(result.fields ?? {}, null, 2));
-          console.groupEnd();
-        }
-      }
+      const result = await scanFile(doc.file, token, abortCtrl.signal);
+      clearTimeout(timeoutId);
+      scanSignalsRef.current.delete(docId);
+      if (!isMountedRef.current) return;
 
-      const fieldMap: Record<string, { value: string; confidence: number }> = {};
-      for (const [k, v] of Object.entries(result.fields ?? {})) {
-        // Use getFieldValue so null fields and flat values never crash
-        const { value, confidence } = getFieldValue(v);
-        if (value != null) {
-          fieldMap[k] = { value, confidence };
-        }
-      }
-      // Extract institution info returned by the server normalizer
-      const inst = result.institution;
-      const institutionName = inst?.normalizedName || inst?.rawName || '';
-      const institutionUnknown = !inst?.isKnownInstitution && !!institutionName;
-      const institutionCategory = inst?.institutionCategory ?? null;
+      const {
+        resolvedDocType, fieldMap,
+        institutionName, institutionUnknown, institutionCategory,
+      } = normalizeScanResult(result);
 
-      setDocs(prev => prev.map(d => d.id === docId ? {
-        ...d,
-        status: 'done',
-        result,
-        docType: result.docType ?? 'Unknown',
-        fields: fieldMap,
-        institutionName,
-        institutionUnknown,
-        institutionCategory,
-        error: undefined,
-      } : d));
+      console.log(
+        `[BCFAI] extraction complete — "${doc.file.name}": docType=${resolvedDocType}` +
+        (institutionName ? ` institution="${institutionName}"` : ''),
+      );
+
+      setDocs(prev => prev.map(d =>
+        d.id === docId
+          ? {
+              ...d,
+              status: 'done',
+              result,
+              docType: resolvedDocType,
+              fields: fieldMap,
+              institutionName,
+              institutionUnknown,
+              institutionCategory,
+              accepted: true,
+              error: undefined,
+              errorStage: undefined,
+              retryAttempt: undefined,
+              retryWaitMs: undefined,
+            }
+          : d,
+      ));
     } catch (err) {
-      const { stage, message } = parseApiError(err);
-      setDocs(prev => prev.map(d => d.id === docId ? {
-        ...d,
-        status: 'error',
-        error: message,
-        errorStage: stage,
-        docType: 'Unknown',
-        fields: {},
-        accepted: false,
-      } : d));
+      clearTimeout(timeoutId);
+      scanSignalsRef.current.delete(docId);
+      if (!isMountedRef.current) return;
+
+      const rl = is429Error(err);
+      const attempts = retryAttemptsRef.current.get(docId) ?? 0;
+
+      if (rl !== null && attempts < MAX_RATE_LIMIT_RETRIES) {
+        // ── Rate-limited: release this slot NOW, re-queue after delay ──────
+        const waitMs = parseRetryDelay(rl.retryAfterHeader, rl.retryAfterBodyMs, attempts);
+        retryAttemptsRef.current.set(docId, attempts + 1);
+        console.warn(
+          `[BCFAI] rate-limited — "${doc.file.name}": waiting ${waitMs}ms ` +
+          `(attempt ${attempts + 1}/${MAX_RATE_LIMIT_RETRIES})`,
+        );
+
+        setDocs(prev => prev.map(d =>
+          d.id === docId
+            ? { ...d, status: 'retrying', retryAttempt: attempts + 1, retryWaitMs: waitMs }
+            : d,
+        ));
+
+        // Guard against duplicate timers for the same doc.
+        const stale = retryTimersRef.current.get(docId);
+        if (stale !== undefined) clearTimeout(stale);
+
+        const timer = setTimeout(() => {
+          if (!isMountedRef.current) return;
+          retryTimersRef.current.delete(docId);
+          queueRef.current.unshift(docId); // front — retry ASAP
+          dispatchNextRef.current();
+        }, waitMs);
+        retryTimersRef.current.set(docId, timer);
+
+        // Return normally so .finally() in dispatchNext frees the active slot.
+        return;
+      }
+
+      // Non-429 or all retries exhausted — terminal failure.
+      const { stage, message, retryable } = parseApiError(err);
+      console.error(
+        `[BCFAI] document failed — "${doc.file.name}": stage=${stage} — ${message}`,
+      );
+      setDocs(prev => prev.map(d =>
+        d.id === docId
+          ? {
+              ...d,
+              status: 'error',
+              error: message,
+              errorStage: stage,
+              // undefined = server didn't send flag → show Retry (safe default)
+              errorRetryable: retryable,
+              docType: 'Unknown',
+              fields: {},
+              accepted: false,
+              retryAttempt: undefined,
+              retryWaitMs: undefined,
+            }
+          : d,
+      ));
     }
-  };
+  }
 
   // ── Start processing ───────────────────────────────────────────────────────
 
@@ -543,39 +898,152 @@ export default function Scanner() {
     setStep('processing');
     setGlobalError('');
 
-    const initial: ProcessedDoc[] = files.map((f, i) => ({
-      id: crypto.randomUUID(),
-      file: f,
-      preview: previews[i] ?? '',
-      status: 'pending',
-      docType: 'Unknown',
-      fields: {},
-      accepted: true,
-      institutionName: '',
-      institutionUnknown: false,
-      institutionCategory: null,
-    }));
-    setDocs(initial);
+    const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp|heic|heif)$/i;
 
-    // Process sequentially — update individual statuses as each completes
-    for (const doc of initial) {
-      await processDoc(doc.id, doc.file);
+    // Revoke upload-step preview URLs — new ones are created per-doc below.
+    previews.forEach(url => { if (url) try { URL.revokeObjectURL(url); } catch {} });
+    setPreviews([]);
+
+    // Create the initial batch docs with per-doc preview URLs.
+    const initialDocs = await Promise.all(
+      files.map(async (file) => {
+        let preview = '';
+        try {
+          if (file.type.startsWith('image/') || IMAGE_EXT.test(file.name)) {
+            preview = URL.createObjectURL(file);
+          }
+        } catch { preview = ''; }
+
+        let fingerprint: string | undefined;
+        try { fingerprint = await fingerprintFile(file); }
+        catch { fingerprint = undefined; }
+
+        return {
+          id: crypto.randomUUID(),
+          file,
+          preview,
+          fingerprint,
+          status: 'pending' as const,
+          docType: 'Unknown',
+          fields: {},
+          accepted: true,
+          isDuplicate: false,
+          institutionName: '',
+          institutionUnknown: false,
+          institutionCategory: null,
+        };
+      }),
+    );
+
+    // Detect duplicates within the batch (same fingerprint appears 2+ times)
+    // and against already-saved documents.
+    const fingerprintCounts = new Map<string, number>();
+    for (const doc of initialDocs) {
+      if (!doc.fingerprint) continue;
+      fingerprintCounts.set(doc.fingerprint, (fingerprintCounts.get(doc.fingerprint) ?? 0) + 1);
     }
-    setStep('review');
+    const existingFingerprints = new Set(
+      documents.map(d => d.fingerprint).filter((fp): fp is string => Boolean(fp)),
+    );
+
+    const preparedDocs = initialDocs.map(doc => ({
+      ...doc,
+      isDuplicate:
+        Boolean(doc.fingerprint) &&
+        (existingFingerprints.has(doc.fingerprint!) ||
+         (fingerprintCounts.get(doc.fingerprint!) ?? 0) > 1),
+    }));
+
+    // Mark duplicates as errors immediately; only queue the rest.
+    const docsWithDupErrors = preparedDocs.map(doc =>
+      doc.isDuplicate
+        ? {
+            ...doc,
+            status: 'error' as const,
+            accepted: false,
+            errorStage: 'duplicate_document',
+            error: 'This document appears to be a duplicate of one you have already imported.',
+            errorRetryable: false,
+          }
+        : doc,
+    );
+
+    console.log(
+      `[BCFAI] files selected: ${files.length} file(s): ` +
+      files.map(f => `${f.name} (${(f.size / 1024).toFixed(1)} KB)`).join(', '),
+    );
+
+    // Reset all queue state from any previous batch.
+    retryTimersRef.current.forEach(t => clearTimeout(t));
+    retryTimersRef.current.clear();
+    scanSignalsRef.current.forEach(c => c.abort());
+    scanSignalsRef.current.clear();
+    retryAttemptsRef.current.clear();
+    activeCountRef.current = 0;
+
+    setDocs(docsWithDupErrors);
+    // docsRef is normally synced by a useEffect, but that runs AFTER the next
+    // render — too late for dispatchNext() which fires synchronously below.
+    // Eagerly update the ref so runOneScan can look up doc.file immediately.
+    docsRef.current = docsWithDupErrors;
+
+    queueRef.current = docsWithDupErrors
+      .filter(d => d.status === 'pending')
+      .map(d => d.id);
+
+    const dupCount = docsWithDupErrors.filter(d => d.status === 'error' && d.errorStage === 'duplicate_document').length;
+    console.log(
+      `[BCFAI] queue created: ${queueRef.current.length} doc(s) to process` +
+      (dupCount > 0 ? `, ${dupCount} duplicate(s) skipped` : ''),
+    );
+
+    dispatchNext();
+    // Step transition to 'review' is handled by the batch-completion useEffect.
   };
 
   // ── Retry a failed doc ─────────────────────────────────────────────────────
 
-  const retryDoc = async (docId: string) => {
-    const doc = docs.find(d => d.id === docId);
-    if (!doc) return;
-    await processDoc(docId, doc.file);
+  const retryDoc = (docId: string) => {
+    // Cancel any pending retry timer so we don't get a duplicate scan.
+    const existing = retryTimersRef.current.get(docId);
+    if (existing !== undefined) {
+      clearTimeout(existing);
+      retryTimersRef.current.delete(docId);
+    }
+    // Clear attempt count — this is a fresh user-initiated retry.
+    retryAttemptsRef.current.delete(docId);
+
+    setDocs(prev => prev.map(d =>
+      d.id === docId
+        ? { ...d, status: 'pending', accepted: true, isDuplicate: false,
+            error: undefined, errorStage: undefined,
+            retryAttempt: undefined, retryWaitMs: undefined }
+        : d,
+    ));
+
+    queueRef.current.push(docId);
+    dispatchNext();
   };
 
   // ── Remove a doc from the list ─────────────────────────────────────────────
 
   const removeDoc = (docId: string) => {
-    setDocs(prev => prev.filter(d => d.id !== docId));
+    // Cancel any pending retry timer, in-flight fetch, and scrub from the queue.
+    const existing = retryTimersRef.current.get(docId);
+    if (existing !== undefined) {
+      clearTimeout(existing);
+      retryTimersRef.current.delete(docId);
+    }
+    scanSignalsRef.current.get(docId)?.abort();
+    scanSignalsRef.current.delete(docId);
+    retryAttemptsRef.current.delete(docId);
+    queueRef.current = queueRef.current.filter(id => id !== docId);
+
+    setDocs(prev => {
+      const removed = prev.find(d => d.id === docId);
+      if (removed?.preview) try { URL.revokeObjectURL(removed.preview); } catch {}
+      return prev.filter(d => d.id !== docId);
+    });
   };
 
   // ── Field update ───────────────────────────────────────────────────────────
@@ -636,8 +1104,6 @@ export default function Scanner() {
   /** Phase 1 (legacy path): called when there's no smart-update plan.
    *  Falls through to doApplyPlan immediately when no matches exist. */
   const confirmAndSave = () => {
-    const accepted = docs.filter(d => d.accepted && d.status !== 'error');
-
     // Profile
     if (userName.trim()) {
       updateProfile({
@@ -656,7 +1122,7 @@ export default function Scanner() {
     }
 
     // Build update plan from accepted docs
-    const plan = buildUpdatePlan(accepted, { assets, debts, bills });
+    const plan = buildUpdatePlan(savableDocuments, { assets, debts, bills });
     const needsResolution = plan.entries.some(
       e => e.defaultAction === 'update' || e.isOlderStatement || e.billAmountDelta !== 0,
     );
@@ -755,16 +1221,20 @@ export default function Scanner() {
         // ── Installment loans → Debt ─────────────────────────────────────────
         case 'Auto Loan':
         case 'Personal Loan':
-        case 'Student Loan':
-          if (n('currentBalance') > 0) {
+        case 'Student Loan': {
+          // Auto Loan uses canonical names (loanName, balanceOwed, monthsRemaining);
+          // Personal/Student Loan still use currentBalance as fallback.
+          const loanBal = n('balanceOwed') || n('currentBalance') || n('principalBalance');
+          if (loanBal > 0) {
             addDebt({
               name: s('loanName') || s('servicer') || s('lender') || doc.institutionName || doc.docType,
-              balance: n('currentBalance'),
+              balance: loanBal,
               interestRate: n('apr') || n('interestRate'),
               minimumPayment: n('monthlyPayment'),
             });
           }
           break;
+        }
 
         case 'Mortgage':
         case 'HELOC':
@@ -906,6 +1376,21 @@ export default function Scanner() {
             <div className="text-xs text-muted-foreground mt-3">or drag and drop here</div>
           </div>
 
+          {globalError && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-2xl p-4 flex gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-red-700 dark:text-red-300">{globalError}</div>
+                <button
+                  className="text-xs text-red-500 dark:text-red-400 underline mt-1"
+                  onClick={() => setGlobalError('')}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
           {files.length === 0 && (
             <div className="grid grid-cols-2 gap-3">
               {[
@@ -928,7 +1413,7 @@ export default function Scanner() {
           {files.length > 0 && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <div className="font-semibold text-foreground">{files.length} file{files.length !== 1 ? 's' : ''} ready</div>
+                <div className="font-semibold text-foreground">{files.length} of {MAX_BATCH_FILES} file{files.length !== 1 ? 's' : ''} selected</div>
                 <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()}>
                   <Plus className="w-4 h-4 mr-1" /> Add more
                 </Button>
@@ -951,8 +1436,9 @@ export default function Scanner() {
                         <X className="w-4 h-4 text-red-600" />
                       </button>
                     </div>
-                    <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] px-2 py-1 truncate">
-                      {file.name}
+                    <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] px-2 py-1">
+                      <div className="truncate">{file.name}</div>
+                      <div className="text-white/70">{(file.size / 1024 / 1024).toFixed(1)} MB</div>
                     </div>
                   </div>
                 ))}
@@ -983,9 +1469,7 @@ export default function Scanner() {
   // ─── STEP 1: Processing ───────────────────────────────────────────────────────
 
   if (step === 'processing') {
-    const done = docs.filter(d => d.status === 'done' || d.status === 'error').length;
-    const total = docs.length;
-    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    const pct = totalCount > 0 ? Math.round((finishedCount / totalCount) * 100) : 0;
 
     return (
       <div className="min-h-[100dvh] bg-secondary text-secondary-foreground flex flex-col items-center justify-center p-6 text-center">
@@ -993,30 +1477,40 @@ export default function Scanner() {
           <ScanLine className="w-9 h-9 text-primary animate-pulse" />
         </div>
         <h2 className="text-2xl font-bold mb-2">Analyzing your documents</h2>
-        <p className="text-secondary-foreground/70 mb-8 max-w-xs">
+        <p className="text-secondary-foreground/70 mb-6 max-w-xs">
           AI is classifying and extracting financial data from each file.
         </p>
 
         <div className="w-full max-w-sm space-y-4">
-          <div className="text-sm font-medium">{done} of {total} complete</div>
+          <div className="text-sm font-semibold">
+            Processing {finishedCount} of {totalCount} document{totalCount !== 1 ? 's' : ''}
+          </div>
           <div className="h-3 bg-white/10 rounded-full overflow-hidden">
             <div className="h-full bg-primary rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
+          </div>
+
+          <div className="flex justify-between text-xs text-secondary-foreground/70 px-1">
+            <span>✓ Done: {completedCount}</span>
+            {failedCount > 0 && <span className="text-red-400">✗ Failed: {failedCount}</span>}
+            {retryingCount > 0 && <span className="text-amber-400">↺ Retrying: {retryingCount}</span>}
+            <span>⏳ Remaining: {activeCount}</span>
           </div>
 
           <div className="space-y-2 mt-2">
             {docs.map((doc) => (
               <div key={doc.id} className="bg-white/10 rounded-xl p-3 text-left flex items-center gap-3">
                 <div className="w-6 h-6 flex-shrink-0 flex items-center justify-center">
-                  {doc.status === 'done' && <CheckCircle2 className="w-5 h-5 text-primary" />}
+                  {doc.status === 'done'       && <CheckCircle2 className="w-5 h-5 text-primary" />}
                   {doc.status === 'processing' && <Loader2 className="w-5 h-5 text-primary animate-spin" />}
-                  {doc.status === 'error' && <AlertTriangle className="w-5 h-5 text-red-400" />}
-                  {doc.status === 'pending' && <div className="w-4 h-4 rounded-full border-2 border-white/20" />}
+                  {doc.status === 'retrying'   && <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />}
+                  {doc.status === 'error'      && <AlertTriangle className="w-5 h-5 text-red-400" />}
+                  {doc.status === 'pending'    && <div className="w-4 h-4 rounded-full border-2 border-white/20" />}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{doc.file.name}</div>
-                  {doc.status === 'done' && doc.result && (
+                  {doc.status === 'done' && (
                     <div className="text-xs text-secondary-foreground/60">
-                      {DOC_TYPE_EMOJI[doc.result.docType] ?? '📄'} {doc.result.docType} · {doc.result.classificationConfidence}% confidence
+                      {DOC_TYPE_EMOJI[doc.docType] ?? '📄'} {doc.docType}
                     </div>
                   )}
                   {doc.status === 'error' && (
@@ -1024,6 +1518,15 @@ export default function Scanner() {
                   )}
                   {doc.status === 'processing' && (
                     <div className="text-xs text-secondary-foreground/60">Analyzing…</div>
+                  )}
+                  {doc.status === 'retrying' && (
+                    <div className="text-xs text-amber-300">
+                      Waiting to retry ({doc.retryAttempt}/{MAX_RATE_LIMIT_RETRIES}
+                      {doc.retryWaitMs ? `, ${Math.round(doc.retryWaitMs / 1000)}s` : ''})
+                    </div>
+                  )}
+                  {doc.status === 'pending' && (
+                    <div className="text-xs text-secondary-foreground/40">Queued</div>
                   )}
                 </div>
               </div>
@@ -1037,8 +1540,6 @@ export default function Scanner() {
   // ─── STEP 2: Review ───────────────────────────────────────────────────────────
 
   if (step === 'review') {
-    const accepted = docs.filter(d => d.accepted && d.status !== 'error');
-
     return (
       <div className="min-h-[100dvh] bg-background flex flex-col">
         <div className="sticky top-0 z-40 bg-secondary text-secondary-foreground px-4 py-4 flex items-center gap-3">
@@ -1233,12 +1734,16 @@ export default function Scanner() {
                   {/* Retry / Remove for failed docs */}
                   {doc.status === 'error' && (
                     <div className="flex-shrink-0 flex flex-col gap-1">
-                      <button
-                        onClick={() => retryDoc(doc.id)}
-                        className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-900/50 transition-colors"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" /> Retry
-                      </button>
+                      {/* Only show Retry when the failure is transient/retryable.
+                          undefined = server didn't send flag → show Retry (safe default). */}
+                      {doc.errorRetryable !== false && (
+                        <button
+                          onClick={() => retryDoc(doc.id)}
+                          className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-900/50 transition-colors"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" /> Retry
+                        </button>
+                      )}
                       <button
                         onClick={() => removeDoc(doc.id)}
                         className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-xl font-medium bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"
@@ -1290,8 +1795,7 @@ export default function Scanner() {
               onClick={() => {
                 // Rebuild the plan fresh from current doc state so any edits
                 // made after the match-resolution UI appeared are captured.
-                const accepted = docs.filter(d => d.accepted && d.status !== 'error');
-                const freshPlan = buildUpdatePlan(accepted, { assets, debts, bills });
+                const freshPlan = buildUpdatePlan(savableDocuments, { assets, debts, bills });
                 doApplyPlan(freshPlan, matchChoices);
               }}
             >
@@ -1301,11 +1805,17 @@ export default function Scanner() {
           ) : (
             <Button
               className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
-              disabled={accepted.length === 0}
+              disabled={
+                savableDocuments.length === 0 ||
+                docs.some(d => d.status === 'processing' || d.status === 'retrying' || d.status === 'pending')
+              }
               onClick={confirmAndSave}
             >
               <CheckCircle2 className="w-5 h-5 mr-2" />
-              Confirm &amp; Save {accepted.length} Document{accepted.length !== 1 ? 's' : ''}
+              {docs.some(d => d.status === 'processing' || d.status === 'retrying' || d.status === 'pending')
+                ? 'Scanning in progress…'
+                : `Confirm & Save ${savableDocuments.length} Document${savableDocuments.length !== 1 ? 's' : ''}`
+              }
             </Button>
           )}
           <div className="text-center text-xs text-muted-foreground">

@@ -1,0 +1,378 @@
+Act as the senior engineer responsible for synchronizing and stabilizing this project after a large GitHub hardening pass.
+
+The source of truth is:
+
+Repository:
+tristanr04/Blue-Collar-AI
+
+Branch:
+security-and-production-hardening
+
+Do not deploy, publish, or merge automatically.
+
+PHASE 1 — SAFELY SYNC GITHUB
+
+Run:
+
+git status
+git branch --show-current
+git remote -v
+git fetch origin
+
+If there are uncommitted local changes:
+- do not discard them;
+- create a temporary local commit or stash;
+- report exactly what was preserved.
+
+Then switch to:
+
+security-and-production-hardening
+
+Pull using:
+
+git pull --ff-only origin security-and-production-hardening
+
+If fast-forward is impossible:
+- stop;
+- do not force reset;
+- report the conflicting commits and files.
+
+Confirm that the branch includes the newest work for:
+
+- Clerk authentication and user scoping
+- secure financial CRUD
+- migration idempotency
+- audit events
+- background jobs
+- request security middleware
+- AgeBenchmarkCard
+- age benchmark engine and data
+- 2026 wage and overtime tax estimator
+- profile_context schema
+- profile_context migration
+- authenticated profile-context API
+- typed frontend profile-context client
+
+PHASE 2 — INSTALL AND INSPECT
+
+Run:
+
+pnpm install --frozen-lockfile
+
+Then inspect the workspace before editing.
+
+Verify these files exist:
+
+lib/db/src/schema/profile-context.ts
+lib/db/drizzle/0004_add_profile_context.sql
+artifacts/api-server/src/lib/profile-context-repository.ts
+artifacts/api-server/src/routes/profile-context.ts
+artifacts/blue-collar-financial-ai/src/lib/profile-context-api.ts
+artifacts/blue-collar-financial-ai/src/lib/tax-estimator.ts
+artifacts/blue-collar-financial-ai/src/lib/age-benchmarks.ts
+artifacts/blue-collar-financial-ai/src/lib/age-benchmark-data.ts
+artifacts/blue-collar-financial-ai/src/components/AgeBenchmarkCard.tsx
+
+Do not recreate files that already exist.
+
+PHASE 3 — RUN BASELINE CHECKS BEFORE CHANGING CODE
+
+Run:
+
+pnpm run typecheck
+pnpm test
+pnpm run build
+
+Record every error exactly.
+
+Fix actual integration errors only. Do not perform broad rewrites or cosmetic redesigns.
+
+PHASE 4 — APPLY DATABASE MIGRATIONS SAFELY
+
+Inspect the migration journal and existing production database state.
+
+Verify these migrations are represented in correct order:
+
+0000 core financial schema
+0001 migration jobs
+0002 audit events
+0003 background jobs
+0004 profile context
+
+Do not drop tables.
+Do not reset the database.
+Do not regenerate migration history over existing migrations.
+Do not remove user data.
+
+Apply pending migrations using the project’s existing database command.
+
+After migration, verify these tables exist:
+
+profiles
+paystubs
+debts
+bills
+assets
+scanned_documents
+migration_jobs
+audit_events
+background_jobs
+profile_context
+
+Verify profile_context has:
+
+user_id
+birth_date
+state_code
+tax_filing_status
+qualifying_children
+other_dependents
+spouse_has_income
+additional_annual_income
+annual_pre_tax_deductions
+created_at
+updated_at
+
+PHASE 5 — CONNECT PROFILE CONTEXT TO FRONTEND STORE
+
+Add profile-context state to the existing frontend store.
+
+Required store state:
+
+profileContext
+profileContextLoading
+profileContextSaving
+profileContextError
+
+Required actions:
+
+loadProfileContext(token)
+saveProfileContext(token, input)
+clearProfileContext()
+
+Requirements:
+
+- fetch context after authenticated session becomes available;
+- never persist the Clerk token;
+- clear context on logout;
+- handle 401, 403, validation errors, and network failures;
+- do not overwrite unsaved local form edits during background refresh;
+- prevent duplicate concurrent loads;
+- preserve existing financial store behavior.
+
+PHASE 6 — BUILD SETTINGS / ONBOARDING FORM
+
+Add a form that lets the user edit:
+
+- date of birth
+- state
+- tax filing status
+- qualifying children
+- other dependents
+- spouse has income
+- additional annual income
+- annual pretax deductions
+
+Validation:
+
+- date format YYYY-MM-DD
+- age must be 18 through 120
+- state must be one of 50 states or DC
+- dependent counts must be integers from 0 through 20
+- income and deductions cannot be negative
+- display server validation messages clearly
+
+Do not force existing users back through onboarding.
+
+If the user has no profile context:
+- show a clear setup card;
+- allow them to skip and finish later.
+
+PHASE 7 — WIRE AGE COMPARISON INTO DASHBOARD
+
+Use:
+
+profileContext.birthDate
+profileContext.stateCode
+computed.monthlyGross * 12
+computed.netWorth
+
+Do not use net pay as annual gross income.
+
+Current national benchmark behavior must remain accurate until state data is implemented.
+
+Display:
+
+- age group
+- user value
+- benchmark median
+- dollar difference
+- above / near / below median category
+- benchmark source
+- benchmark year
+- data-completeness message
+
+Do not claim:
+- percentile
+- financial grade
+- credit score
+- exact rank among peers
+
+Because state-specific benchmark data is not fully implemented yet:
+
+- display national age comparison as the current fallback;
+- label it clearly as national;
+- if state is present, show “State-specific comparison coming next”;
+- do not fake a state median.
+
+Tone down the numerical score if needed.
+Prefer category labels over extreme 0–100 claims.
+
+PHASE 8 — WIRE TAX AND OVERTIME ESTIMATOR
+
+Create a dashboard card or dedicated tax-estimator section using the deterministic tax engine.
+
+Inputs should come from:
+
+- profileContext.taxFilingStatus
+- profileContext.stateCode
+- profileContext.qualifyingChildren
+- profileContext.otherDependents
+- profileContext.additionalAnnualIncome
+- profileContext.annualPreTaxDeductions
+- profile.hourlyRate
+- paystub regular hours
+- paystub overtime hours
+- paystub double-time hours
+- gross wages
+- pretax deductions where available
+
+Show these separately:
+
+- estimated annual gross wages
+- regular wages
+- overtime wages
+- qualified overtime premium
+- federal income tax estimate
+- state income tax estimate
+- Social Security
+- Medicare
+- total estimated tax
+- estimated effective tax percentage
+- estimated incremental tax on overtime
+- estimated after-tax overtime income
+
+Required disclosure:
+
+“Overtime is not subject to a separate special tax rate. Payroll withholding may look higher on a large check because the check is annualized. Final tax is determined using progressive annual tax rules.”
+
+Also disclose:
+
+- this is an estimate, not tax advice;
+- current state-tax support is Oklahoma only;
+- unsupported states must show a clear incomplete warning;
+- never silently apply Oklahoma rates to another state.
+
+Do not treat tax-exempt per diem as taxable wages unless the stored data explicitly identifies it as taxable.
+
+PHASE 9 — BACKGROUND JOB INTEGRATION CHECK
+
+Do not move live OCR onto the queue in this pass unless all previous phases are green.
+
+Verify:
+
+GET /api/jobs
+GET /api/jobs/:jobId
+
+remain authenticated and user-scoped.
+
+Verify the worker foundation compiles.
+
+Report whether OCR and AI remain synchronous.
+
+PHASE 10 — TESTING
+
+Add or update tests for:
+
+Profile context:
+- unauthenticated read
+- unauthenticated update
+- cross-user isolation
+- first save
+- subsequent update
+- invalid state
+- future birth date
+- age under 18
+- negative deductions
+- no-store headers
+
+Frontend:
+- context load
+- context save
+- logout clearing
+- missing context
+- validation error
+- network failure
+
+Age comparison:
+- age 22
+- birthday today
+- birthday tomorrow
+- age-band boundary
+- missing birth date
+- missing state
+- negative net worth
+- missing income
+- clear national fallback disclosure
+
+Tax estimator:
+- no overtime
+- time-and-a-half overtime
+- double time
+- Oklahoma resident
+- unsupported state
+- Social Security wage-base crossing
+- Additional Medicare threshold
+- pretax deduction
+- qualified overtime cap
+- overtime deduction phaseout
+- tax-exempt per diem excluded
+
+PHASE 11 — FINAL VERIFICATION
+
+Run:
+
+pnpm run typecheck
+pnpm test
+pnpm run build
+
+If available, also run:
+
+pnpm --filter @workspace/db db:check
+
+Do not hide failures.
+
+FINAL REPORT
+
+Report:
+
+1. Current branch and commit
+2. Whether sync succeeded
+3. Preserved local changes
+4. Files changed
+5. Migrations applied
+6. Tables verified
+7. Tests passed and failed
+8. Typecheck result
+9. Build result
+10. Dashboard features now visible
+11. Known limitations
+12. Whether the app is safe for:
+   - private testing
+   - invitation-only beta
+   - public beta
+
+Do not publish.
+Do not deploy.
+Do not merge into main.
+Do not force-reset Git history.
