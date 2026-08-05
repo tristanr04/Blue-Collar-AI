@@ -403,24 +403,19 @@ function profileToApi(p: Profile): Record<string, unknown> {
 // ─── StoreProvider ────────────────────────────────────────────────────────────
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<StoreState>(() => {
-    try {
-      const stored = localStorage.getItem('bcf_state');
-      if (stored) return migrateState(JSON.parse(stored));
-    } catch (e) {
-      console.error('Failed to parse state', e);
-    }
-    return DEFAULT_STATE;
-  });
-
-  useEffect(() => {
-    localStorage.setItem('bcf_state', JSON.stringify(state));
-  }, [state]);
+  // Never read from localStorage at initialization — the authenticated userId
+  // is not known yet, so any cached data could belong to a different user.
+  // Financial state is populated exclusively via the server snapshot on sign-in.
+  const [state, setState] = useState<StoreState>(DEFAULT_STATE);
 
   // ─── Auth ─────────────────────────────────────────────────────────────────
 
-  const { isLoaded, isSignedIn, getToken } = useAuth();
+  const { isLoaded, isSignedIn, getToken, userId } = useAuth();
   const tokenRef = useRef<string | null>(null);
+  // Keep a ref so callbacks (migrateLocalToServer) can read the current userId
+  // without being recreated on every render.
+  const userIdRef = useRef<string | null | undefined>(userId);
+  useEffect(() => { userIdRef.current = userId; }, [userId]);
 
   useEffect(() => {
     if (!isLoaded || !isSignedIn) { tokenRef.current = null; return; }
@@ -452,12 +447,23 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (isLoaded && !isSignedIn) {
+      // Immediately wipe in-memory financial state so the next user who opens
+      // the app on this browser cannot briefly see the previous user's data.
+      setState(DEFAULT_STATE);
       setServerSynced(false);
       setMigrationPending(false);
       setProfileContext(null);
       setProfileContextError(null);
     }
   }, [isLoaded, isSignedIn]);
+
+  // Remove any legacy global 'bcf_state' key left by older app versions.
+  // This key was never user-scoped, so it must be purged on sign-in.
+  useEffect(() => {
+    if (isLoaded && isSignedIn && userId) {
+      localStorage.removeItem('bcf_state');
+    }
+  }, [isLoaded, isSignedIn, userId]);
 
   useEffect(() => {
     if (!isLoaded || !isSignedIn || serverSynced) return;
@@ -564,20 +570,24 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   //   5. On committed: clear key, clear pending UUID map, reload from server.
   //   6. On failed: clear key (next call generates a fresh one), throw error.
 
-  const MIGRATION_IDEM_KEY = 'bcf_migration_idem_key';
+  // Migration idempotency key is scoped to the authenticated user so that
+  // User A's in-progress migration key is never visible to User B.
+  const migrationIdemKey = () =>
+    `bcf_migration_idem:${userIdRef.current ?? 'anon'}`;
 
   const migrateLocalToServer = useCallback(async () => {
     const token = tokenRef.current;
     if (!token) throw new Error('Not signed in — please reload and try again.');
 
     // ── Step 1: check if a prior migration already committed while we were offline ──
-    let idempotencyKey = localStorage.getItem(MIGRATION_IDEM_KEY);
+    const idemKey = migrationIdemKey();
+    let idempotencyKey = localStorage.getItem(idemKey);
     if (idempotencyKey) {
       try {
         const existing = await getMigrationStatus(token, idempotencyKey);
         if (existing.status === 'committed') {
           // Already done — just reload server data.
-          localStorage.removeItem(MIGRATION_IDEM_KEY);
+          localStorage.removeItem(idemKey);
           idPendingMap.current.clear();
           setMigrationPending(false);
           setServerSynced(false);
@@ -585,7 +595,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         }
         if (existing.status === 'failed') {
           // Previous attempt failed cleanly — generate a fresh key below.
-          localStorage.removeItem(MIGRATION_IDEM_KEY);
+          localStorage.removeItem(idemKey);
           idempotencyKey = null;
         }
         // 'pending' → re-POST with the same key; server serialises concurrent requests.
@@ -597,7 +607,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     // ── Step 2: mint a key if we don't have one ───────────────────────────────
     if (!idempotencyKey) {
       idempotencyKey = crypto.randomUUID();
-      localStorage.setItem(MIGRATION_IDEM_KEY, idempotencyKey);
+      localStorage.setItem(idemKey, idempotencyKey);
     }
 
     // ── Step 3: build payload and submit ─────────────────────────────────────
@@ -622,13 +632,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
     // ── Step 5 / 6: apply result or surface failure ───────────────────────────
     if (response.status !== 'committed') {
-      localStorage.removeItem(MIGRATION_IDEM_KEY);
+      localStorage.removeItem(idemKey);
       throw new Error(
         response.errorMessage ?? 'Migration timed out. Please try again.',
       );
     }
 
-    localStorage.removeItem(MIGRATION_IDEM_KEY);
+    localStorage.removeItem(idemKey);
     idPendingMap.current.clear();
     setMigrationPending(false);
     setServerSynced(false); // triggers full snapshot reload, replacing local IDs with server IDs

@@ -1,0 +1,45 @@
+Perform a focused security regression repair on commit 031b731.
+
+Do not add features or redesign the UI.
+
+Fix these confirmed issues:
+
+1. Cross-user browser data exposure
+- The frontend StoreProvider currently saves all financial state under the global localStorage key "bcf_state".
+- Namespace temporary local storage by the authenticated Clerk user ID.
+- Never load one user's cached state before the authenticated user ID is known.
+- On sign-out or user change, immediately clear the in-memory state and load only the new user's server snapshot.
+- Prefer removing persistent financial data from localStorage entirely once server synchronization succeeds.
+- Do not store scanned document data, account values, paystubs, debts, bills, assets, or extraction results in a shared global key.
+- Add tests proving User B cannot see User A's cached data in the same browser.
+
+2. Raw financial data in logs
+- Remove rawHead and rawTail from FailureDiagnosis and every logger call.
+- Never log raw AI output, document text, extracted sourceText, names, balances, account numbers, or statement content.
+- Log only safe metadata such as cause, responseChars, token counts, finishReason, attempt number, request ID, user ID, and document ID.
+- Add a regression test that feeds fake PII into a failed model response and proves none of it appears in captured logs.
+
+3. Real orientation backtesting
+- Determine whether ORIENTATION_STRATEGIES is actually used.
+- If unused, do not claim true multi-pass orientation handling.
+- Add deterministic fixtures at 0, 90, 180, and 270 degrees.
+- Physically rotate images where required rather than relying solely on the model to mentally rotate them.
+- Verify document classification and key extracted fields remain attached to the correct source document.
+- Avoid four AI requests for every normal document; use image metadata or a fallback strategy where practical.
+
+4. Authorization coverage
+- Enumerate every user-specific route currently registered.
+- Add cross-user read, update, and delete tests for each applicable route group.
+- Confirm ownership is checked in the database query itself, not only after retrieving a record.
+- Report routes tested and any route that remains untested.
+
+5. Verification
+Run and separately report:
+- Frontend test total
+- API test total
+- Security regression test total
+- TypeScript result for every package
+- Production build result
+- Any failing or skipped tests
+
+Do not call the work complete while the global "bcf_state" key stores financial records or while raw AI output remains in logs.

@@ -13,6 +13,7 @@ import {
   isPdf,
   normalizeImage,
 } from "../lib/upload-security.js";
+import sharp from "sharp";
 import { scanLimiter } from "../middlewares/rate-limit.js";
 import { scanSemaphore } from "../middlewares/ai-guard.js";
 import { makeAbortController } from "../middlewares/timeout.js";
@@ -129,13 +130,25 @@ Return numbers without currency symbols, commas, percent signs, or words.
 Return dates as YYYY-MM-DD.
 Return null when a value is not visible.`;
 
-/** Orientation strategies for multi-pass image extraction. */
+/**
+ * Maps the model's detectedOrientation value to the physical correction angle
+ * applied to the image buffer before a re-extraction attempt.
+ *
+ * If the model reports detectedOrientation: 90 it means the image appears
+ * 90° clockwise from upright; rotating 270° clockwise (90° CCW) corrects it.
+ * This array is used in the physical-rotation retry path — never "mentally rotate"
+ * instructions; we rotate the pixels instead.
+ */
 const ORIENTATION_STRATEGIES = [
-  { name: "normal",     instruction: "Inspect the image normally, but verify all four possible rotations before deciding its orientation." },
-  { name: "rotate-90",  instruction: "Treat the page as likely rotated 90 degrees. Mentally rotate it clockwise, deskew it, and extract every readable field." },
-  { name: "rotate-180", instruction: "Treat the page as likely upside down. Mentally rotate it 180 degrees and extract every readable field." },
-  { name: "rotate-270", instruction: "Treat the page as likely rotated 270 degrees. Mentally rotate it counterclockwise, deskew it, and extract every readable field." },
-] as const;
+  { name: "normal",     detectedOrientation: 0   as const, correctionDegrees: 0   as const },
+  { name: "rotate-90",  detectedOrientation: 90  as const, correctionDegrees: 270 as const },
+  { name: "rotate-180", detectedOrientation: 180 as const, correctionDegrees: 180 as const },
+  { name: "rotate-270", detectedOrientation: 270 as const, correctionDegrees: 90  as const },
+] satisfies ReadonlyArray<{
+  name: string;
+  detectedOrientation: 0 | 90 | 180 | 270;
+  correctionDegrees: 0 | 90 | 180 | 270;
+}>;
 
 const SUSPICIOUS_INSTRUCTION_PATTERNS = [
   /ignore (all |any )?(previous|prior|system) instructions?/i,
@@ -522,10 +535,9 @@ type FailureCause =
 interface FailureDiagnosis {
   cause: FailureCause;
   detail: string;
-  /** First 600 chars of the raw response for quick log inspection. */
-  rawHead: string;
-  /** Last 300 chars — most useful for spotting truncation. */
-  rawTail: string;
+  // Raw AI output is intentionally excluded — it can contain document-derived
+  // PII (account numbers, names, balances).  Operators who need the verbatim
+  // response must enable application-level debug tracing outside this logger.
 }
 
 // ─── Result codes & content classification ───────────────────────────────────
@@ -670,15 +682,14 @@ function classifyResponseFailure(
   meta: ResponseMeta,
   zodErrors?: Record<string, string[]>,
 ): FailureDiagnosis {
+  // NOTE: rawText is intentionally not stored in the returned object.
+  // It may contain document-derived PII echoed back by the model.
   const trimmed = rawText.trim();
-  const rawHead = rawText.slice(0, 600);
-  const rawTail = rawText.slice(-300);
 
   if (!trimmed) {
     return {
       cause: "empty_response",
       detail: `Model returned empty content. finish_reason=${meta.finishReason}`,
-      rawHead, rawTail,
     };
   }
 
@@ -688,9 +699,7 @@ function classifyResponseFailure(
       cause: "truncated_output",
       detail:
         `finish_reason=length — output cut at ${meta.responseChars} chars / ` +
-        `${meta.completionTokens ?? "?"} completion tokens. ` +
-        `Last chars: …${rawTail.slice(-80)}`,
-      rawHead, rawTail,
+        `${meta.completionTokens ?? "?"} completion tokens.`,
     };
   }
 
@@ -706,7 +715,6 @@ function classifyResponseFailure(
     return {
       cause: "model_refusal",
       detail: "Model returned a refusal / explanation instead of JSON.",
-      rawHead, rawTail,
     };
   }
 
@@ -719,7 +727,6 @@ function classifyResponseFailure(
     return {
       cause: "zod_schema_mismatch",
       detail: `JSON parsed OK but failed schema validation — ${topErrors}`,
-      rawHead, rawTail,
     };
   }
 
@@ -727,7 +734,6 @@ function classifyResponseFailure(
     return {
       cause: "markdown_wrapping",
       detail: "Response contains markdown code fences that could not be stripped.",
-      rawHead, rawTail,
     };
   }
 
@@ -738,7 +744,6 @@ function classifyResponseFailure(
       detail:
         `${topObjects.length} separate JSON objects found. ` +
         `Largest is ${topObjects[0]?.length ?? 0} chars.`,
-      rawHead, rawTail,
     };
   }
 
@@ -749,7 +754,6 @@ function classifyResponseFailure(
     return {
       cause: "invalid_json_syntax",
       detail: "No JSON object delimiters found in response.",
-      rawHead, rawTail,
     };
   }
 
@@ -762,7 +766,6 @@ function classifyResponseFailure(
           ? ` and/or after position ${lastBrace}`
           : "") +
         ".",
-      rawHead, rawTail,
     };
   }
 
@@ -772,14 +775,12 @@ function classifyResponseFailure(
     return {
       cause: "invalid_json_syntax",
       detail: `JSON.parse error: ${e instanceof Error ? e.message : String(e)}`,
-      rawHead, rawTail,
     };
   }
 
   return {
     cause: "unknown",
     detail: "Response appears structurally valid but all recovery stages failed.",
-    rawHead, rawTail,
   };
 }
 
@@ -790,11 +791,10 @@ function classifyResponseFailure(
  * finish reason, token counts) is included to help developers diagnose failures
  * without exposing document content.
  *
- * SECURITY: rawHead / rawTail (raw AI output) are intentionally omitted from
- * the response body.  They may contain document-derived PII (account numbers,
- * names, balances) that the model echoed back before failing validation.  They
- * are written to server-side structured logs only, where they are accessible
- * to operators but not to the requesting client.
+ * SECURITY: Raw AI output is intentionally omitted from both the response body
+ * and server logs.  It may contain document-derived PII (account numbers, names,
+ * balances) echoed back by the model before failing validation.  Only safe
+ * metadata (cause, token counts, finish_reason) is retained.
  */
 export function buildDiagnosticFailureBody(opts: {
   file: string;
@@ -859,6 +859,25 @@ export function buildDiagnosticFailureBody(opts: {
  * password-protected or encrypted.  Exported for unit testing.
  */
 export { isEncryptedPdfError };
+
+/**
+ * Physically rotate a JPEG image buffer by 90, 180, or 270 degrees using Sharp.
+ *
+ * The correctionDegrees value in ORIENTATION_STRATEGIES maps each reported
+ * detectedOrientation to the exact angle needed to bring the image upright:
+ *   detected 90°  → rotate 270° CW (= 90° CCW)
+ *   detected 180° → rotate 180°
+ *   detected 270° → rotate 90°  CW
+ *
+ * Exported so orientation-backtesting tests can verify the transformation
+ * directly without spinning up the full route handler.
+ */
+export async function physicallyRotateImage(
+  buffer: Buffer,
+  degrees: 90 | 180 | 270,
+): Promise<Buffer> {
+  return sharp(buffer).rotate(degrees).jpeg({ quality: 92 }).toBuffer();
+}
 
 // ─── Vehicle-loan extraction normalization ────────────────────────────────────
 
@@ -1410,10 +1429,8 @@ router.post(
             finishReason: meta1.finishReason,
             completionTokens: meta1.completionTokens,
             responseChars: meta1.responseChars,
-            // Write the verbatim raw text to the log before any cleanup
-            rawResponse: rawText1,
           },
-          "[BCFAI] parse failed (attempt 1) — raw response logged; retrying",
+          "[BCFAI] parse failed (attempt 1) — retrying",
         );
 
         didRetry = true;
@@ -1446,9 +1463,8 @@ router.post(
               file: originalname,
               attempt1: { cause: diag1.cause, detail: diag1.detail },
               attempt2: { cause: diag2.cause, detail: diag2.detail },
-              rawResponse2: rawText2,
             },
-            "[BCFAI] document failed — both parse attempts failed; raw responses logged",
+            "[BCFAI] document failed — both parse attempts failed",
           );
           res.status(422).json(
             buildDiagnosticFailureBody({
@@ -1459,6 +1475,78 @@ router.post(
             }),
           );
           return;
+        }
+      }
+
+      // ── Physical-rotation retry (orientation correction) ──────────────────
+      // If the first pass succeeded but the model reported the image is rotated
+      // AND quality is poor/unreadable, physically rotate the buffer by the
+      // corrective angle from ORIENTATION_STRATEGIES and re-extract.  This is at
+      // most ONE extra AI call and avoids asking the model to mentally un-rotate.
+      // Only applies to images — PDF buffers are pre-rendered by pdf-parse.
+      if (rawExtraction && !didRetry && aiInputImageBuffer !== null) {
+        const detOrient =
+          typeof rawExtraction.detectedOrientation === "number"
+            ? rawExtraction.detectedOrientation
+            : 0;
+        const imgQuality =
+          typeof rawExtraction.imageQuality === "string"
+            ? rawExtraction.imageQuality
+            : "good";
+
+        const strategy = ORIENTATION_STRATEGIES.find(
+          (s) => s.detectedOrientation === detOrient,
+        );
+
+        if (
+          strategy &&
+          strategy.correctionDegrees !== 0 &&
+          (imgQuality === "poor" || imgQuality === "unreadable")
+        ) {
+          const degrees = strategy.correctionDegrees;
+          logger.info(
+            { file: originalname, degrees, imageQuality: imgQuality },
+            "[BCFAI] low-quality rotated image — re-extracting with physical rotation",
+          );
+          try {
+            const rotatedBuffer = await physicallyRotateImage(
+              aiInputImageBuffer,
+              degrees,
+            );
+            didRetry = true;
+            const rotatedResponse = await extractFromImage(
+              rotatedBuffer,
+              abort.signal,
+            );
+            meta2 = extractResponseMeta(rotatedResponse, promptChars);
+            rawText2 = getRawOutputText(rotatedResponse);
+            const rotatedExtraction = unwrapDocumentResponse(
+              getModelOutput(rotatedResponse),
+            );
+            if (rotatedExtraction) {
+              const rotatedConf =
+                typeof rotatedExtraction.classificationConfidence === "number"
+                  ? rotatedExtraction.classificationConfidence
+                  : 0;
+              const origConf =
+                typeof rawExtraction.classificationConfidence === "number"
+                  ? rawExtraction.classificationConfidence
+                  : 0;
+              if (rotatedConf > origConf) {
+                rawExtraction = rotatedExtraction;
+                aiInputImageBuffer = rotatedBuffer;
+                logger.info(
+                  { file: originalname, degrees, origConf, rotatedConf },
+                  "[BCFAI] physical rotation improved confidence — using rotated extraction",
+                );
+              }
+            }
+          } catch (rotErr) {
+            logger.warn(
+              { file: originalname, err: rotErr },
+              "[BCFAI] physical rotation failed — using original extraction",
+            );
+          }
         }
       }
 
@@ -1586,11 +1674,8 @@ router.post(
             detectedDocType: rawExtraction.docType ?? null,
             rawExtractionKeys,
             fieldErrors: zodErrors,
-            // Write the verbatim raw response so future analysis can see
-            // exactly what the model returned before any normalisation
-            rawResponse: rawText1,
           },
-          "[BCFAI] schema validation failed (attempt 1) — raw response and field errors logged",
+          "[BCFAI] schema validation failed (attempt 1)",
         );
 
         if (!didRetry) {
@@ -1639,7 +1724,6 @@ router.post(
                   attempt1: { cause: diag1.cause, detail: diag1.detail, zodErrors },
                   attempt2: { cause: diag2.cause, detail: diag2.detail, zodErrors: zodErrors2 },
                   attempt2RawKeys: Object.keys(retryExtraction),
-                  rawResponse2: rawText2,
                 },
                 "[BCFAI] document failed — schema validation failed on both attempts",
               );
@@ -1661,7 +1745,6 @@ router.post(
                 file: originalname,
                 attempt1: { cause: diag1.cause, zodErrors },
                 attempt2: { cause: diag2.cause, detail: diag2.detail },
-                rawResponse2: rawText2,
               },
               "[BCFAI] document failed — schema failure on attempt 1, JSON parse failure on retry",
             );

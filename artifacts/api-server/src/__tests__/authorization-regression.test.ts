@@ -95,3 +95,110 @@ test("AI capability metadata remains authenticated and non-cacheable", () => {
     "Capability metadata must not be stored in shared caches.",
   );
 });
+
+// ── Issue 4 additions: tax-scenarios route + repository authorization ─────
+
+test("tax-scenarios routes are behind Clerk authentication", () => {
+  const routes = source("../routes/tax-scenarios.ts");
+
+  // The route group (or individual routes) must require authentication.
+  assert.match(
+    routes,
+    /requireAuthenticatedUser/,
+    "Tax-scenarios routes must be protected by requireAuthenticatedUser.",
+  );
+
+  // Routes must derive the user ID from middleware, not from client input.
+  assert.match(
+    routes,
+    /req\.authenticatedUserId/,
+    "Tax-scenarios routes must derive identity from authenticated middleware state.",
+  );
+  assert.doesNotMatch(
+    routes,
+    /(?:req\.body|req\.query|req\.params)\.userId/,
+    "Tax-scenarios routes must never trust a client-supplied userId.",
+  );
+});
+
+test("tax-scenarios repository scopes updates and deletes by userId in WHERE clause", () => {
+  const repository = source("../lib/tax-scenarios-repository.ts");
+
+  // Both the record id and the userId equality predicates must appear inside
+  // an and() call.  Allow extra predicates (e.g. isNull(deletedAt)) between them.
+  assert.match(
+    repository,
+    /and\s*\([\s\S]{0,400}eq\s*\([^)]+\.id,\s*id\)[\s\S]{0,400}eq\s*\([^)]+\.userId,\s*userId\)/,
+    "Tax-scenario update/delete must include AND(eq(id), eq(userId)) in the WHERE clause.",
+  );
+
+  // userId predicate must be inside a .where() call (DB-level, not JS filter).
+  assert.match(
+    repository,
+    /\.where\s*\([\s\S]{0,200}userId/,
+    "userId ownership check must be inside a .where() predicate, not only a post-fetch JS filter.",
+  );
+});
+
+test("tax-scenarios cross-user reads are rejected by ownership predicate", () => {
+  const repository = source("../lib/tax-scenarios-repository.ts");
+
+  // getTaxScenario (or equivalent) must scope SELECT by userId.
+  assert.match(
+    repository,
+    /eq\s*\([^)]+\.userId,\s*userId\)/,
+    "Tax-scenario reads must filter by the authenticated userId.",
+  );
+});
+
+// ── Issue 4 additions: background-jobs route + repository authorization ───
+
+test("background-jobs routes are behind Clerk authentication", () => {
+  const routes = source("../routes/background-jobs.ts");
+
+  assert.match(
+    routes,
+    /requireAuthenticatedUser/,
+    "Background-job routes must be protected by requireAuthenticatedUser.",
+  );
+
+  assert.match(
+    routes,
+    /req\.authenticatedUserId/,
+    "Background-job routes must derive identity from authenticated middleware state.",
+  );
+  assert.doesNotMatch(
+    routes,
+    /(?:req\.body|req\.query|req\.params)\.userId/,
+    "Background-job routes must never trust a client-supplied userId.",
+  );
+});
+
+test("background-jobs repository scopes job reads by userId in WHERE clause", () => {
+  const repository = source("../lib/background-job-repository.ts");
+
+  // getBackgroundJobForUser must AND both jobId and userId.
+  assert.match(
+    repository,
+    /and\s*\(\s*eq\s*\([^,]+,\s*(?:jobId|id)\)[^)]*,\s*eq\s*\([^,]+,\s*userId\)\s*\)/,
+    "getBackgroundJobForUser must scope by AND(eq(id/jobId), eq(userId)) — prevents cross-user enumeration.",
+  );
+
+  // Ownership must be inside a .where() call.
+  assert.match(
+    repository,
+    /\.where\s*\([^)]*userId/,
+    "userId ownership check must be inside a .where() predicate, not only a post-fetch JS filter.",
+  );
+});
+
+test("background-jobs cross-user reads are rejected by ownership predicate", () => {
+  const repository = source("../lib/background-job-repository.ts");
+
+  // The userId equality must be present in the query.
+  assert.match(
+    repository,
+    /eq\s*\([^)]+\.userId,\s*userId\)/,
+    "Background-job reads must filter by the authenticated userId.",
+  );
+});
