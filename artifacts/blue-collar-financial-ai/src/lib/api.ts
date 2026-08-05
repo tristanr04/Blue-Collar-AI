@@ -56,6 +56,39 @@ export interface BankStatementExtraction {
   confidence: Record<string, number>;
 }
 
+// ─── Extraction gate types (mirrors api-server/src/lib/extraction-field.ts) ──
+
+export type WarningSeverity = 'blocking' | 'advisory';
+
+export interface ConfidenceFlag {
+  field: string;
+  label: string;
+  category: string;
+  required: boolean;
+  actualConfidence: number | null;
+  minimumRequired: number;
+  severity: WarningSeverity;
+  message: string;
+}
+
+export interface ReconciliationWarning {
+  rule: string;
+  fields: string[];
+  message: string;
+  severity: WarningSeverity;
+  computedDelta?: number;
+}
+
+export interface ErrorPatternFlag {
+  pattern: string;
+  field: string;
+  label: string;
+  rawValue: string | number | null;
+  suggestedValue?: string | number;
+  message: string;
+  severity: WarningSeverity;
+}
+
 export interface ScanResult {
   docType: string;
   classificationConfidence: number;
@@ -71,6 +104,11 @@ export interface ScanResult {
   documentType?: string;
   data?: VehicleLoanExtraction | BankStatementExtraction | Record<string, unknown>;
   extraction?: VehicleLoanExtraction | BankStatementExtraction | Record<string, unknown>;
+  /** Extraction accuracy gate — populated by the server for every successful scan. */
+  confidenceFlags?: ConfidenceFlag[];
+  reconciliationWarnings?: ReconciliationWarning[];
+  errorPatternFlags?: ErrorPatternFlag[];
+  hasBlockingIssues?: boolean;
 }
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────

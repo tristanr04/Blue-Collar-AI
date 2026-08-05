@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@clerk/react';
 import { useStore } from '@/lib/store';
-import { scanFile, ScanResult, ScanFieldValue, InstitutionInfo } from '@/lib/api';
+import { scanFile, ScanResult, ScanFieldValue, InstitutionInfo, ConfidenceFlag, ReconciliationWarning, ErrorPatternFlag } from '@/lib/api';
 import { fingerprintFile, isDuplicateFingerprint } from '@/lib/account-matching';
 import { buildUpdatePlan, applyUpdatePlan, type UpdatePlan, type UpdatePlanEntry, type MatchChoice } from '@/lib/financialUpdater';
 import { fileIdempotencyKey } from '@/lib/financialMatcher';
@@ -382,6 +382,13 @@ interface BatchDocument {
   institutionName: string;
   institutionUnknown: boolean;
   institutionCategory: string | null;
+  /** Extraction accuracy gate results — populated after each successful scan. */
+  confidenceFlags: ConfidenceFlag[];
+  reconciliationWarnings: ReconciliationWarning[];
+  errorPatternFlags: ErrorPatternFlag[];
+  hasBlockingIssues: boolean;
+  /** User edits made inline to resolve gate flags.  Key = field name. */
+  userEditedFields: Record<string, string>;
 }
 
 type Step = 'upload' | 'processing' | 'review' | 'done';
@@ -532,6 +539,10 @@ function normalizeScanResult(result: ScanResult): {
   institutionName: string;
   institutionUnknown: boolean;
   institutionCategory: string | null;
+  confidenceFlags: ConfidenceFlag[];
+  reconciliationWarnings: ReconciliationWarning[];
+  errorPatternFlags: ErrorPatternFlag[];
+  hasBlockingIssues: boolean;
 } {
   const r = result as any;
   const isVehicleLoan = r.type === 'vehicleLoan' || r.documentType === 'vehicleLoan';
@@ -592,7 +603,17 @@ function normalizeScanResult(result: ScanResult): {
     isBankStatement ? 'Bank Statement' :
     (result.docType ?? 'Unknown');
 
-  return { resolvedDocType, fieldMap, institutionName, institutionUnknown, institutionCategory };
+  return {
+    resolvedDocType,
+    fieldMap,
+    institutionName,
+    institutionUnknown,
+    institutionCategory,
+    confidenceFlags: result.confidenceFlags ?? [],
+    reconciliationWarnings: result.reconciliationWarnings ?? [],
+    errorPatternFlags: result.errorPatternFlags ?? [],
+    hasBlockingIssues: result.hasBlockingIssues ?? false,
+  };
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -801,11 +822,13 @@ export default function Scanner() {
       const {
         resolvedDocType, fieldMap,
         institutionName, institutionUnknown, institutionCategory,
+        confidenceFlags, reconciliationWarnings, errorPatternFlags, hasBlockingIssues,
       } = normalizeScanResult(result);
 
       console.log(
         `[BCFAI] extraction complete — "${doc.file.name}": docType=${resolvedDocType}` +
-        (institutionName ? ` institution="${institutionName}"` : ''),
+        (institutionName ? ` institution="${institutionName}"` : '') +
+        (hasBlockingIssues ? ' ⚠️ blocking gate flags' : ''),
       );
 
       setDocs(prev => prev.map(d =>
@@ -819,6 +842,10 @@ export default function Scanner() {
               institutionName,
               institutionUnknown,
               institutionCategory,
+              confidenceFlags,
+              reconciliationWarnings,
+              errorPatternFlags,
+              hasBlockingIssues,
               accepted: true,
               error: undefined,
               errorStage: undefined,
@@ -931,6 +958,11 @@ export default function Scanner() {
           institutionName: '',
           institutionUnknown: false,
           institutionCategory: null,
+          confidenceFlags: [],
+          reconciliationWarnings: [],
+          errorPatternFlags: [],
+          hasBlockingIssues: false,
+          userEditedFields: {},
         };
       }),
     );
@@ -1049,10 +1081,23 @@ export default function Scanner() {
   // ── Field update ───────────────────────────────────────────────────────────
 
   const updateField = (docId: string, key: string, value: string) => {
-    setDocs(prev => prev.map(d => d.id === docId
-      ? { ...d, fields: { ...d.fields, [key]: { value, confidence: d.fields[key]?.confidence ?? 90 } } }
-      : d
-    ));
+    setDocs(prev => prev.map(d => {
+      if (d.id !== docId) return d;
+      const newFields = { ...d.fields, [key]: { value, confidence: d.fields[key]?.confidence ?? 90 } };
+      const newUserEdited = { ...d.userEditedFields, [key]: value };
+      // Re-compute hasBlockingIssues: a blocking flag is resolved when the user edits that field.
+      const editedKeys = new Set(Object.keys(newUserEdited));
+      const remainingBlockingFlags =
+        d.confidenceFlags.filter(f => f.severity === 'blocking' && !editedKeys.has(f.field)).length +
+        d.reconciliationWarnings.filter(w => w.severity === 'blocking' && !w.fields.every(f => editedKeys.has(f))).length +
+        d.errorPatternFlags.filter(f => f.severity === 'blocking' && !editedKeys.has(f.field)).length;
+      return {
+        ...d,
+        fields: newFields,
+        userEditedFields: newUserEdited,
+        hasBlockingIssues: remainingBlockingFlags > 0,
+      };
+    }));
   };
 
   const updateDocType = (docId: string, docType: string) => {
@@ -1563,6 +1608,129 @@ export default function Scanner() {
             </div>
           </div>
 
+          {/* ── Extraction gate summary ─────────────────────────────────────── */}
+          {(() => {
+            const flaggedDocs = savableDocuments.filter(d =>
+              d.confidenceFlags.length > 0 ||
+              d.reconciliationWarnings.length > 0 ||
+              d.errorPatternFlags.length > 0,
+            );
+            if (flaggedDocs.length === 0) return null;
+
+            const allBlockingFlags = flaggedDocs.flatMap(d => [
+              ...d.confidenceFlags.filter(f => f.severity === 'blocking').map(f => ({
+                docId: d.id, docName: d.file.name, field: f.field, label: f.label,
+                message: f.message, type: 'confidence' as const,
+                suggestedValue: undefined as string | number | undefined,
+              })),
+              ...d.reconciliationWarnings.filter(w => w.severity === 'blocking').map(w => ({
+                docId: d.id, docName: d.file.name, field: w.fields[0] ?? '', label: w.rule,
+                message: w.message, type: 'reconciliation' as const,
+                suggestedValue: undefined as string | number | undefined,
+              })),
+              ...d.errorPatternFlags.filter(f => f.severity === 'blocking').map(f => ({
+                docId: d.id, docName: d.file.name, field: f.field, label: f.label,
+                message: f.message, type: 'pattern' as const,
+                suggestedValue: f.suggestedValue,
+              })),
+            ]);
+
+            const allAdvisoryFlags = flaggedDocs.flatMap(d => [
+              ...d.confidenceFlags.filter(f => f.severity === 'advisory').map(f => ({
+                docId: d.id, docName: d.file.name, field: f.field, label: f.label,
+                message: f.message, suggestedValue: undefined as string | number | undefined,
+              })),
+              ...d.reconciliationWarnings.filter(w => w.severity === 'advisory').map(w => ({
+                docId: d.id, docName: d.file.name, field: w.fields[0] ?? '', label: w.rule,
+                message: w.message, suggestedValue: undefined as string | number | undefined,
+              })),
+              ...d.errorPatternFlags.filter(f => f.severity === 'advisory').map(f => ({
+                docId: d.id, docName: d.file.name, field: f.field, label: f.label,
+                message: f.message, suggestedValue: f.suggestedValue,
+              })),
+            ]);
+
+            const hasAnyBlocking = allBlockingFlags.length > 0;
+
+            return (
+              <div className={`border rounded-2xl p-4 space-y-3 ${
+                hasAnyBlocking
+                  ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'
+                  : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800'
+              }`}>
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className={`w-5 h-5 flex-shrink-0 ${hasAnyBlocking ? 'text-red-600' : 'text-amber-600'}`} />
+                  <div className={`font-semibold text-sm ${hasAnyBlocking ? 'text-red-900 dark:text-red-200' : 'text-amber-900 dark:text-amber-200'}`}>
+                    {hasAnyBlocking
+                      ? `${allBlockingFlags.length} issue${allBlockingFlags.length !== 1 ? 's' : ''} must be resolved before saving`
+                      : `${allAdvisoryFlags.length} advisory notice${allAdvisoryFlags.length !== 1 ? 's' : ''} — review recommended`
+                    }
+                  </div>
+                </div>
+
+                {allBlockingFlags.length > 0 && (
+                  <div className="space-y-2">
+                    {allBlockingFlags.map((flag, i) => {
+                      const doc = savableDocuments.find(d => d.id === flag.docId);
+                      const isEdited = doc?.userEditedFields[flag.field] !== undefined;
+                      return (
+                        <div key={i} className={`rounded-xl p-3 text-sm ${
+                          isEdited ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800' : 'bg-red-100 dark:bg-red-900/30 border border-red-200 dark:border-red-800'
+                        }`}>
+                          <div className="font-medium text-red-900 dark:text-red-200 text-xs uppercase tracking-wide mb-1">
+                            {isEdited ? '✅ ' : '🔴 '}{flag.label}
+                            {flag.docName && <span className="text-red-600/70 dark:text-red-400/70 ml-1">— {flag.docName}</span>}
+                          </div>
+                          <div className={`${isEdited ? 'text-green-700 dark:text-green-300' : 'text-red-800 dark:text-red-300'}`}>
+                            {isEdited ? `Resolved — field was edited.` : flag.message}
+                          </div>
+                          {!isEdited && flag.suggestedValue !== undefined && flag.field && doc && (
+                            <button
+                              className="mt-2 text-xs bg-red-600 text-white px-3 py-1 rounded-lg hover:bg-red-700"
+                              onClick={() => updateField(doc.id, flag.field, String(flag.suggestedValue))}
+                            >
+                              Use suggested: {String(flag.suggestedValue)}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {allAdvisoryFlags.length > 0 && (
+                  <details className="text-sm">
+                    <summary className="cursor-pointer text-amber-800 dark:text-amber-300 font-medium">
+                      {allAdvisoryFlags.length} advisory notice{allAdvisoryFlags.length !== 1 ? 's' : ''} (click to expand)
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      {allAdvisoryFlags.map((flag, i) => {
+                        const doc = savableDocuments.find(d => d.id === flag.docId);
+                        return (
+                          <div key={i} className="rounded-xl p-3 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800">
+                            <div className="font-medium text-amber-900 dark:text-amber-200 text-xs uppercase tracking-wide mb-1">
+                              ⚠️ {flag.label}
+                              {flag.docName && <span className="text-amber-700/70 ml-1">— {flag.docName}</span>}
+                            </div>
+                            <div className="text-amber-800 dark:text-amber-300">{flag.message}</div>
+                            {flag.suggestedValue !== undefined && flag.field && doc && (
+                              <button
+                                className="mt-2 text-xs bg-amber-600 text-white px-3 py-1 rounded-lg hover:bg-amber-700"
+                                onClick={() => updateField(doc.id, flag.field, String(flag.suggestedValue))}
+                              >
+                                Use suggested: {String(flag.suggestedValue)}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </details>
+                )}
+              </div>
+            );
+          })()}
+
           {/* Name */}
           <div className="bg-card border border-border rounded-2xl p-4 space-y-2">
             <Label className="text-sm font-semibold">Your Name</Label>
@@ -1803,20 +1971,31 @@ export default function Scanner() {
               Apply Choices &amp; Save
             </Button>
           ) : (
-            <Button
-              className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground rounded-2xl"
-              disabled={
-                savableDocuments.length === 0 ||
-                docs.some(d => d.status === 'processing' || d.status === 'retrying' || d.status === 'pending')
-              }
-              onClick={confirmAndSave}
-            >
-              <CheckCircle2 className="w-5 h-5 mr-2" />
-              {docs.some(d => d.status === 'processing' || d.status === 'retrying' || d.status === 'pending')
-                ? 'Scanning in progress…'
-                : `Confirm & Save ${savableDocuments.length} Document${savableDocuments.length !== 1 ? 's' : ''}`
-              }
-            </Button>
+            <>
+              {(() => {
+                const anyBlockingIssues = savableDocuments.some(d => d.hasBlockingIssues);
+                const isStillScanning = docs.some(d => d.status === 'processing' || d.status === 'retrying' || d.status === 'pending');
+                return (
+                  <Button
+                    className={`w-full h-14 text-lg font-semibold rounded-2xl ${
+                      anyBlockingIssues
+                        ? 'bg-red-300 dark:bg-red-800 text-white cursor-not-allowed opacity-60'
+                        : 'bg-primary hover:bg-primary/90 text-primary-foreground'
+                    }`}
+                    disabled={savableDocuments.length === 0 || isStillScanning || anyBlockingIssues}
+                    onClick={confirmAndSave}
+                  >
+                    <CheckCircle2 className="w-5 h-5 mr-2" />
+                    {isStillScanning
+                      ? 'Scanning in progress…'
+                      : anyBlockingIssues
+                        ? 'Resolve issues above to save'
+                        : `Confirm & Save ${savableDocuments.length} Document${savableDocuments.length !== 1 ? 's' : ''}`
+                    }
+                  </Button>
+                );
+              })()}
+            </>
           )}
           <div className="text-center text-xs text-muted-foreground">
             {updatePlan ? 'Review your choices above, then tap Apply' : 'Nothing is saved until you tap Confirm'}

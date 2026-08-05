@@ -26,6 +26,13 @@ export interface AccountMatchCandidate {
   matchedSignals: string[];
   missingSignals: string[];
   requiresConfirmation: boolean;
+  /**
+   * True when the extracted statement date is older than the account's last
+   * update date by more than 30 days.  Stale statements should not
+   * silently overwrite fresher data; requiresConfirmation is forced true.
+   */
+  isStaleStatement: boolean;
+  staleStatementReason?: string;
 }
 
 export interface AccountMatchResult {
@@ -164,13 +171,37 @@ export function scoreAccountCandidate(
   score = Math.max(0, Math.min(100, score));
   const confidence = confidenceForScore(score);
 
+  // ── Staleness check ───────────────────────────────────────────────────────
+  // If the extracted statement date is older than the account's lastUpdatedAt
+  // by more than 30 days, flag it so the UI can warn the user.
+  let isStaleStatement = false;
+  let staleStatementReason: string | undefined;
+
+  if (extracted.statementDate && account.lastUpdatedAt) {
+    try {
+      const statementMs = new Date(extracted.statementDate).getTime();
+      const updatedMs = new Date(account.lastUpdatedAt).getTime();
+      if (Number.isFinite(statementMs) && Number.isFinite(updatedMs)) {
+        const daysDiff = (updatedMs - statementMs) / (1000 * 60 * 60 * 24);
+        if (daysDiff > 30) {
+          isStaleStatement = true;
+          staleStatementReason = `Statement date (${extracted.statementDate}) is ${Math.round(daysDiff)} days older than the account's last update (${account.lastUpdatedAt.slice(0, 10)}). Saving may overwrite more recent data.`;
+        }
+      }
+    } catch {
+      // Invalid date strings — skip staleness check
+    }
+  }
+
   return {
     account,
     score,
     confidence,
     matchedSignals,
     missingSignals,
-    requiresConfirmation: confidence !== 'high',
+    requiresConfirmation: confidence !== 'high' || isStaleStatement,
+    isStaleStatement,
+    staleStatementReason,
   };
 }
 
@@ -199,20 +230,36 @@ export function matchExistingAccount(
   const exactLastFour = recommended.matchedSignals.includes('Exact account last four');
   const uniqueMargin = !runnerUp || recommended.score - runnerUp.score >= 20;
 
+  // Require ≥2 distinct matching signals beyond score alone for auto-match.
+  // This explicitly guards against institution-name-only matches (score ≈ 32,
+  // well below the 85 high-confidence threshold, but documented here for
+  // clarity).  In practice, reaching score ≥ 85 already requires exactLastFour
+  // (+55) plus at least one institution/type/name signal (+20-30).
+  const hasMinimumSignals = recommended.matchedSignals.length >= 2;
+
   // Institution-only matching is never enough for an automatic update.
+  // Stale statements require explicit user confirmation even when confident.
   const autoMatchAllowed =
     recommended.confidence === 'high' &&
     exactLastFour &&
     Boolean(extractedLastFour) &&
-    uniqueMargin;
+    uniqueMargin &&
+    hasMinimumSignals &&
+    !recommended.isStaleStatement;
+
+  const reason = autoMatchAllowed
+    ? 'A unique high-confidence account match was found using exact account digits.'
+    : recommended.isStaleStatement
+      ? `User confirmation required: ${recommended.staleStatementReason ?? 'Statement may be older than existing account data.'}`
+      : !hasMinimumSignals
+        ? 'User confirmation required: fewer than 2 matching signals found.'
+        : 'User confirmation is required because the match is ambiguous or lacks exact account digits.';
 
   return {
     recommended: { ...recommended, requiresConfirmation: !autoMatchAllowed },
     candidates,
     autoMatchAllowed,
-    reason: autoMatchAllowed
-      ? 'A unique high-confidence account match was found using exact account digits.'
-      : 'User confirmation is required because the match is ambiguous or lacks exact account digits.',
+    reason,
   };
 }
 

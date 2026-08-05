@@ -25,6 +25,40 @@ import {
   ensureUser,
 } from "../lib/financial-repository.js";
 import { computeFileFingerprint } from "../lib/fingerprint.js";
+import { checkConfidence, type FlatFields } from "../lib/confidence-thresholds.js";
+import { reconcile } from "../lib/reconciliation.js";
+import { detectErrorPatterns } from "../lib/error-patterns.js";
+import { buildGateResult, type GateResult } from "../lib/extraction-field.js";
+
+/**
+ * Convert a flat key→value object (fast-path normalizers) to FlatFields format
+ * so the extraction gate can run against it with a default confidence of 80.
+ */
+function flatToGateFields(flat: Record<string, unknown>, confidence = 80): FlatFields {
+  const result: FlatFields = {};
+  for (const [key, value] of Object.entries(flat)) {
+    if (value === null || value === undefined) continue;
+    if (typeof value === 'object') continue; // skip nested objects
+    result[key] = { value, confidence };
+  }
+  return result;
+}
+
+/**
+ * Run the full extraction gate (confidence + reconciliation + error patterns)
+ * against a FlatFields object and return a combined GateResult.
+ */
+function runExtractionGate(docType: string, fields: FlatFields): GateResult {
+  try {
+    const confidenceFlags = checkConfidence(docType, fields);
+    const reconciliationWarnings = reconcile(docType, fields);
+    const errorPatternFlags = detectErrorPatterns(fields, docType);
+    return buildGateResult(confidenceFlags, reconciliationWarnings, errorPatternFlags);
+  } catch {
+    // Gate failures must never crash the scan response
+    return buildGateResult([], [], []);
+  }
+}
 
 const require = createRequire(import.meta.url);
 const pdfParse: (buffer: Buffer) => Promise<{
@@ -1596,6 +1630,18 @@ router.post(
           status: "Processed",
         }).catch(err => logger.warn({ err }, "Failed to persist scanned document record"));
 
+        // Map vehicle-loan field names to the canonical names expected by the
+        // confidence-thresholds Loan spec (balanceOwed→currentBalance,
+        // accountLast4→lastFour) so the gate doesn't emit false blocking flags.
+        const vehicleGateFields = flatToGateFields({
+          currentBalance: normalizedExtraction.balanceOwed,
+          apr:            normalizedExtraction.apr,
+          monthlyPayment: normalizedExtraction.monthlyPayment,
+          nextDueDate:    normalizedExtraction.nextDueDate,
+          lastFour:       normalizedExtraction.accountLast4,
+        });
+        const vehicleGate = runExtractionGate("Auto Loan", vehicleGateFields);
+
         res.status(200).json({
           success: true,
           documentType: "vehicleLoan",
@@ -1609,6 +1655,10 @@ router.post(
           mimeType: responseMime,
           normalizedDimensions,
           securityWarnings,
+          confidenceFlags: vehicleGate.confidenceFlags,
+          reconciliationWarnings: vehicleGate.reconciliationWarnings,
+          errorPatternFlags: vehicleGate.errorPatternFlags,
+          hasBlockingIssues: vehicleGate.hasBlockingIssues,
         });
         return;
       }
@@ -1632,6 +1682,17 @@ router.post(
           status: "Processed",
         }).catch(err => logger.warn({ err }, "Failed to persist scanned document record"));
 
+        const bankGateFields = flatToGateFields({
+          lastFour:          normalizedExtraction.lastFour,
+          currentBalance:    normalizedExtraction.currentBalance,
+          closingBalance:    normalizedExtraction.closingBalance,
+          availableBalance:  normalizedExtraction.availableBalance,
+          statementStartDate: normalizedExtraction.statementStartDate,
+          statementEndDate:  normalizedExtraction.statementEndDate,
+          apy:               normalizedExtraction.apy,
+        });
+        const bankGate = runExtractionGate("Bank Statement", bankGateFields);
+
         res.status(200).json({
           success: true,
           documentType: "bankStatement",
@@ -1644,6 +1705,10 @@ router.post(
           mimeType: responseMime,
           normalizedDimensions,
           securityWarnings,
+          confidenceFlags: bankGate.confidenceFlags,
+          reconciliationWarnings: bankGate.reconciliationWarnings,
+          errorPatternFlags: bankGate.errorPatternFlags,
+          hasBlockingIssues: bankGate.hasBlockingIssues,
         });
         return;
       }
@@ -1821,6 +1886,18 @@ router.post(
         status: "Processed",
       }).catch(err => logger.warn({ err }, "Failed to persist scanned document record"));
 
+      // ── Extraction gate ────────────────────────────────────────────────────
+      // Run confidence / reconciliation / error-pattern checks against the
+      // validated fields.  Results are always included in the response; the
+      // frontend decides how to gate the save button based on hasBlockingIssues.
+      const gateFields: FlatFields = {};
+      for (const [key, entry] of Object.entries(data.fields ?? {})) {
+        if (entry != null) {
+          gateFields[key] = { value: entry.value, confidence: entry.confidence };
+        }
+      }
+      const gate = runExtractionGate(data.docType ?? "Unknown", gateFields);
+
       res.json({
         ...data,
         institution,
@@ -1828,6 +1905,10 @@ router.post(
         mimeType: responseMime,
         normalizedDimensions,
         securityWarnings,
+        confidenceFlags: gate.confidenceFlags,
+        reconciliationWarnings: gate.reconciliationWarnings,
+        errorPatternFlags: gate.errorPatternFlags,
+        hasBlockingIssues: gate.hasBlockingIssues,
       });
     } catch (error) {
       const isAbort =
