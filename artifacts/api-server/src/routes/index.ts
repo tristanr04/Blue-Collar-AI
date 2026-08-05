@@ -8,6 +8,7 @@ import aiAskRouter from "./ai-ask.js";
 import backgroundJobsRouter from "./background-jobs.js";
 import profileContextRouter from "./profile-context.js";
 import taxScenariosRouter from "./tax-scenarios.js";
+import taxContextRouter from "./tax-context.js";
 
 const router: IRouter = Router();
 
@@ -20,5 +21,6 @@ router.use(aiAskRouter);
 router.use(backgroundJobsRouter);
 router.use(profileContextRouter);
 router.use(taxScenariosRouter);
+router.use(taxContextRouter);
 
 export default router;
