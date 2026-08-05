@@ -15,6 +15,8 @@ import transactionStatementImportRouter from "./transaction-statement-import.js"
 import commandCenterRouter from "./command-center.js";
 import financialMemoryRouter from "./financial-memory.js";
 import retentionNotificationsRouter from "./retention-notifications.js";
+import financialGuideRouter from "./financial-guide.js";
+import insuranceScanRouter from "./insurance-scan.js";
 
 const router: IRouter = Router();
 
@@ -34,5 +36,7 @@ router.use(transactionStatementImportRouter);
 router.use(commandCenterRouter);
 router.use(financialMemoryRouter);
 router.use(retentionNotificationsRouter);
+router.use(financialGuideRouter);
+router.use(insuranceScanRouter);
 
 export default router;
