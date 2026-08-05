@@ -196,7 +196,7 @@ export function importCsvTransactions(args: {
       amount, direction, category: classification.category, categoryConfidence: classification.confidence,
       recurring: /recurring|subscription|autopay/i.test(descriptionRaw),
       excludedFromSpending: classification.excluded,
-      exclusionReason: classification.reason,
+      exclusionReason: classification.reason as "transfer" | "credit_card_payment" | "refund" | "income" | undefined,
       fingerprint,
       needsReview: classification.confidence < 70 || classification.category === "other",
     });

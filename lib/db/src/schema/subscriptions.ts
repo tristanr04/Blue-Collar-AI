@@ -1,6 +1,4 @@
 import { pgEnum, pgTable, text, timestamp, integer, boolean, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
-import { z } from "zod";
 
 export const subscriptionPlanEnum = pgEnum("subscription_plan", ["free", "pro", "business"]);
 export const subscriptionStatusEnum = pgEnum("subscription_status", [
@@ -43,9 +41,7 @@ export const subscriptionUsageTable = pgTable("subscription_usage", {
   idempotencyUnique: uniqueIndex("subscription_usage_idempotency_unique").on(table.idempotencyKey),
 }));
 
-export const insertSubscriptionSchema = createInsertSchema(subscriptionsTable);
-export const insertSubscriptionUsageSchema = createInsertSchema(subscriptionUsageTable);
 export type Subscription = typeof subscriptionsTable.$inferSelect;
-export type InsertSubscription = z.infer<typeof insertSubscriptionSchema>;
+export type InsertSubscription = typeof subscriptionsTable.$inferInsert;
 export type SubscriptionUsage = typeof subscriptionUsageTable.$inferSelect;
-export type InsertSubscriptionUsage = z.infer<typeof insertSubscriptionUsageSchema>;
+export type InsertSubscriptionUsage = typeof subscriptionUsageTable.$inferInsert;

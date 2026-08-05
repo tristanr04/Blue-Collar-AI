@@ -199,7 +199,7 @@ export function generateNotificationCandidates(input: CandidateGenerationInput):
       candidates.push({
         id: `goal-complete-${goal.id}`,
         dedupeKey: `goal:complete:${goal.id}`,
-        category: "goals",
+        category: "goal",
         urgency: "medium",
         title: `${goal.name} is complete`,
         body: `You reached your $${Math.round(target)} target. Choose the next destination for the money that was funding this goal.`,
@@ -210,7 +210,7 @@ export function generateNotificationCandidates(input: CandidateGenerationInput):
       candidates.push({
         id: `goal-milestone-${goal.id}`,
         dedupeKey: `goal:75:${goal.id}`,
-        category: "goals",
+        category: "goal",
         urgency: "low",
         title: `${goal.name} is within reach`,
         body: `You are ${Math.round(progress * 100)}% complete. About $${Math.round(target - current)} remains.`,
@@ -226,7 +226,7 @@ export function generateNotificationCandidates(input: CandidateGenerationInput):
     candidates.push({
       id: `document-expiry-${document.id}`,
       dedupeKey: `document:expiry:${document.id}:${document.expiresAt}`,
-      category: "documents",
+      category: "document",
       urgency: days <= 3 ? "critical" : days <= 14 ? "high" : "medium",
       title: `${document.type} needs attention soon`,
       body: `${document.type} expires in ${Math.max(0, days)} days. Start the renewal or replacement process before it becomes urgent.`,
