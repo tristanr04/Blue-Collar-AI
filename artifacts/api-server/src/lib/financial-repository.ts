@@ -323,3 +323,33 @@ export async function softDeleteFinancialRecord(
       return softDeleteAsset(userId, recordId);
   }
 }
+
+// ─── Single-record lookups (for timeline pre-fetch) ───────────────────────────
+
+export async function getPaystubById(userId: string, recordId: string) {
+  const [row] = await db.select().from(paystubsTable)
+    .where(and(eq(paystubsTable.id, recordId), eq(paystubsTable.userId, userId), isNull(paystubsTable.deletedAt)))
+    .limit(1);
+  return row ?? null;
+}
+
+export async function getDebtById(userId: string, recordId: string) {
+  const [row] = await db.select().from(debtsTable)
+    .where(and(eq(debtsTable.id, recordId), eq(debtsTable.userId, userId), isNull(debtsTable.deletedAt)))
+    .limit(1);
+  return row ?? null;
+}
+
+export async function getBillById(userId: string, recordId: string) {
+  const [row] = await db.select().from(billsTable)
+    .where(and(eq(billsTable.id, recordId), eq(billsTable.userId, userId), isNull(billsTable.deletedAt)))
+    .limit(1);
+  return row ?? null;
+}
+
+export async function getAssetById(userId: string, recordId: string) {
+  const [row] = await db.select().from(assetsTable)
+    .where(and(eq(assetsTable.id, recordId), eq(assetsTable.userId, userId), isNull(assetsTable.deletedAt)))
+    .limit(1);
+  return row ?? null;
+}

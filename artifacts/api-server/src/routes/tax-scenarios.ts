@@ -17,6 +17,8 @@ import {
   softDeleteTaxScenario,
 } from "../lib/tax-scenarios-repository.js";
 import { appendAuditEvent } from "../lib/audit-repository.js";
+import { appendTimelineEvent } from "../lib/timeline-repository.js";
+import { makeTaxEstimateEvent } from "../lib/timeline-events.js";
 import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
@@ -75,6 +77,12 @@ router.post("/tax-scenarios", async (req: AuthenticatedRequest, res) => {
       entityId: scenario.id, requestId: reqId(req), source: "api",
     }).catch(() => {});
 
+    appendTimelineEvent(makeTaxEstimateEvent(
+      uid,
+      { id: scenario.id, updatedAt: scenario.updatedAt, result: scenario.result as Record<string, unknown> },
+      null,
+    )).catch((err) => logger.error({ err }, "timeline: tax scenario create event failed"));
+
     res.status(201).json({ scenario });
   } catch (err) {
     handleError(res, err);
@@ -93,6 +101,12 @@ router.put("/tax-scenarios/:id", async (req: AuthenticatedRequest, res) => {
       userId: uid, action: "update", entityType: "tax_scenario",
       entityId: scenario.id, requestId: reqId(req), source: "api",
     }).catch(() => {});
+
+    appendTimelineEvent(makeTaxEstimateEvent(
+      uid,
+      { id: scenario.id, updatedAt: scenario.updatedAt, result: scenario.result as Record<string, unknown> },
+      null,
+    )).catch((err) => logger.error({ err }, "timeline: tax scenario update event failed"));
 
     return res.json({ scenario });
   } catch (err) {

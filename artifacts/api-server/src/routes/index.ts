@@ -20,6 +20,7 @@ import insuranceScanRouter from "./insurance-scan.js";
 import subscriptionsRouter from "./subscriptions.js";
 import overtimeTaxRouter from "./overtime-tax.js";
 import referralsRouter from "./referrals.js";
+import timelineRouter from "./timeline.js";
 
 const router: IRouter = Router();
 
@@ -44,5 +45,6 @@ router.use(insuranceScanRouter);
 router.use(subscriptionsRouter);
 router.use(overtimeTaxRouter);
 router.use(referralsRouter);
+router.use(timelineRouter);
 
 export default router;

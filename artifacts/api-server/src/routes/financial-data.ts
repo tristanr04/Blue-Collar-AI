@@ -9,7 +9,11 @@ import {
   createDebt,
   createPaystub,
   ensureUser,
+  getAssetById,
+  getBillById,
+  getDebtById,
   getFinancialSnapshot,
+  getPaystubById,
   softDeleteFinancialRecord,
   updateAsset,
   updateBill,
@@ -17,6 +21,13 @@ import {
   updatePaystub,
   upsertProfile,
 } from "../lib/financial-repository.js";
+import { appendTimelineEvent } from "../lib/timeline-repository.js";
+import {
+  makeAssetEvent,
+  makeBillEvent,
+  makeDebtEvent,
+  makePaystubEvent,
+} from "../lib/timeline-events.js";
 import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
@@ -31,7 +42,6 @@ function userIdFrom(req: AuthenticatedRequest): string {
 function requestIdFrom(req: AuthenticatedRequest): string | null {
   const requestId = (req as AuthenticatedRequest & { id?: unknown }).id;
   if (typeof requestId === "string" && requestId.length > 0) return requestId;
-
   const header = req.get("x-request-id");
   return header && header.length > 0 ? header : null;
 }
@@ -53,9 +63,6 @@ async function recordAudit(
       source: "api",
     });
   } catch (error) {
-    // A completed financial write must not be reported as failed solely because
-    // audit persistence is temporarily unavailable. The request ID makes the
-    // failure traceable for reconciliation and alerting.
     logger.error(
       {
         err: error,
@@ -67,6 +74,20 @@ async function recordAudit(
         requestId: requestIdFrom(req),
       },
       "financial mutation succeeded but audit event could not be persisted",
+    );
+  }
+}
+
+/** Fire-and-forget timeline event. Errors are logged but never fail the request. */
+async function recordTimeline(
+  input: Parameters<typeof appendTimelineEvent>[0],
+): Promise<void> {
+  try {
+    await appendTimelineEvent(input);
+  } catch (error) {
+    logger.error(
+      { err: error, eventType: input.eventType, userId: input.userId },
+      "financial mutation succeeded but timeline event could not be persisted",
     );
   }
 }
@@ -129,6 +150,12 @@ router.post("/financial/paystubs", async (req: AuthenticatedRequest, res) => {
       entityType: "paystub",
       entityId: created.id,
     });
+    void recordTimeline(makePaystubEvent(
+      userId,
+      { id: created.id, payDate: created.payDate, netPay: created.netPay },
+      null,
+      false,
+    ));
     res.status(201).json(created);
   } catch (error) {
     sendRepositoryError(res, error);
@@ -139,6 +166,7 @@ router.put("/financial/paystubs/:recordId", async (req: AuthenticatedRequest, re
   try {
     const userId = userIdFrom(req);
     const recordId = z.string().uuid().parse(req.params.recordId);
+    const old = await getPaystubById(userId, recordId);
     const updated = await updatePaystub(userId, recordId, req.body);
     if (!updated) {
       res.status(404).json({
@@ -148,6 +176,12 @@ router.put("/financial/paystubs/:recordId", async (req: AuthenticatedRequest, re
       return;
     }
     await recordAudit(req, { userId, action: "update", entityType: "paystub", entityId: recordId });
+    void recordTimeline(makePaystubEvent(
+      userId,
+      { id: updated.id, payDate: updated.payDate, netPay: updated.netPay },
+      old?.netPay ?? null,
+      true,
+    ));
     res.json(updated);
   } catch (error) {
     sendRepositoryError(res, error);
@@ -162,6 +196,12 @@ router.post("/financial/debts", async (req: AuthenticatedRequest, res) => {
     await ensureUser({ userId });
     const created = await createDebt(userId, req.body);
     await recordAudit(req, { userId, action: "create", entityType: "debt", entityId: created.id });
+    void recordTimeline(makeDebtEvent(
+      userId,
+      { id: created.id, name: created.name, balance: created.balance, isRevolving: created.isRevolving, updatedAt: created.updatedAt },
+      null,
+      false,
+    ));
     res.status(201).json(created);
   } catch (error) {
     sendRepositoryError(res, error);
@@ -172,12 +212,19 @@ router.put("/financial/debts/:recordId", async (req: AuthenticatedRequest, res) 
   try {
     const userId = userIdFrom(req);
     const recordId = z.string().uuid().parse(req.params.recordId);
+    const old = await getDebtById(userId, recordId);
     const updated = await updateDebt(userId, recordId, req.body);
     if (!updated) {
       res.status(404).json({ stage: "record_not_found", error: "Debt not found or does not belong to this account." });
       return;
     }
     await recordAudit(req, { userId, action: "update", entityType: "debt", entityId: recordId });
+    void recordTimeline(makeDebtEvent(
+      userId,
+      { id: updated.id, name: updated.name, balance: updated.balance, isRevolving: updated.isRevolving, updatedAt: updated.updatedAt },
+      old?.balance ?? null,
+      true,
+    ));
     res.json(updated);
   } catch (error) {
     sendRepositoryError(res, error);
@@ -192,6 +239,12 @@ router.post("/financial/bills", async (req: AuthenticatedRequest, res) => {
     await ensureUser({ userId });
     const created = await createBill(userId, req.body);
     await recordAudit(req, { userId, action: "create", entityType: "bill", entityId: created.id });
+    void recordTimeline(makeBillEvent(
+      userId,
+      { id: created.id, name: created.name, amount: created.amount, updatedAt: created.updatedAt },
+      null,
+      false,
+    ));
     res.status(201).json(created);
   } catch (error) {
     sendRepositoryError(res, error);
@@ -202,12 +255,19 @@ router.put("/financial/bills/:recordId", async (req: AuthenticatedRequest, res) 
   try {
     const userId = userIdFrom(req);
     const recordId = z.string().uuid().parse(req.params.recordId);
+    const old = await getBillById(userId, recordId);
     const updated = await updateBill(userId, recordId, req.body);
     if (!updated) {
       res.status(404).json({ stage: "record_not_found", error: "Bill not found or does not belong to this account." });
       return;
     }
     await recordAudit(req, { userId, action: "update", entityType: "bill", entityId: recordId });
+    void recordTimeline(makeBillEvent(
+      userId,
+      { id: updated.id, name: updated.name, amount: updated.amount, updatedAt: updated.updatedAt },
+      old?.amount ?? null,
+      true,
+    ));
     res.json(updated);
   } catch (error) {
     sendRepositoryError(res, error);
@@ -222,6 +282,12 @@ router.post("/financial/assets", async (req: AuthenticatedRequest, res) => {
     await ensureUser({ userId });
     const created = await createAsset(userId, req.body);
     await recordAudit(req, { userId, action: "create", entityType: "asset", entityId: created.id });
+    void recordTimeline(makeAssetEvent(
+      userId,
+      { id: created.id, name: created.name, type: created.type, value: created.value, updatedAt: created.updatedAt },
+      null,
+      false,
+    ));
     res.status(201).json(created);
   } catch (error) {
     sendRepositoryError(res, error);
@@ -232,12 +298,19 @@ router.put("/financial/assets/:recordId", async (req: AuthenticatedRequest, res)
   try {
     const userId = userIdFrom(req);
     const recordId = z.string().uuid().parse(req.params.recordId);
+    const old = await getAssetById(userId, recordId);
     const updated = await updateAsset(userId, recordId, req.body);
     if (!updated) {
       res.status(404).json({ stage: "record_not_found", error: "Asset not found or does not belong to this account." });
       return;
     }
     await recordAudit(req, { userId, action: "update", entityType: "asset", entityId: recordId });
+    void recordTimeline(makeAssetEvent(
+      userId,
+      { id: updated.id, name: updated.name, type: updated.type, value: updated.value, updatedAt: updated.updatedAt },
+      old?.value ?? null,
+      true,
+    ));
     res.json(updated);
   } catch (error) {
     sendRepositoryError(res, error);

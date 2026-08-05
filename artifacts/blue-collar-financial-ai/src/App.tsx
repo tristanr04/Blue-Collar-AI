@@ -33,6 +33,7 @@ import GrowthHub from '@/pages/GrowthHub';
 import TaxEstimator from '@/pages/TaxEstimator';
 import Settings from '@/pages/Settings';
 import AskAI from '@/pages/AskAI';
+import Timeline from '@/pages/Timeline';
 import TestLab from '@/pages/TestLab';
 import NotFound from '@/pages/not-found';
 
@@ -166,6 +167,7 @@ function Router() {
         <Route path="/tax-estimator" component={protectedPage(TaxEstimator)} />
         <Route path="/settings" component={protectedPage(Settings)} />
         <Route path="/ask-ai" component={protectedPage(AskAI)} />
+        <Route path="/timeline" component={protectedPage(Timeline)} />
         <Route path="/test-lab" component={developerPage(TestLab)} />
         <Route component={NotFound} />
       </Switch>

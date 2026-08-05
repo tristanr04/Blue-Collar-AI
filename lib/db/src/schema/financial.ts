@@ -417,3 +417,34 @@ export type BillRecord = typeof billsTable.$inferSelect;
 export type AssetRecord = typeof assetsTable.$inferSelect;
 export type ScannedDocumentRecord = typeof scannedDocumentsTable.$inferSelect;
 export type TaxScenarioRecord = typeof taxScenariosTable.$inferSelect;
+
+// ─── Financial Timeline ────────────────────────────────────────────────────────
+
+export const timelineEventsTable = pgTable(
+  "timeline_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    eventDate: timestamp("event_date", { withTimezone: true }).notNull(),
+    sourceRecordType: text("source_record_type").notNull(),
+    sourceRecordId: uuid("source_record_id"),
+    previousValue: doublePrecision("previous_value"),
+    newValue: doublePrecision("new_value"),
+    changeAmount: doublePrecision("change_amount"),
+    title: text("title").notNull(),
+    description: text("description").notNull(),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    /** Deterministic key scoped to userId; ON CONFLICT DO NOTHING prevents duplicates. */
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("timeline_events_user_date_idx").on(table.userId, table.eventDate),
+    uniqueIndex("timeline_events_idempotency_idx").on(table.userId, table.idempotencyKey),
+  ],
+);
+
+export type TimelineEventRecord = typeof timelineEventsTable.$inferSelect;

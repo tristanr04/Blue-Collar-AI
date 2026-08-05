@@ -613,3 +613,42 @@ export async function getCommandCenterSummary(token: string): Promise<CommandCen
   const res = await financialFetch("/command-center/summary", token);
   return res.json() as Promise<CommandCenterSummaryResponse>;
 }
+
+// ─── Financial Timeline ────────────────────────────────────────────────────────
+
+export interface TimelineEvent {
+  id: string;
+  userId: string;
+  eventType: string;
+  eventDate: string; // ISO string from server
+  sourceRecordType: string;
+  sourceRecordId: string | null;
+  previousValue: number | null;
+  newValue: number | null;
+  changeAmount: number | null;
+  title: string;
+  description: string;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface MonthlyTrends {
+  cash: number | null;
+  debt: number | null;
+  investments: number | null;
+  retirement: number | null;
+  netWorth: number | null;
+  estimatedTax: number | null;
+}
+
+export interface TimelineSummaryResponse {
+  generatedAt: string;
+  events: TimelineEvent[];
+  monthlyTrends: MonthlyTrends;
+}
+
+/** Load the authenticated user's financial timeline. */
+export async function getTimelineSummary(token: string): Promise<TimelineSummaryResponse> {
+  const res = await financialFetch("/timeline/summary", token);
+  return res.json() as Promise<TimelineSummaryResponse>;
+}

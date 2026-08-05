@@ -1,0 +1,143 @@
+Continue development from the current synced GitHub main branch.
+
+First verify:
+
+git status
+git branch --show-current
+git rev-parse HEAD
+
+Do not reset, overwrite, or replace working code.
+
+Build the next product milestone:
+
+FINANCIAL TIMELINE
+
+Goal:
+Turn saved financial documents into a clear history of what changed over time.
+
+Requirements:
+
+1. Create a financial timeline data model that records meaningful user-scoped events.
+
+Initial event types:
+- Paystub added or updated
+- Bank balance updated
+- Investment balance updated
+- Retirement balance updated
+- Credit card balance updated
+- Loan or mortgage balance updated
+- Bill added or changed
+- Tax estimate saved or recalculated
+- Financial health score changed
+
+2. Every timeline event must include:
+- Authenticated user ID
+- Event type
+- Event date
+- Source record type
+- Source record ID
+- Previous value when available
+- New value when available
+- Change amount when available
+- Human-readable title
+- Short description
+- Created timestamp
+
+3. Timeline events must be created automatically after successful financial mutations.
+
+Do not:
+- Create events before a database write succeeds
+- Create duplicate events when the same request is retried
+- Allow one user to access another user’s timeline
+- Store raw document contents or sensitive authentication data
+
+4. Add an authenticated server endpoint that returns:
+- Recent timeline events
+- Monthly changes in cash
+- Monthly changes in debt
+- Monthly changes in investments
+- Monthly changes in retirement
+- Monthly changes in net worth
+- Monthly changes in estimated taxes
+
+5. Use null for unavailable values.
+Never invent a zero when the prior value is unknown.
+
+6. Add a mobile-first Timeline page.
+
+Page layout:
+- “What changed” summary at the top
+- This month’s net-worth change
+- Cash change
+- Debt change
+- Investment change
+- Estimated-tax change
+- Chronological event list below
+
+7. Timeline cards should be concise.
+
+Examples:
+- “Net worth increased $1,240 this month.”
+- “Credit-card debt dropped $380.”
+- “Your latest paystub increased projected annual income.”
+- “Your estimated refund increased $220.”
+
+Do not show long raw-data summaries.
+
+8. Each event card should show:
+- Date
+- Event title
+- Short explanation
+- Increase or decrease amount when available
+- Source category
+
+9. Add empty, loading, authentication, and API-error states.
+
+Empty state:
+“Upload or add financial information to start tracking your progress.”
+
+10. Backfill timeline events from existing saved records where safely possible.
+
+Backfill rules:
+- Never duplicate events
+- Use record creation or update dates
+- Mark backfilled events in metadata
+- Do not guess previous balances
+- Do not alter original financial records
+
+11. Add automated tests for:
+- User isolation
+- Event creation after successful writes
+- No event after failed writes
+- Duplicate-request protection
+- Missing previous values remain null
+- Monthly trend calculations
+- Net-worth change calculations
+- Empty timeline
+- Timeline API failure
+- Mobile layout does not horizontally overflow
+
+12. Preserve all existing:
+- Scanner
+- Tax estimator
+- AI
+- Referral system
+- Financial Command Center
+- Authentication
+- Saved user data
+
+Run:
+
+pnpm run typecheck
+pnpm -r --if-present run test
+pnpm run build
+
+Fix all failures before stopping.
+
+When finished, report only:
+- Files changed
+- Features completed
+- Tests passed
+- Build result
+- Current git commit
+- Any verified remaining bugs
