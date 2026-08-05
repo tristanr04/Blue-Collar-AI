@@ -19,6 +19,7 @@ import SignUp from '@/pages/SignUp';
 import Onboarding from '@/pages/Onboarding';
 import Scanner from '@/pages/Scanner';
 import Dashboard from '@/pages/Dashboard';
+import RetentionDashboard from '@/pages/RetentionDashboard';
 import Documents from '@/pages/Documents';
 import DocumentsReview from '@/pages/DocumentsReview';
 import Paystubs from '@/pages/Paystubs';
@@ -151,6 +152,7 @@ function Router() {
         <Route path="/onboarding" component={protectedPage(Onboarding)} />
         <Route path="/scanner" component={protectedPage(Scanner)} />
         <Route path="/dashboard" component={protectedPage(Dashboard)} />
+        <Route path="/retention-dashboard" component={protectedPage(RetentionDashboard)} />
         <Route path="/documents/review" component={protectedPage(DocumentsReview)} />
         <Route path="/documents" component={protectedPage(Documents)} />
         <Route path="/paystubs" component={protectedPage(Paystubs)} />
