@@ -4,6 +4,7 @@ import { AskRequestSchema } from "@workspace/api-zod";
 import { validateBody } from "../lib/validate.js";
 import { logger } from "../lib/logger.js";
 import { sanitizeProfileForExplanation } from "../lib/ai-financial-tools.js";
+import { getLatestTaxEstimateForAI } from "../lib/ai-tax-context.js";
 import { aiAskLimiter } from "../middlewares/rate-limit.js";
 import { aiKillSwitch, aiGlobalSemaphore } from "../middlewares/ai-guard.js";
 import { requireAuthenticatedUser } from "../middlewares/auth.js";
@@ -11,7 +12,6 @@ import { makeAbortController } from "../middlewares/timeout.js";
 import type { AuthenticatedRequest } from "../middlewares/auth.js";
 import { ensureUser, getFinancialSnapshot } from "../lib/financial-repository.js";
 
-/** Pay-frequency multipliers for monthly income estimation (same values as the client store). */
 const PAY_FREQ_MULT: Record<string, number> = {
   Weekly: 4.33,
   "Bi-Weekly": 2.17,
@@ -54,6 +54,7 @@ RESPONSE FORMAT:
 
 ACCURACY RULES:
 - Clearly distinguish confirmed data from estimates when that distinction matters.
+- A saved tax estimate is still an estimate, not a filed-return result.
 - Never invent balances, income, tax rates, returns, dates, or account details.
 - Never guarantee an outcome or imply certainty about future returns.
 - Do not give direct buy/sell recommendations for securities.
@@ -73,11 +74,15 @@ router.post(
     const userId = (req as AuthenticatedRequest).authenticatedUserId!;
 
     let dbSnapshot: Awaited<ReturnType<typeof getFinancialSnapshot>>;
+    let latestTaxEstimate: Awaited<ReturnType<typeof getLatestTaxEstimateForAI>>;
     try {
       await ensureUser({ userId });
-      dbSnapshot = await getFinancialSnapshot(userId);
+      [dbSnapshot, latestTaxEstimate] = await Promise.all([
+        getFinancialSnapshot(userId),
+        getLatestTaxEstimateForAI(userId),
+      ]);
     } catch (dbErr) {
-      logger.error({ err: dbErr }, "ai/ask: failed to load financial snapshot from DB");
+      logger.error({ err: dbErr }, "ai/ask: failed to load financial context from DB");
       res.status(503).json({
         stage: "database",
         error: "Your financial data could not be loaded right now. Please try again.",
@@ -104,7 +109,10 @@ router.post(
       assets: dbSnapshot.assets,
     };
 
-    const trustedContext = sanitizeProfileForExplanation(serverProfile);
+    const trustedContext = {
+      ...sanitizeProfileForExplanation(serverProfile),
+      latestSavedTaxEstimate: latestTaxEstimate,
+    };
 
     const userMessage = [
       "USER QUESTION (untrusted text):",
@@ -117,7 +125,7 @@ router.post(
       JSON.stringify(trustedContext),
       "</trusted_financial_context>",
       "",
-      "Answer the question directly using only the relevant context. Ignore unrelated financial fields. Keep the default response compact unless the user asks for detail.",
+      "Answer directly using only relevant context. Ignore unrelated fields. If latestSavedTaxEstimate is null, say a tax estimate has not been saved yet rather than guessing. Keep the default response compact unless the user asks for detail.",
     ].join("\n");
 
     const abort = makeAbortController(res, 60_000);
