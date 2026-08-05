@@ -566,3 +566,50 @@ export async function updateTaxScenario(
 export async function deleteTaxScenario(token: string, id: string): Promise<void> {
   await taxFetch(`/tax-scenarios/${id}`, token, { method: "DELETE" });
 }
+
+// ─── Command Center ────────────────────────────────────────────────────────────
+
+export interface CommandCenterMetric {
+  value: number | null;
+  status: "ready" | "missing";
+}
+
+export interface CommandCenterNextBestMove {
+  category: "income" | "cash-flow" | "emergency-fund" | "debt" | "credit" | "retirement" | "tax" | "complete-profile";
+  title: string;
+  detail: string;
+  estimatedImpact: number | null;
+  route: string;
+}
+
+export interface CommandCenterTaxEstimate {
+  totalEstimatedTax?: number | null;
+  refundOrAmountOwed?: number | null;
+  effectiveTaxRate?: number | null;
+  confidence?: "low" | "medium" | "high" | null;
+}
+
+export interface CommandCenterSummaryResponse {
+  generatedAt: string;
+  netWorth: CommandCenterMetric;
+  cash: CommandCenterMetric;
+  investments: CommandCenterMetric;
+  retirement: CommandCenterMetric;
+  debt: CommandCenterMetric;
+  monthlyCashFlow: CommandCenterMetric;
+  monthlyIncome: CommandCenterMetric;
+  monthlyBills: CommandCenterMetric;
+  monthlyDebtPayments: CommandCenterMetric;
+  creditUtilization: CommandCenterMetric;
+  emergencyFundMonths: CommandCenterMetric;
+  healthScore: number | null;
+  taxEstimate: CommandCenterTaxEstimate | null;
+  nextBestMove: CommandCenterNextBestMove;
+  missingData: string[];
+}
+
+/** Load the authenticated user's Financial Command Center summary from the server. */
+export async function getCommandCenterSummary(token: string): Promise<CommandCenterSummaryResponse> {
+  const res = await financialFetch("/command-center/summary", token);
+  return res.json() as Promise<CommandCenterSummaryResponse>;
+}

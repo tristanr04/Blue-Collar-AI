@@ -1,0 +1,93 @@
+Continue development from the current synced GitHub main branch.
+
+First verify:
+
+git status
+git branch --show-current
+git rev-parse HEAD
+
+The branch must be:
+main
+
+The commit must be:
+2151e533ad5bca1d3dd3345bb4564616b8fa2997
+
+Do not reset, overwrite, or replace the GitHub code.
+
+Now continue with the next unfinished product milestone:
+
+FINANCIAL COMMAND CENTER FRONTEND INTEGRATION
+
+Requirements:
+
+1. Connect the main dashboard UI to the authenticated server-side Command Center endpoint already in the codebase.
+
+2. Display these values from the server response:
+   - Net worth
+   - Cash
+   - Investments
+   - Retirement
+   - Total debt
+   - Monthly income
+   - Monthly bills
+   - Monthly debt payments
+   - Monthly surplus or deficit
+   - Credit utilization
+   - Emergency fund coverage
+   - Latest saved tax estimate
+   - Financial health score
+   - Next best move
+
+3. Do not recalculate trusted totals in the browser if the server already provides them.
+
+4. Missing data must never display as a fake $0.
+   Use clear empty states such as:
+   - Upload a bank statement
+   - Add a debt
+   - Save a tax estimate
+   - Upload a recent paystub
+
+5. Make the mobile dashboard concise:
+   - Most important information first
+   - No long blocks of explanatory text
+   - No duplicate totals
+   - Cards must fit cleanly on iPhone-sized screens
+   - Avoid horizontal scrolling
+
+6. Put the top section in this order:
+   - Financial health score
+   - Net worth
+   - Monthly surplus or deficit
+   - Estimated refund or amount owed
+   - Next best move
+
+7. The “Next Best Move” card must show only one recommendation at a time.
+
+8. Add loading, authentication, empty, and API-error states.
+
+9. Preserve all existing scanner, tax, AI, referral, and financial-data features.
+
+10. Add or update automated tests for:
+   - Server values rendering correctly
+   - Missing values not becoming zero
+   - Negative monthly cash flow
+   - Saved tax estimate display
+   - Next best move display
+   - API failure state
+   - Mobile layout does not horizontally overflow
+
+Then run:
+
+pnpm run typecheck
+pnpm -r --if-present run test
+pnpm run build
+
+Do not make broad unrelated changes.
+
+When finished, report:
+- Files changed
+- What was implemented
+- Test totals
+- Build result
+- Current git commit
+- Any remaining bugs or incomplete items

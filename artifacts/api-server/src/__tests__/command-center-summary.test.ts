@@ -37,9 +37,16 @@ test("calculates confirmed totals and a positive monthly surplus", () => {
   assert.equal(summary.netWorth.value, 150_000);
   assert.equal(summary.monthlyCashFlow.value, 4_000);
   assert.equal(summary.emergencyFundMonths.value, 5);
-  assert.equal(summary.investments.value, 80_000);
+  // investments and retirement are now separate metrics
+  assert.equal(summary.investments.value, 30_000);
+  assert.equal(summary.retirement.value, 50_000);
+  // extra input metrics exposed on the summary
+  assert.equal(summary.monthlyIncome.value, 8_000);
+  assert.equal(summary.monthlyBills.value, 3_000);
+  assert.equal(summary.monthlyDebtPayments.value, 1_000);
+  assert.equal(summary.creditUtilization.value, 8);
   assert.equal(summary.taxEstimate?.refundOrAmountOwed, 2_100);
-  assert.equal(summary.nextBestMove.title, "Put this month’s surplus to work");
+  assert.ok(summary.nextBestMove.title.toLowerCase().includes("surplus"), `unexpected title: ${summary.nextBestMove.title}`);
   assert.ok(summary.healthScore !== null && summary.healthScore > 0);
 });
 

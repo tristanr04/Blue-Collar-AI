@@ -35,8 +35,13 @@ export type CommandCenterSummary = {
   netWorth: CommandCenterMetric;
   cash: CommandCenterMetric;
   investments: CommandCenterMetric;
+  retirement: CommandCenterMetric;
   debt: CommandCenterMetric;
   monthlyCashFlow: CommandCenterMetric;
+  monthlyIncome: CommandCenterMetric;
+  monthlyBills: CommandCenterMetric;
+  monthlyDebtPayments: CommandCenterMetric;
+  creditUtilization: CommandCenterMetric;
   emergencyFundMonths: CommandCenterMetric;
   healthScore: number | null;
   taxEstimate: CommandCenterInput["latestTaxEstimate"];
@@ -213,9 +218,14 @@ export function createCommandCenterSummary(raw: CommandCenterInput): CommandCent
   return {
     netWorth: metric(netWorth),
     cash: metric(cash),
-    investments: metric(sumKnown([investments, retirement])),
+    investments: metric(investments),
+    retirement: metric(retirement),
     debt: metric(totalDebt),
     monthlyCashFlow: metric(monthlyCashFlow),
+    monthlyIncome: metric(monthlyNetIncome),
+    monthlyBills: metric(monthlyBills),
+    monthlyDebtPayments: metric(monthlyDebtPayments),
+    creditUtilization: metric(creditUtilization),
     emergencyFundMonths: metric(emergencyFundMonths),
     healthScore,
     taxEstimate: raw.latestTaxEstimate ?? null,

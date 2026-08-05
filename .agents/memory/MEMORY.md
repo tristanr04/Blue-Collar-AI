@@ -3,3 +3,4 @@
 - [BCFAI docsRef stale-ref bug](bcfai-docs-ref-staleness.md) — must eagerly sync docsRef.current before dispatchNext(); setDocs() alone is too late (useEffect runs after render).
 - [BCFAI Scanner Validation](bcfai-scanner-validation.md) — security fix (rawHead/rawTail removed from 422 body), checkCapabilities auth fix, localStorage not user-scoped (known risk).
 - [BCFAI Tax Estimator](bcfai-tax-estimator.md) — versioned tax-rules module, pure frontend engine, DB-persisted scenarios; lib/db must be rebuilt via tsc when schema changes.
+- [BCFAI Command Center Dashboard](bcfai-command-center-dashboard.md) — Dashboard now server-driven; CommandCenterSummary expanded with 5 new metrics; pure display logic in dashboard-utils.ts.
