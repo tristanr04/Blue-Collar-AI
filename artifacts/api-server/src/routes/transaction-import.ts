@@ -11,13 +11,11 @@ router.post("/transactions/import/csv", upload.single("file"), async (req, res) 
     res.status(400).json({ error: "A CSV transaction file is required." });
     return;
   }
-
   const extension = req.file.originalname.split(".").pop()?.toLowerCase();
   if (extension !== "csv") {
     res.status(422).json({ error: "Upload a CSV export from the bank or card account." });
     return;
   }
-
   try {
     const merchantRules = req.body.merchantRules ? JSON.parse(req.body.merchantRules) as MerchantRule[] : [];
     const existingFingerprints = req.body.existingFingerprints ? JSON.parse(req.body.existingFingerprints) as string[] : [];
@@ -28,13 +26,11 @@ router.post("/transactions/import/csv", upload.single("file"), async (req, res) 
       merchantRules: Array.isArray(merchantRules) ? merchantRules : [],
       existingFingerprints: Array.isArray(existingFingerprints) ? existingFingerprints : [],
     });
-
     const recurringMerchants = findRecurringTransactions(imported.transactions);
     const transactions = imported.transactions.map(transaction => ({
       ...transaction,
       recurring: transaction.recurring || recurringMerchants.includes(transaction.merchant),
     }));
-
     logger.info({
       file: req.file.originalname,
       imported: transactions.length,
@@ -42,7 +38,6 @@ router.post("/transactions/import/csv", upload.single("file"), async (req, res) 
       rejectedRows: imported.rejectedRows,
       needsReview: transactions.filter(transaction => transaction.needsReview).length,
     }, "transaction CSV imported");
-
     res.json({
       importMode: "csv",
       accountLastFour: typeof req.body.accountLastFour === "string" ? req.body.accountLastFour.slice(-4) : null,
@@ -68,27 +63,29 @@ router.post("/transactions/import/csv", upload.single("file"), async (req, res) 
 });
 
 router.post("/transactions/review", (req, res) => {
-  const transactions = Array.isArray(req.body?.transactions) ? req.body.transactions : [];
-  const corrections = Array.isArray(req.body?.corrections) ? req.body.corrections : [];
+  const transactions = Array.isArray(req.body?.transactions) ? req.body.transactions as Array<Record<string, unknown>> : [];
+  const corrections = Array.isArray(req.body?.corrections) ? req.body.corrections as Array<Record<string, unknown>> : [];
   if (!transactions.length) {
     res.status(400).json({ error: "Transactions are required." });
     return;
   }
-
-  const correctionMap = new Map(corrections.map((item: Record<string, unknown>) => [item.id, item]));
-  const reviewed = transactions.map((transaction: Record<string, unknown>) => {
-    const correction = correctionMap.get(transaction.id);
+  const correctionMap = new Map<string, Record<string, unknown>>();
+  for (const item of corrections) {
+    if (typeof item.id === "string") correctionMap.set(item.id, item);
+  }
+  const reviewed = transactions.map(transaction => {
+    const id = typeof transaction.id === "string" ? transaction.id : "";
+    const correction = correctionMap.get(id);
     return correction ? { ...transaction, ...correction, needsReview: false } : transaction;
   });
-
+  const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const merchantRules = reviewed
-    .filter((transaction: Record<string, unknown>) => transaction.merchant && transaction.category && !transaction.needsReview)
-    .map((transaction: Record<string, unknown>) => ({
-      merchantPattern: `^${String(transaction.merchant).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+    .filter(transaction => typeof transaction.merchant === "string" && typeof transaction.category === "string" && !transaction.needsReview)
+    .map(transaction => ({
+      merchantPattern: `^${escapeRegExp(String(transaction.merchant))}$`,
       category: transaction.category,
       excludeFromSpending: Boolean(transaction.excludedFromSpending),
     }));
-
   res.json({ transactions: reviewed, merchantRules });
 });
 
