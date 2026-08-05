@@ -630,11 +630,17 @@ function classifyResponseFailure(
 /**
  * Build the 422 body returned when both attempts fail.
  *
- * The user-visible `error` string stays generic; all diagnostic detail lives
- * in `diagnosis` and `responseMetadata` so developers can inspect logs / API
- * responses without exposing internals to end users.
+ * The user-visible `error` string stays generic.  Diagnostic metadata (cause,
+ * finish reason, token counts) is included to help developers diagnose failures
+ * without exposing document content.
+ *
+ * SECURITY: rawHead / rawTail (raw AI output) are intentionally omitted from
+ * the response body.  They may contain document-derived PII (account numbers,
+ * names, balances) that the model echoed back before failing validation.  They
+ * are written to server-side structured logs only, where they are accessible
+ * to operators but not to the requesting client.
  */
-function buildDiagnosticFailureBody(opts: {
+export function buildDiagnosticFailureBody(opts: {
   file: string;
   attempt1: { meta: ResponseMeta; rawText: string; diagnosis: FailureDiagnosis };
   attempt2: { meta: ResponseMeta; rawText: string; diagnosis: FailureDiagnosis } | null;
@@ -653,14 +659,13 @@ function buildDiagnosticFailureBody(opts: {
     stage: "ai_json_parse",
     error: "The document processor returned an unrecognized response format. Please try again.",
     // ── Diagnostic payload (for developers / support) ─────────────────────
+    // rawHead / rawTail are NOT included here — server logs have the full text.
     diagnosis: {
       cause: (a2 ?? a1).diagnosis.cause,
       detail: (a2 ?? a1).diagnosis.detail,
       attempt1Cause: a1.diagnosis.cause,
       attempt2Cause: a2?.diagnosis.cause ?? null,
       retryComparison: retryImproved,
-      rawHead: (a2 ?? a1).diagnosis.rawHead,
-      rawTail: (a2 ?? a1).diagnosis.rawTail,
     },
     responseMetadata: {
       attempt1: {
@@ -687,6 +692,12 @@ function buildDiagnosticFailureBody(opts: {
     rawExtractionKeys,
   };
 }
+
+/**
+ * Returns true when an error thrown by pdf-parse indicates the file is
+ * password-protected or encrypted.  Exported for unit testing.
+ */
+export { isEncryptedPdfError };
 
 // ─── Vehicle-loan extraction normalization ────────────────────────────────────
 

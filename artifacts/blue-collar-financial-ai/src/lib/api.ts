@@ -185,10 +185,18 @@ export async function scanFile(
 
 // ─── Capabilities ─────────────────────────────────────────────────────────────
 
-/** Check whether the AI backend is available. */
-export async function checkCapabilities(): Promise<{ ai: boolean }> {
+/**
+ * Check whether the AI backend is available.
+ * Requires a Clerk session token — without one the endpoint returns 401
+ * and we report AI as unavailable.
+ */
+export async function checkCapabilities(
+  token?: string | null,
+): Promise<{ ai: boolean }> {
   try {
-    const res = await fetch(`${API_BASE}/capabilities`);
+    const res = await fetch(`${API_BASE}/capabilities`, {
+      headers: authedHeaders(token),
+    });
     if (!res.ok) return { ai: false };
     return await res.json();
   } catch {

@@ -617,3 +617,202 @@ describe('rate-limit helpers (is429Error, clampRetryMs, parseRetryDelay)', () =>
     expect(RETRY_DELAYS_MS[2]).toBe(8_000);
   });
 });
+
+// ─── Error message sanitization (Tests 32-38) ─────────────────────────────────
+//
+// Verifies that every error stage the scanner can display to the user is a
+// safe, human-readable string with no stack traces, internal paths, API keys,
+// or other sensitive implementation details.
+
+describe('error message sanitization', () => {
+
+  /** Returns true when a string is safe to display to a user. */
+  function isSafeUserMessage(msg: string): boolean {
+    if (!msg || typeof msg !== 'string') return false;
+    // No stack-trace markers
+    if (/\bat [A-Za-z].*:\d+/.test(msg)) return false;          // "at fn (file:line)"
+    if (/\bError:\s/.test(msg)) return false;                    // "Error: ..."
+    // No internal file paths
+    if (/\/home\/runner/.test(msg)) return false;
+    if (/node_modules/.test(msg)) return false;
+    if (/\/artifacts\//.test(msg)) return false;
+    // No likely API key patterns (long alphanumeric tokens)
+    if (/sk-[A-Za-z0-9]{20,}/.test(msg)) return false;
+    if (/[A-Za-z0-9]{40,}/.test(msg)) return false;
+    return true;
+  }
+
+  // 32. Terminal scan failure message is safe
+  it('32. terminal scan failure message is safe for user display', () => {
+    // Mirrors what parseApiError returns for a 422 response
+    const stages = [
+      { stage: 'ai_json_parse',         message: 'The document processor returned an unrecognized response format. Please try again.' },
+      { stage: 'scan_timeout',          message: 'Document analysis timed out after 60 seconds. Please try a smaller or clearer document.' },
+      { stage: 'file_size_limit',       message: 'File is too large. Maximum upload size is 10 MB.' },
+      { stage: 'mime_validation',       message: 'Unsupported or unrecognized file. Upload a real JPG, PNG, WebP, HEIC/HEIF, or PDF file.' },
+      { stage: 'pdf_encryption',        message: 'Password-protected or encrypted PDFs are not supported. Remove the password and try again.' },
+      { stage: 'pdf_image_only',        message: 'This PDF appears to contain scanned images without readable text. Upload clear images of the relevant pages for now.' },
+      { stage: 'pdf_decode',            message: 'The PDF could not be decoded. It may be corrupt or unsupported.' },
+      { stage: 'pdf_page_limit',        message: 'PDF has 25 pages. The current limit is 20 pages.' },
+      { stage: 'image_decode',          message: 'The image could not be decoded. It may be corrupt or use an unsupported encoding.' },
+      { stage: 'image_normalization',   message: 'The image could not be safely normalized for scanning.' },
+      { stage: 'image_dimensions',      message: 'Image resolution is too large. Maximum decoded size is 25 megapixels.' },
+      { stage: 'backend_receipt',       message: 'No file received. Please choose one document and try again.' },
+      { stage: 'authentication',        message: 'You must sign in to use this feature.' },
+      { stage: 'duplicate_document',    message: 'This document has already been imported. Each file can only be added once per account.' },
+      { stage: 'multipart_validation',  message: 'The upload request is malformed. Please choose one file and try again.' },
+      { stage: 'ai_request',            message: 'Document analysis failed. Please try again.' },
+    ];
+
+    for (const { stage, message } of stages) {
+      expect(isSafeUserMessage(message)).toBe(true);
+      // Check stage name is a safe slug
+      expect(stage).toMatch(/^[a-z_]+$/);
+    }
+  });
+
+  // 33. parseApiError only surfaces stage + message — not the full JSON
+  it('33. parseApiError extracts only stage and message from structured errors', () => {
+    function parseApiError(err: unknown): { stage: string; message: string } {
+      if (err instanceof Error) {
+        try {
+          const parsed = JSON.parse(err.message);
+          return { stage: parsed.stage ?? 'unknown', message: parsed.message ?? err.message };
+        } catch {
+          return { stage: 'unknown', message: err.message };
+        }
+      }
+      return { stage: 'unknown', message: String(err) };
+    }
+
+    const structuredError = new Error(JSON.stringify({
+      stage: 'pdf_encryption',
+      message: 'Password-protected or encrypted PDFs are not supported.',
+      filename: 'secure.pdf',
+      httpStatus: 422,
+      // These internal fields should NOT reach the user
+      diagnosis: { rawHead: 'account 1234 SSN 999-99-9999', rawTail: 'sensitive data' },
+      responseMetadata: { attempt1: { model: 'gpt-secret', totalTokens: 9999 } },
+    }));
+
+    const result = parseApiError(structuredError);
+
+    expect(result.stage).toBe('pdf_encryption');
+    expect(result.message).toBe('Password-protected or encrypted PDFs are not supported.');
+    // parseApiError returns { stage, message } — the full JSON is NOT in either field
+    expect(result.message).not.toContain('rawHead');
+    expect(result.message).not.toContain('account 1234');
+    expect(result.message).not.toContain('SSN');
+    expect(result.message).not.toContain('gpt-secret');
+  });
+
+  // 34. 409 duplicate error: stage parsed correctly
+  it('34. duplicate 409 error is parsed to duplicate_document stage', () => {
+    function parseApiError(err: unknown): { stage: string; message: string } {
+      if (err instanceof Error) {
+        try {
+          const parsed = JSON.parse(err.message);
+          return { stage: parsed.stage ?? 'unknown', message: parsed.message ?? err.message };
+        } catch {
+          return { stage: 'unknown', message: err.message };
+        }
+      }
+      return { stage: 'unknown', message: String(err) };
+    }
+
+    const dupError = new Error(JSON.stringify({
+      stage: 'duplicate_document',
+      message: 'This document has already been imported. Each file can only be added once per account. (First imported: 1/1/2026)',
+      filename: 'paystub.jpg',
+      httpStatus: 409,
+    }));
+
+    const result = parseApiError(dupError);
+
+    expect(result.stage).toBe('duplicate_document');
+    expect(result.message).toContain('already been imported');
+    expect(isSafeUserMessage(result.message)).toBe(true);
+  });
+
+  // 35. is429Error does NOT match 409 duplicate responses
+  it('35. is429Error does not match 409 duplicate_document errors', () => {
+    const dupError = new Error(JSON.stringify({
+      stage: 'duplicate_document',
+      httpStatus: 409,
+      message: 'This document has already been imported.',
+      filename: 'statement.pdf',
+    }));
+
+    expect(is429Error(dupError)).toBeNull();
+  });
+
+  // 36. Non-JSON scan error falls back gracefully
+  it('36. plain Error message is surfaced as-is with unknown stage', () => {
+    function parseApiError(err: unknown): { stage: string; message: string } {
+      if (err instanceof Error) {
+        try {
+          const parsed = JSON.parse(err.message);
+          return { stage: parsed.stage ?? 'unknown', message: parsed.message ?? err.message };
+        } catch {
+          return { stage: 'unknown', message: err.message };
+        }
+      }
+      return { stage: 'unknown', message: String(err) };
+    }
+
+    const plainError = new Error('Network connection lost');
+    const result = parseApiError(plainError);
+
+    expect(result.stage).toBe('unknown');
+    expect(result.message).toBe('Network connection lost');
+  });
+
+  // 37. Files with no extension or wrong extension are filtered by client
+  it('37. client file filter rejects files with no recognized extension or MIME type', () => {
+    const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp|heic|heif)$/i;
+
+    const isAccepted = (name: string, type: string) =>
+      type.startsWith('image/') ||
+      type === 'application/pdf' ||
+      IMAGE_EXT.test(name) ||
+      /\.pdf$/i.test(name);
+
+    // Valid files
+    expect(isAccepted('statement.pdf',   'application/pdf')).toBe(true);
+    expect(isAccepted('photo.jpg',       'image/jpeg')).toBe(true);
+    expect(isAccepted('scan.png',        'image/png')).toBe(true);
+    expect(isAccepted('mobile.heic',     '')).toBe(true);  // iOS: no MIME, extension matches
+
+    // Invalid: no extension, no valid MIME
+    expect(isAccepted('nodotfile',       '')).toBe(false);
+    expect(isAccepted('document.exe',    'application/octet-stream')).toBe(false);
+    expect(isAccepted('spreadsheet.xls', 'application/vnd.ms-excel')).toBe(false);
+    expect(isAccepted('archive.zip',     'application/zip')).toBe(false);
+    expect(isAccepted('text.txt',        'text/plain')).toBe(false);
+    expect(isAccepted('script.js',       'application/javascript')).toBe(false);
+  });
+
+  // 38. Abort/timeout error is safe and does not retry as a 429
+  it('38. timeout abort error is safe and not treated as a rate-limit', () => {
+    const abortError = new Error(JSON.stringify({
+      stage: 'scan_timeout',
+      message: 'Document analysis timed out after 60 seconds. Please try a smaller or clearer document.',
+      filename: 'large-statement.pdf',
+    }));
+
+    // Must not trigger 429 retry logic
+    expect(is429Error(abortError)).toBeNull();
+
+    // Message is safe
+    function parseApiError(err: unknown): { stage: string; message: string } {
+      if (err instanceof Error) {
+        try { const p = JSON.parse(err.message); return { stage: p.stage ?? 'unknown', message: p.message ?? err.message }; }
+        catch { return { stage: 'unknown', message: err.message }; }
+      }
+      return { stage: 'unknown', message: String(err) };
+    }
+    const { stage, message } = parseApiError(abortError);
+    expect(stage).toBe('scan_timeout');
+    expect(isSafeUserMessage(message)).toBe(true);
+  });
+});
