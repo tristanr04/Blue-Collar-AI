@@ -3,7 +3,7 @@ import { Link, useLocation } from 'wouter';
 import {
   Home, ScanLine, WalletCards, Sparkles, Menu, Settings,
   FileText, TrendingDown, Receipt, Landmark, ChartNoAxesCombined,
-  Calculator, Loader2, HardHat, ShieldCheck,
+  Calculator, Loader2, HardHat, ShieldCheck, Users,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useJobQueue } from '@/lib/jobQueue';
@@ -17,6 +17,7 @@ const navItems = [
   { href: '/banking', label: 'Banking', icon: Landmark },
   { href: '/investments', label: 'Investments', icon: ChartNoAxesCombined },
   { href: '/scenario', label: 'Scenarios', icon: Calculator },
+  { href: '/growth', label: 'Growth Hub', icon: Users },
   { href: '/ask-ai', label: 'AI Copilot', icon: Sparkles },
 ];
 
@@ -36,7 +37,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const mobileItems = [
     { href: '/dashboard', icon: Home, label: 'Home' },
     { href: '/scanner', icon: ScanLine, label: 'Scanner' },
-    { href: '/banking', icon: WalletCards, label: 'Accounts' },
+    { href: '/growth', icon: Users, label: 'Growth' },
     { href: '/ask-ai', icon: Sparkles, label: 'AI Copilot' },
     { href: '/settings', icon: Menu, label: 'More' },
   ];
