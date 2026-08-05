@@ -1,0 +1,135 @@
+You are a senior full-stack SaaS engineer.
+
+Your task is to transform this application into a subscription-based platform focused on long-term customer retention.
+
+Requirements:
+
+## Authentication
+- Add secure user registration and login.
+- Support email/password authentication.
+- Persist user sessions.
+- Add password reset functionality.
+- Add optional two-factor authentication.
+
+## User Dashboard
+Create a modern dashboard that displays:
+- Welcome message
+- Account information
+- Subscription status
+- Remaining monthly credits (if applicable)
+- Storage usage
+- Recent activity
+- Favorite items
+- Quick actions
+
+## Cloud Storage
+Implement secure cloud storage for user-created content:
+- Folder organization
+- Search
+- Favorites
+- Tags
+- Archive
+- Soft delete with restore
+- Version history
+
+## User Preferences
+Save user settings including:
+- Theme
+- Language
+- Default export options
+- Notification preferences
+- Dashboard layout
+
+## Subscription System
+Create three plans:
+
+Free
+- Limited monthly usage
+- Basic storage
+
+Pro
+- Higher monthly usage
+- More storage
+- Priority processing
+- Advanced organization features
+
+Business
+- Team workspaces
+- Shared folders
+- Role-based permissions
+- Audit logs
+- Unlimited storage (or configurable)
+
+## Billing
+Integrate Stripe subscriptions with:
+- Monthly billing
+- Annual billing
+- Upgrade/downgrade
+- Cancel/resume
+- Billing history
+- Invoices
+- Trial support
+- Webhook handling
+
+## Customer Retention Features
+Implement:
+- Personalized onboarding checklist
+- Progress indicators
+- Saved workspaces
+- Recently used items
+- Favorites
+- Smart recommendations based on prior usage
+- Feature announcement center
+- Changelog page
+- Referral program framework
+- Achievement badges (optional)
+- Helpful in-app tips that can be dismissed
+
+## Notifications
+Add:
+- In-app notifications
+- Email notifications
+- Product update announcements
+- Subscription reminders
+- Usage summaries
+
+## Admin Panel
+Create an admin dashboard with:
+- User management
+- Subscription metrics
+- Monthly recurring revenue
+- Churn rate
+- Active users
+- Feature adoption
+- Error logs
+- Support requests
+
+## Analytics
+Track:
+- Daily active users
+- Weekly active users
+- Monthly active users
+- Retention
+- Churn
+- Session duration
+- Most-used features
+- Conversion from free to paid
+
+## Security
+Implement:
+- Rate limiting
+- Encryption for sensitive data
+- Secure session handling
+- CSRF protection
+- Input validation
+- Audit logging
+- Role-based authorization
+
+## Performance
+- Lazy loading
+- Caching
+- Background jobs where appropriate
+- Database indexing
+- Responsive mobile UI
+
+Refactor the existing application without breaking current functionality. Use clean architecture, reusable components, and production-ready code. Add comments where appropriate and keep the codebase modular and maintainable.
