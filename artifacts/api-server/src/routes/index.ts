@@ -17,6 +17,8 @@ import financialMemoryRouter from "./financial-memory.js";
 import retentionNotificationsRouter from "./retention-notifications.js";
 import financialGuideRouter from "./financial-guide.js";
 import insuranceScanRouter from "./insurance-scan.js";
+import subscriptionsRouter from "./subscriptions.js";
+import overtimeTaxRouter from "./overtime-tax.js";
 
 const router: IRouter = Router();
 
@@ -38,5 +40,7 @@ router.use(financialMemoryRouter);
 router.use(retentionNotificationsRouter);
 router.use(financialGuideRouter);
 router.use(insuranceScanRouter);
+router.use(subscriptionsRouter);
+router.use(overtimeTaxRouter);
 
 export default router;
