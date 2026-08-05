@@ -21,6 +21,7 @@ import Bills from '@/pages/Bills';
 import Banking from '@/pages/Banking';
 import Investments from '@/pages/Investments';
 import Scenario from '@/pages/Scenario';
+import AgeProgress from '@/pages/AgeProgress';
 import Settings from '@/pages/Settings';
 import AskAI from '@/pages/AskAI';
 import TestLab from '@/pages/TestLab';
@@ -45,6 +46,7 @@ function Router() {
         <Route path="/banking" component={Banking} />
         <Route path="/investments" component={Investments} />
         <Route path="/scenario" component={Scenario} />
+        <Route path="/age-progress" component={AgeProgress} />
         <Route path="/settings" component={Settings} />
         <Route path="/ask-ai" component={AskAI} />
         <Route path="/test-lab" component={TestLab} />
