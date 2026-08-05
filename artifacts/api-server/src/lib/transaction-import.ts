@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 export type TransactionCategory =
   | "income" | "housing" | "utilities" | "groceries" | "dining" | "fuel"
   | "transportation" | "insurance" | "healthcare" | "shopping" | "entertainment"
-  | "subscriptions" | "travel" | "debt_payment" | "transfer" | "fees"
+  | "subscriptions" | "travel" | "debt_payment" | "transfer" | "refund" | "fees"
   | "taxes" | "cash" | "other";
 
 export type ImportedTransaction = {
@@ -43,7 +43,7 @@ const CATEGORY_PATTERNS: Array<[TransactionCategory, RegExp]> = [
   ["transfer", /\b(transfer|xfer|zelle|venmo transfer|cash app transfer|ach transfer)\b/i],
   ["debt_payment", /\b(payment thank you|credit card payment|card payment|loan payment|autopay payment)\b/i],
   ["income", /\b(payroll|direct deposit|salary|paycheck|wages|employer deposit)\b/i],
-  ["refund", /\b(refund|reversal|returned purchase|merchant credit)\b/i] as never,
+  ["refund", /\b(refund|reversal|returned purchase|merchant credit)\b/i],
   ["housing", /\b(rent|mortgage|property management|hoa)\b/i],
   ["utilities", /\b(electric|energy|water|gas utility|internet|broadband|wireless|phone|sewer)\b/i],
   ["groceries", /\b(walmart grocery|kroger|aldi|costco|sam'?s club|whole foods|grocery|market)\b/i],
@@ -129,12 +129,12 @@ function categorize(description: string, direction: "debit" | "credit", rules: M
   const custom = rules.find(rule => new RegExp(rule.merchantPattern, "i").test(description));
   if (custom) return { category: custom.category, confidence: 98, excluded: Boolean(custom.excludeFromSpending) };
   if (direction === "credit" && /refund|reversal|returned purchase|merchant credit/i.test(description)) {
-    return { category: "shopping" as TransactionCategory, confidence: 90, excluded: true, reason: "refund" as const };
+    return { category: "refund" as TransactionCategory, confidence: 90, excluded: true, reason: "refund" as const };
   }
   for (const [category, pattern] of CATEGORY_PATTERNS) {
     if (pattern.test(description)) {
-      const excluded = category === "transfer" || category === "debt_payment" || category === "income";
-      const reason = category === "transfer" ? "transfer" : category === "debt_payment" ? "credit_card_payment" : category === "income" ? "income" : undefined;
+      const excluded = category === "transfer" || category === "debt_payment" || category === "income" || category === "refund";
+      const reason = category === "transfer" ? "transfer" : category === "debt_payment" ? "credit_card_payment" : category === "income" ? "income" : category === "refund" ? "refund" : undefined;
       return { category, confidence: 88, excluded, reason };
     }
   }
