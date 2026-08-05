@@ -11,7 +11,7 @@ const router: IRouter = Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 },
+  limits: { fileSize: 30 * 1024 * 1024 },
 });
 
 const openai = new OpenAI({
@@ -30,7 +30,11 @@ function detectMime(buffer: Buffer): string {
   return "application/octet-stream";
 }
 
-const SYSTEM_PROMPT = `You are a financial document extraction AI. Analyze the document and respond with exactly one valid JSON object. Do not use markdown, code fences, commentary, or multiple objects.
+const SYSTEM_PROMPT = `You are a forensic financial document extraction AI. Analyze difficult real-world photos and scans, including images that are blurry, low contrast, dim, overexposed, skewed, cropped, sideways, upside down, wrinkled, photographed at an angle, or partially obstructed.
+
+Before extracting data, inspect the page in all four orientations (0, 90, 180, and 270 degrees). Mentally deskew perspective and distinguish printed labels from values. Read repeated context, table structure, currency formatting, and nearby labels to recover legible information, but never invent or estimate a value that is not actually visible.
+
+Respond with exactly one valid JSON object. Do not use markdown, code fences, commentary, or multiple objects.
 
 Classify docType as exactly one of:
 Paystub | Checking Account | Savings Account | High-Yield Savings | Money Market Account | Certificate of Deposit | Cash Management Account | Bank Statement | Credit Card | Credit Card Statement | Line of Credit | Auto Loan | Personal Loan | Mortgage | HELOC | Student Loan | Brokerage Account | Margin Account | Robo-Adviser Account | Employee Stock Plan | 401(k) | Roth 401(k) | 403(b) | 457(b) | Traditional IRA | Roth IRA | SEP IRA | SIMPLE IRA | Rollover IRA | Pension | Thrift Savings Plan | HSA Investment Account | Monthly Bill | Utility Bill | Unknown
@@ -42,12 +46,19 @@ Return this shape:
 {
   "docType": "Credit Card Statement",
   "classificationConfidence": 95,
+  "detectedOrientation": 0,
+  "imageQuality": "good",
+  "qualityWarnings": [],
   "institution": { "rawName": "Example Bank", "isKnownInstitution": false },
   "fields": {
     "currentBalance": { "value": 1200.25, "confidence": 95, "sourceText": "Current Balance $1,200.25" }
   },
   "unknownFields": []
 }
+
+imageQuality must be one of: excellent | good | fair | poor | unreadable.
+detectedOrientation must be one of: 0 | 90 | 180 | 270.
+qualityWarnings may include concise values such as blur, glare, low_contrast, cropped, perspective_skew, partial_obstruction, tiny_text, or rotation_uncertain.
 
 Relevant fields:
 PAYSTUB: employer, payDate, payPeriodStart, payPeriodEnd, hourlyRate, regularHours, overtimeHours, doubleTimeHours, perDiem, standbyPay, bonus, grossPay, federalTax, stateTax, socialSecurity, medicare, unionDues, insuranceDeductions, retirementContribution, retirementRate, otherDeductions, netPay
@@ -64,13 +75,33 @@ type ExtractionAttempt = {
   finishReason: string | null;
   promptTokens?: number;
   completionTokens?: number;
+  strategy: string;
 };
 
-async function extractFromImage(buffer: Buffer, mimeType: string, retry = false): Promise<ExtractionAttempt> {
+type ScoredExtraction = {
+  result: Record<string, unknown>;
+  score: number;
+  strategy: string;
+};
+
+const ORIENTATION_STRATEGIES = [
+  { name: "normal", instruction: "Inspect the image normally, but verify all four possible rotations before deciding its orientation." },
+  { name: "rotate-90", instruction: "Treat the page as likely rotated 90 degrees. Mentally rotate it clockwise, deskew it, and extract every readable field." },
+  { name: "rotate-180", instruction: "Treat the page as likely upside down. Mentally rotate it 180 degrees and extract every readable field." },
+  { name: "rotate-270", instruction: "Treat the page as likely rotated 270 degrees. Mentally rotate it counterclockwise, deskew it, and extract every readable field." },
+] as const;
+
+async function extractFromImage(
+  buffer: Buffer,
+  mimeType: string,
+  strategy: string,
+  instruction: string,
+  recovery = false,
+): Promise<ExtractionAttempt> {
   const b64 = buffer.toString("base64");
   const response = await openai.chat.completions.create({
     model: "gpt-5.6-terra",
-    max_completion_tokens: retry ? 3072 : 2048,
+    max_completion_tokens: recovery ? 4096 : 3072,
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
@@ -79,41 +110,43 @@ async function extractFromImage(buffer: Buffer, mimeType: string, retry = false)
         content: [
           {
             type: "text",
-            text: retry
-              ? "The previous extraction was malformed. Re-analyze this document and return exactly one complete valid JSON object using the required schema."
-              : "Extract all visible financial data from this document and return exactly one complete JSON object.",
+            text: `${instruction}\n${recovery ? "This is a recovery pass. Slow down, inspect small text, repeated labels, table alignment, and all four rotations. Prefer null over guessing, but do not give up on readable text." : "Extract all visible financial data and return one complete JSON object."}`,
           },
           { type: "image_url", image_url: { url: `data:${mimeType};base64,${b64}`, detail: "high" } },
         ],
       },
     ],
   });
+
   return {
     raw: response.choices[0]?.message?.content ?? "",
     finishReason: response.choices[0]?.finish_reason ?? null,
     promptTokens: response.usage?.prompt_tokens,
     completionTokens: response.usage?.completion_tokens,
+    strategy,
   };
 }
 
-async function extractFromText(text: string, pageHint?: string, retry = false): Promise<ExtractionAttempt> {
+async function extractFromText(text: string, retry = false): Promise<ExtractionAttempt> {
   const response = await openai.chat.completions.create({
     model: "gpt-5.6-terra",
-    max_completion_tokens: retry ? 3072 : 2048,
+    max_completion_tokens: retry ? 4096 : 3072,
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       {
         role: "user",
-        content: `${retry ? "The previous extraction was malformed. " : ""}Extract all visible financial data from this document text${pageHint ? ` (${pageHint})` : ""} and return exactly one complete JSON object:\n\n${text.slice(0, 12000)}`,
+        content: `${retry ? "This is a recovery pass. " : ""}Extract all visible financial data from this PDF text and return exactly one complete JSON object:\n\n${text.slice(0, 16000)}`,
       },
     ],
   });
+
   return {
     raw: response.choices[0]?.message?.content ?? "",
     finishReason: response.choices[0]?.finish_reason ?? null,
     promptTokens: response.usage?.prompt_tokens,
     completionTokens: response.usage?.completion_tokens,
+    strategy: retry ? "pdf-recovery" : "pdf-primary",
   };
 }
 
@@ -160,10 +193,7 @@ function extractJsonCandidates(raw: string): string[] {
 
 function parseExtraction(raw: string): Record<string, unknown> | null {
   for (const candidate of extractJsonCandidates(raw)) {
-    const variants = [
-      candidate,
-      candidate.replace(/,\s*([}\]])/g, "$1"),
-    ];
+    const variants = [candidate, candidate.replace(/,\s*([}\]])/g, "$1")];
     for (const variant of variants) {
       try {
         const parsed: unknown = JSON.parse(variant);
@@ -176,49 +206,142 @@ function parseExtraction(raw: string): Record<string, unknown> | null {
   return null;
 }
 
+function normalizeConfidence(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
 function validateExtraction(result: Record<string, unknown>): Record<string, unknown> | null {
   if (typeof result.docType !== "string" || !result.docType.trim()) return null;
   if (!isRecord(result.fields)) result.fields = {};
-  if (typeof result.classificationConfidence !== "number") result.classificationConfidence = 0;
+  result.classificationConfidence = normalizeConfidence(result.classificationConfidence);
+
+  if (![0, 90, 180, 270].includes(Number(result.detectedOrientation))) {
+    result.detectedOrientation = 0;
+  }
+  if (!["excellent", "good", "fair", "poor", "unreadable"].includes(String(result.imageQuality))) {
+    result.imageQuality = "fair";
+  }
+  if (!Array.isArray(result.qualityWarnings)) result.qualityWarnings = [];
+  if (!Array.isArray(result.unknownFields)) result.unknownFields = [];
+
   return result;
 }
 
-async function runExtraction(
-  buffer: Buffer,
-  mime: string,
-  originalname: string,
-  pdfText?: string,
-): Promise<Record<string, unknown>> {
-  for (let attemptNumber = 1; attemptNumber <= 2; attemptNumber += 1) {
-    const retry = attemptNumber === 2;
-    const attempt = pdfText !== undefined
-      ? await extractFromText(pdfText, "PDF", retry)
-      : await extractFromImage(buffer, mime, retry);
+function scoreExtraction(result: Record<string, unknown>): number {
+  const fields = isRecord(result.fields) ? result.fields : {};
+  const fieldEntries = Object.values(fields).filter(isRecord);
+  const populated = fieldEntries.filter(field => field.value !== null && field.value !== undefined && field.value !== "");
+  const avgFieldConfidence = populated.length
+    ? populated.reduce((sum, field) => sum + normalizeConfidence(field.confidence), 0) / populated.length
+    : 0;
 
-    const parsed = parseExtraction(attempt.raw);
-    const validated = parsed ? validateExtraction(parsed) : null;
+  const classification = normalizeConfidence(result.classificationConfidence);
+  const institutionBonus = isRecord(result.institution) && typeof result.institution.rawName === "string" && result.institution.rawName.trim() ? 8 : 0;
+  const docTypeBonus = result.docType !== "Unknown" ? 8 : 0;
+  const populatedBonus = Math.min(42, populated.length * 4.2);
+  const confidenceBonus = Math.min(24, avgFieldConfidence * 0.24);
+  const classificationBonus = Math.min(18, classification * 0.18);
+  const qualityPenalty = result.imageQuality === "unreadable" ? 35 : result.imageQuality === "poor" ? 15 : 0;
 
-    logger.info({
-      file: originalname,
-      attempt: attemptNumber,
-      responseLength: attempt.raw.length,
-      finishReason: attempt.finishReason,
-      promptTokens: attempt.promptTokens,
-      completionTokens: attempt.completionTokens,
-      parsed: Boolean(validated),
-    }, "document extraction attempt");
+  return Math.max(0, populatedBonus + confidenceBonus + classificationBonus + institutionBonus + docTypeBonus - qualityPenalty);
+}
 
-    if (validated) return validated;
+function needsRecovery(scored: ScoredExtraction): boolean {
+  const fields = isRecord(scored.result.fields) ? Object.values(scored.result.fields).filter(isRecord) : [];
+  const populatedCount = fields.filter(field => field.value !== null && field.value !== undefined && field.value !== "").length;
+  return scored.score < 48 || populatedCount < 2 || scored.result.docType === "Unknown" || scored.result.imageQuality === "unreadable";
+}
 
+function logAttempt(originalname: string, attempt: ExtractionAttempt, validated: Record<string, unknown> | null, score?: number) {
+  logger.info({
+    file: originalname,
+    strategy: attempt.strategy,
+    responseLength: attempt.raw.length,
+    finishReason: attempt.finishReason,
+    promptTokens: attempt.promptTokens,
+    completionTokens: attempt.completionTokens,
+    parsed: Boolean(validated),
+    score,
+  }, "document extraction attempt");
+}
+
+async function evaluateAttempt(originalname: string, attempt: ExtractionAttempt): Promise<ScoredExtraction | null> {
+  const parsed = parseExtraction(attempt.raw);
+  const validated = parsed ? validateExtraction(parsed) : null;
+  const score = validated ? scoreExtraction(validated) : undefined;
+  logAttempt(originalname, attempt, validated, score);
+
+  if (!validated) {
     logger.warn({
       file: originalname,
-      attempt: attemptNumber,
+      strategy: attempt.strategy,
       finishReason: attempt.finishReason,
       responsePreview: attempt.raw.slice(0, 1000),
     }, "unrecognized document extraction response");
+    return null;
   }
 
-  throw new Error("The document processor returned an unrecognized response format after two attempts.");
+  return { result: validated, score: score ?? 0, strategy: attempt.strategy };
+}
+
+async function runImageExtraction(buffer: Buffer, mime: string, originalname: string): Promise<ScoredExtraction> {
+  const primaryStrategy = ORIENTATION_STRATEGIES[0];
+  const primaryAttempt = await extractFromImage(buffer, mime, primaryStrategy.name, primaryStrategy.instruction, false);
+  const primary = await evaluateAttempt(originalname, primaryAttempt);
+
+  if (primary && !needsRecovery(primary)) return primary;
+
+  const candidates: ScoredExtraction[] = primary ? [primary] : [];
+  const recoveryStrategies = primary
+    ? ORIENTATION_STRATEGIES.slice(1)
+    : ORIENTATION_STRATEGIES;
+
+  for (const strategy of recoveryStrategies) {
+    const attempt = await extractFromImage(buffer, mime, strategy.name, strategy.instruction, true);
+    const candidate = await evaluateAttempt(originalname, attempt);
+    if (candidate) candidates.push(candidate);
+
+    if (candidate && candidate.score >= 78 && candidate.result.docType !== "Unknown") break;
+  }
+
+  if (!candidates.length) {
+    throw new Error("The document processor returned an unrecognized response format after all recovery attempts.");
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  best.result.scanMeta = {
+    selectedStrategy: best.strategy,
+    extractionScore: Math.round(best.score),
+    attemptsRun: candidates.length,
+    recoveryUsed: candidates.length > 1,
+  };
+  return best;
+}
+
+async function runTextExtraction(text: string, originalname: string): Promise<ScoredExtraction> {
+  const candidates: ScoredExtraction[] = [];
+  for (let pass = 0; pass < 2; pass += 1) {
+    const attempt = await extractFromText(text, pass === 1);
+    const candidate = await evaluateAttempt(originalname, attempt);
+    if (candidate) candidates.push(candidate);
+    if (candidate && !needsRecovery(candidate)) break;
+  }
+
+  if (!candidates.length) {
+    throw new Error("The document processor returned an unrecognized response format after PDF recovery attempts.");
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  best.result.scanMeta = {
+    selectedStrategy: best.strategy,
+    extractionScore: Math.round(best.score),
+    attemptsRun: candidates.length,
+    recoveryUsed: candidates.length > 1,
+  };
+  return best;
 }
 
 router.post("/scan-document", upload.single("file"), async (req, res) => {
@@ -246,6 +369,8 @@ router.post("/scan-document", upload.single("file"), async (req, res) => {
     const ext = originalname.split(".").pop()?.toLowerCase() ?? "";
     if (ext === "jpg" || ext === "jpeg") mime = "image/jpeg";
     else if (ext === "png") mime = "image/png";
+    else if (ext === "gif") mime = "image/gif";
+    else if (ext === "webp") mime = "image/webp";
     else if (ext === "heic" || ext === "heif") mime = "image/heic";
     else if (ext === "pdf") mime = "application/pdf";
   }
@@ -262,7 +387,7 @@ router.post("/scan-document", upload.single("file"), async (req, res) => {
   }
 
   try {
-    let result: Record<string, unknown>;
+    let scored: ScoredExtraction;
 
     if (mime === "application/pdf") {
       let pdfText = "";
@@ -276,15 +401,16 @@ router.post("/scan-document", upload.single("file"), async (req, res) => {
       if (pdfText.trim().length <= 100) {
         res.status(422).json({
           stage: "image_decode",
-          error: "This PDF appears to be image-only with no embedded text. Screenshot individual pages and upload them as images.",
+          error: "This PDF appears to be image-only with no embedded text. Upload screenshots of its pages as images for the any-angle scanner.",
         });
         return;
       }
-      result = await runExtraction(buffer, mime, originalname, pdfText);
+      scored = await runTextExtraction(pdfText, originalname);
     } else {
-      result = await runExtraction(buffer, mime, originalname);
+      scored = await runImageExtraction(buffer, mime, originalname);
     }
 
+    const result = scored.result;
     const rawInstitutionName =
       (isRecord(result.institution) && typeof result.institution.rawName === "string"
         ? result.institution.rawName
@@ -294,7 +420,16 @@ router.post("/scan-document", upload.single("file"), async (req, res) => {
         : null);
     const institution = normalizeInstitution(rawInstitutionName);
 
-    logger.info({ docType: result.docType, file: originalname, institution: institution.normalizedName }, "scan complete");
+    logger.info({
+      docType: result.docType,
+      file: originalname,
+      institution: institution.normalizedName,
+      strategy: scored.strategy,
+      score: scored.score,
+      orientation: result.detectedOrientation,
+      quality: result.imageQuality,
+    }, "scan complete");
+
     res.json({ ...result, institution, fileName: originalname, mimeType: mime });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Document analysis failed.";
@@ -303,7 +438,7 @@ router.post("/scan-document", upload.single("file"), async (req, res) => {
       stage: message.includes("unrecognized response") ? "response_validation" : "ai_request",
       error: message.includes("unrecognized response")
         ? message
-        : "Document analysis failed. Please try again.",
+        : "Document analysis failed after multiple recovery attempts. Please try again.",
     });
   }
 });
