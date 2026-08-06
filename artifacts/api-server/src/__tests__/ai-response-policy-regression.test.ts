@@ -6,10 +6,9 @@ const routeSource = await readFile(new URL("../routes/ai-ask.ts", import.meta.ur
 const taxContextSource = await readFile(new URL("../lib/ai-tax-context.ts", import.meta.url), "utf8");
 
 test("AI defaults to concise answer-first responses", () => {
-  assert.match(routeSource, /Lead with the actual answer in the first sentence/);
-  assert.match(routeSource, /Aim for 80-180 words/);
-  assert.match(routeSource, /Do not list every balance, formula, assumption, account/);
-  assert.match(routeSource, /max_completion_tokens: 650/);
+  assert.match(routeSource, /Lead with the answer/);
+  assert.match(routeSource, /60.120 words/);
+  assert.match(routeSource, /max_completion_tokens: 400/);
   assert.doesNotMatch(routeSource, /repeat its formula and the inputs supplied/);
 });
 

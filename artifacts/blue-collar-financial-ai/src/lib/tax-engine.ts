@@ -12,7 +12,7 @@
  *  - Traditional IRA deductibility phase-out
  *  - Child Tax Credit and Other Dependent Credit (with phase-outs)
  *  - Pre-tax deductions: 401(k), HSA, health insurance, other payroll deductions
- *  - Oklahoma state income tax
+ *  - All-state income tax (50 states + DC) via state-tax-rates module
  *  - YTD withholding → estimated refund / amount owed
  *  - Remaining estimated tax per paycheck
  *  - Confidence scoring based on data completeness
@@ -21,6 +21,7 @@
 
 import { getTaxRules, DEFAULT_TAX_YEAR } from './tax-rules/index';
 import type { FilingStatus, TaxBracket, TaxYearRules } from './tax-rules/index';
+import { calcStateTax } from './state-tax-rates';
 
 export type { FilingStatus };
 
@@ -325,18 +326,8 @@ function calcChildTaxCredit(
   };
 }
 
-/** Oklahoma state income tax calculation. */
-function calcOklahomaTax(
-  federalTaxableIncome: number,
-  filingStatus: FilingStatus,
-  rules: TaxYearRules,
-): number {
-  const isJoint =
-    filingStatus === 'Married Filing Jointly' ||
-    filingStatus === 'Head of Household';
-  const brackets = isJoint ? rules.oklahomaBrackets.joint : rules.oklahomaBrackets.single;
-  return progressiveTax(federalTaxableIncome, brackets);
-}
+// State income tax is now handled by the universal state-tax-rates module.
+// calcOklahomaTax has been replaced by calcStateTax(stateCode, income, filingStatus).
 
 /** Score data completeness on a 0–100 scale. */
 function calcConfidence(input: TaxEngineInput): {
@@ -383,11 +374,12 @@ function buildOpportunities(
   grossW2: number,
   rules: TaxYearRules,
   federalBracketRate: number,
-  okTaxRate: number,
+  stateTaxRate: number,
   totalTaxBefore: number,
 ): TaxSavingOpportunity[] {
   const opportunities: TaxSavingOpportunity[] = [];
-  const combinedRate = federalBracketRate + okTaxRate;
+  const combinedRate = federalBracketRate + stateTaxRate;
+  const stateDesc = input.stateCode ? ` (and ${input.stateCode})` : '';
 
   // 401(k) headroom
   const current401k = nn(input.annualTraditional401k);
@@ -397,7 +389,7 @@ function buildOpportunities(
     const saving = Math.round(Math.min(headroom, 5_000) * combinedRate);
     opportunities.push({
       title: 'Increase your pre-tax 401(k) contribution',
-      description: `You can contribute up to $${(max401k - current401k).toLocaleString()} more this year. Each additional dollar reduces your federal (and Oklahoma) taxable income.`,
+      description: `You can contribute up to $${(max401k - current401k).toLocaleString()} more this year. Each additional dollar reduces your federal${stateDesc} taxable income.`,
       estimatedAnnualSaving: saving,
     });
   }
@@ -574,12 +566,20 @@ export function computeDetailedTax(input: TaxEngineInput): TaxEngineResult {
   // ── 11. State income tax ───────────────────────────────────────────────────
   const state = (input.stateCode ?? '').trim().toUpperCase();
   let stateIncomeTax: number | null = null;
-  if (state === 'OK') {
-    stateIncomeTax = calcOklahomaTax(federalTaxableIncome, input.filingStatus, rules);
-  } else if (state !== '') {
-    warnings.push(
-      `State income tax for ${state} is not yet calculated. This estimate shows federal totals only.`,
-    );
+  let stateEffectiveRate = 0;
+  if (state !== '') {
+    const stateResult = calcStateTax(state, federalTaxableIncome, input.filingStatus);
+    if (!stateResult.entryFound) {
+      warnings.push(
+        `State income tax for ${state} is not yet in our database. This estimate shows federal totals only.`,
+      );
+    } else {
+      stateIncomeTax = stateResult.tax;
+      stateEffectiveRate = stateResult.effectiveRate ?? 0;
+      if (stateResult.note) {
+        assumptions.push(`${state}: ${stateResult.note}`);
+      }
+    }
   }
 
   // ── 12. Totals ─────────────────────────────────────────────────────────────
@@ -698,16 +698,12 @@ export function computeDetailedTax(input: TaxEngineInput): TaxEngineResult {
   }
 
   // ── 18. Tax-saving opportunities ──────────────────────────────────────────
-  const okEffectiveRate =
-    stateIncomeTax !== null && federalTaxableIncome > 0
-      ? stateIncomeTax / federalTaxableIncome
-      : 0;
   const opportunities = buildOpportunities(
     input,
     grossW2Wages,
     rules,
     marginalBracketRate,
-    okEffectiveRate,
+    stateEffectiveRate,
     totalEstimatedTax,
   );
 
@@ -831,7 +827,8 @@ function _computeCore(
   const addlMed = addlMedBase * rules.additionalMedicareRate;
 
   const state = (input.stateCode ?? '').trim().toUpperCase();
-  const stateTax = state === 'OK' ? calcOklahomaTax(fedTaxable, input.filingStatus, rules) : 0;
+  const stateResult = state ? calcStateTax(state, fedTaxable, input.filingStatus) : null;
+  const stateTax = stateResult?.tax ?? 0;
 
   return {
     totalEstimatedTax: fedTax + ssTax + medTax + addlMed + seTax + stateTax,

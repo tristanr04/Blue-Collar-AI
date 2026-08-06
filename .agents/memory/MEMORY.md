@@ -5,3 +5,4 @@
 - [BCFAI Tax Estimator](bcfai-tax-estimator.md) — versioned tax-rules module, pure frontend engine, DB-persisted scenarios; lib/db must be rebuilt via tsc when schema changes.
 - [BCFAI Command Center Dashboard](bcfai-command-center-dashboard.md) — Dashboard now server-driven; CommandCenterSummary expanded with 5 new metrics; pure display logic in dashboard-utils.ts.
 - [BCFAI Financial Timeline](bcfai-financial-timeline.md) — timelineEventsTable, idempotency keys, lazy backfill, monthly trends (null ≠ $0); Timeline page at /timeline.
+- [BCFAI Sprints 3-8](bcfai-sprints-3-8.md) — Weekly Snapshot, Smarter AI, All-State Tax, Dashboard spec, Known-gap fixes, Perf (lazy+cache), QA clean.

@@ -3,7 +3,7 @@ import { Link, useLocation } from 'wouter';
 import {
   Home, ScanLine, WalletCards, Sparkles, Menu, Settings,
   FileText, TrendingDown, Receipt, Landmark, ChartNoAxesCombined,
-  Calculator, Loader2, HardHat, ShieldCheck, Banknote, Target, Users, History,
+  Calculator, Loader2, HardHat, ShieldCheck, Banknote, Target, Users, History, Activity, CalendarDays,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useJobQueue } from '@/lib/jobQueue';
@@ -21,6 +21,8 @@ const navItems = [
   { href: '/age-progress', label: 'Age Progress', icon: Target },
   { href: '/growth', label: 'Growth Hub', icon: Users },
   { href: '/timeline', label: 'Timeline', icon: History },
+  { href: '/health-score', label: 'Health Score', icon: Activity },
+  { href: '/weekly-snapshot', label: 'Weekly', icon: CalendarDays },
   { href: '/ask-ai', label: 'AI Copilot', icon: Sparkles },
 ];
 

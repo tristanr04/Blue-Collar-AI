@@ -373,13 +373,12 @@ export default function Dashboard() {
           </section>
         )}
 
-        {/* ── Metric cards (2-col grid) ── */}
+        {/* ── Metric cards (2-col grid: Cash / Investments / Retirement / Debt / Emergency) ── */}
         <section className="mt-5 grid grid-cols-2 gap-3">
           <MetricCard label="Cash" display={cashMetric} icon={Banknote} tone="green" onClick={nav('/banking')} />
           <MetricCard label="Investments" display={investMetric} icon={TrendingUp} tone="blue" onClick={nav('/investments')} />
           <MetricCard label="Retirement" display={retirementMetric} icon={PiggyBank} tone="purple" onClick={nav('/investments')} />
           <MetricCard label="Total debt" display={debtMetric} icon={CreditCard} tone="red" onClick={nav('/debts')} />
-          <MetricCard label="Credit utilization" display={utilizationMetric} icon={WalletCards} tone="amber" onClick={nav('/debts')} />
           <MetricCard label="Emergency fund" display={emergencyMetric} icon={ShieldCheck} tone="green" onClick={nav('/banking')} />
         </section>
 
@@ -390,49 +389,53 @@ export default function Dashboard() {
             <CircleDollarSign className="h-4 w-4 text-blue-300" />
           </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {(
-              [
-                { label: 'Income',       display: incomeMetric,  color: 'text-emerald-300', onClick: nav('/scanner') },
-                { label: 'Bills',        display: billsMetric,   color: 'text-rose-300',    onClick: nav('/bills') },
-                { label: 'Debt pmts',    display: debtPayMetric, color: 'text-rose-300',    onClick: nav('/debts') },
-                { label: 'Surplus',      display: cashFlow
-                    ? { kind: 'value' as const, display: cashFlow.display }
-                    : { kind: 'empty' as const, prompt: '—' },
-                  color: cashFlow?.isNegative ? 'text-rose-300' : 'text-blue-300',
-                  onClick: undefined },
-              ] as const
-            ).map(({ label, display, color, onClick }) => (
-              <div key={label}>
-                <div className="text-xs text-slate-500">{label}</div>
-                {display.kind === 'value' ? (
-                  <div className={`mt-1 font-semibold ${color}`}>{display.display}</div>
-                ) : (
-                  <div className="mt-1">
-                    <EmptyCell prompt={display.prompt} onClick={onClick} />
-                  </div>
-                )}
-              </div>
-            ))}
+            {/* Income */}
+            <div>
+              <div className="text-xs text-slate-500">Income</div>
+              {incomeMetric.kind === 'value'
+                ? <div className="mt-1 font-semibold text-emerald-300">{incomeMetric.display}</div>
+                : <div className="mt-1"><EmptyCell prompt={incomeMetric.prompt} onClick={nav('/scanner')} /></div>}
+            </div>
+            {/* Bills */}
+            <div>
+              <div className="text-xs text-slate-500">Bills</div>
+              {billsMetric.kind === 'value'
+                ? <div className="mt-1 font-semibold text-rose-300">{billsMetric.display}</div>
+                : <div className="mt-1"><EmptyCell prompt={billsMetric.prompt} onClick={nav('/bills')} /></div>}
+            </div>
+            {/* Credit utilization */}
+            <div>
+              <div className="text-xs text-slate-500">Utilization</div>
+              {utilizationMetric.kind === 'value'
+                ? <div className="mt-1 font-semibold text-amber-300">{utilizationMetric.display}</div>
+                : <div className="mt-1"><EmptyCell prompt={utilizationMetric.prompt} onClick={nav('/debts')} /></div>}
+            </div>
+            {/* Timeline link */}
+            <div>
+              <div className="text-xs text-slate-500">Timeline</div>
+              <button type="button" onClick={nav('/timeline')}
+                className="mt-1 flex items-center gap-1 text-sm font-semibold text-blue-400 hover:text-blue-300">
+                View <ChevronRight className="h-3 w-3" />
+              </button>
+            </div>
           </div>
 
           {cashFlow && (
-            <>
-              <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-800">
-                {(() => {
-                  const income = summary?.monthlyIncome.value;
-                  const surplus = summary?.monthlyCashFlow.value;
-                  const pct = income && income > 0 && surplus !== null && surplus !== undefined
-                    ? Math.max(0, Math.min(100, Math.round((surplus / income) * 100)))
-                    : 0;
-                  return (
-                    <div
-                      className={`h-full rounded-full ${cashFlow.isNegative ? 'bg-rose-500' : 'bg-gradient-to-r from-blue-500 to-emerald-400'}`}
-                      style={{ width: `${pct}%` }}
-                    />
-                  );
-                })()}
-              </div>
-            </>
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-800">
+              {(() => {
+                const income = summary?.monthlyIncome.value;
+                const surplus = summary?.monthlyCashFlow.value;
+                const pct = income && income > 0 && surplus !== null && surplus !== undefined
+                  ? Math.max(0, Math.min(100, Math.round((surplus / income) * 100)))
+                  : 0;
+                return (
+                  <div
+                    className={`h-full rounded-full ${cashFlow.isNegative ? 'bg-rose-500' : 'bg-gradient-to-r from-blue-500 to-emerald-400'}`}
+                    style={{ width: `${pct}%` }}
+                  />
+                );
+              })()}
+            </div>
           )}
         </section>
 

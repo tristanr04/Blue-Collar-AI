@@ -457,20 +457,56 @@ describe('multiple jobs', () => {
 
 // ─── Oklahoma state tax ───────────────────────────────────────────────────────
 
-describe('Oklahoma state income tax', () => {
+describe('State income tax', () => {
   it('calculates state tax for OK residents', () => {
     const res = computeDetailedTax(base({ annualRegularWages: 60_000 }));
     expect(res.stateIncomeTax).not.toBeNull();
     expect(res.stateIncomeTax!).toBeGreaterThan(0);
   });
 
-  it('state tax is null for unsupported states', () => {
-    const res = computeDetailedTax({
+  it('no-tax states (TX, FL) return $0 state tax with no warning', () => {
+    const tx = computeDetailedTax({
       ...blankDetailedInput('Single', 'TX', 'Weekly'),
       annualRegularWages: 60_000,
     });
+    expect(tx.stateIncomeTax).toBe(0);
+    expect(tx.warnings.every(w => !w.includes('TX'))).toBe(true);
+  });
+
+  it('progressive states produce a positive non-null state tax', () => {
+    const ca = computeDetailedTax({
+      ...blankDetailedInput('Single', 'CA', 'Weekly'),
+      annualRegularWages: 60_000,
+    });
+    const ny = computeDetailedTax({
+      ...blankDetailedInput('Single', 'NY', 'Weekly'),
+      annualRegularWages: 60_000,
+    });
+    expect(ca.stateIncomeTax).not.toBeNull();
+    expect(ca.stateIncomeTax!).toBeGreaterThan(0);
+    // NY rates are higher than OK at this income level
+    const ok = computeDetailedTax(base({ annualRegularWages: 60_000 }));
+    expect(ny.stateIncomeTax!).toBeGreaterThan(ok.stateIncomeTax!);
+  });
+
+  it('flat-rate states (CO, IL) produce consistent state tax', () => {
+    const co = computeDetailedTax({
+      ...blankDetailedInput('Single', 'CO', 'Weekly'),
+      annualRegularWages: 100_000,
+    });
+    expect(co.stateIncomeTax).not.toBeNull();
+    // CO = 4.4% flat; after standard deduction ~$96k taxable → ~$4,224
+    expect(co.stateIncomeTax!).toBeGreaterThan(3_000);
+    expect(co.stateIncomeTax!).toBeLessThan(6_000);
+  });
+
+  it('truly unknown state codes return null and a warning', () => {
+    const res = computeDetailedTax({
+      ...blankDetailedInput('Single', 'ZZ', 'Weekly'),
+      annualRegularWages: 60_000,
+    });
     expect(res.stateIncomeTax).toBeNull();
-    expect(res.warnings.some(w => w.includes('TX'))).toBe(true);
+    expect(res.warnings.some(w => w.includes('ZZ'))).toBe(true);
   });
 
   it('state tax is null and no warning for empty state', () => {

@@ -120,6 +120,64 @@ export async function listTimelineEvents(
 }
 
 /**
+ * Compute changes grouped by financial category since a given date.
+ * Returns null for categories with no events in the period (never returns fake zeros).
+ */
+async function getTrendsSince(userId: string, since: Date): Promise<MonthlyTrends> {
+  const rows = await db
+    .select({
+      eventType: timelineEventsTable.eventType,
+      changeAmount: timelineEventsTable.changeAmount,
+    })
+    .from(timelineEventsTable)
+    .where(
+      and(
+        eq(timelineEventsTable.userId, userId),
+        gte(timelineEventsTable.eventDate, since),
+        isNotNull(timelineEventsTable.changeAmount),
+      ),
+    );
+
+  let cashChange = 0; let cashHasData = false;
+  let debtChange = 0; let debtHasData = false;
+  let investChange = 0; let investHasData = false;
+  let retireChange = 0; let retireHasData = false;
+  let taxChange = 0; let taxHasData = false;
+
+  for (const row of rows) {
+    const amt = row.changeAmount;
+    if (amt === null) continue;
+    switch (row.eventType) {
+      case "bank_balance_updated":        cashChange += amt; cashHasData = true; break;
+      case "credit_card_balance_updated":
+      case "loan_balance_updated":        debtChange += amt; debtHasData = true; break;
+      case "investment_balance_updated":  investChange += amt; investHasData = true; break;
+      case "retirement_balance_updated":  retireChange += amt; retireHasData = true; break;
+      case "tax_estimate_saved":          taxChange += amt; taxHasData = true; break;
+    }
+  }
+
+  const netWorthHasData = cashHasData || investHasData || retireHasData || debtHasData;
+  const netWorthChange =
+    (cashHasData ? cashChange : 0) + (investHasData ? investChange : 0) +
+    (retireHasData ? retireChange : 0) - (debtHasData ? debtChange : 0);
+
+  return {
+    cash: cashHasData ? cashChange : null,
+    debt: debtHasData ? debtChange : null,
+    investments: investHasData ? investChange : null,
+    retirement: retireHasData ? retireChange : null,
+    netWorth: netWorthHasData ? netWorthChange : null,
+    estimatedTax: taxHasData ? taxChange : null,
+  };
+}
+
+export async function getWeeklyTrends(userId: string): Promise<MonthlyTrends> {
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  return getTrendsSince(userId, sevenDaysAgo);
+}
+
+/**
  * Compute monthly changes grouped by financial category.
  * Returns null for categories with no events this month (never returns fake zeros).
  */

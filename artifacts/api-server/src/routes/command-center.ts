@@ -3,6 +3,8 @@ import type { AuthenticatedRequest } from "../middlewares/auth.js";
 import { requireAuthenticatedUser } from "../middlewares/auth.js";
 import { ensureUser, getFinancialSnapshot } from "../lib/financial-repository.js";
 import { createCommandCenterSummary, type CommandCenterInput } from "../lib/command-center-summary.js";
+import { getLatestTaxEstimateForAI } from "../lib/ai-tax-context.js";
+import { commandCenterCache } from "../lib/route-cache.js";
 import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
@@ -82,6 +84,10 @@ function paystubNet(paystub: UnknownRecord): number | null {
   return finite(paystub.netPay, paystub.takeHomePay, paystub.netAmount);
 }
 
+function isInsuranceRecord(name: string): boolean {
+  return /insurance|policy|coverage|life |health |auto |home |renters /i.test(name);
+}
+
 function toSummaryInput(snapshot: Awaited<ReturnType<typeof getFinancialSnapshot>>): CommandCenterInput {
   const profile = record(snapshot.profile);
   const paystubs = snapshot.paystubs.map(record);
@@ -118,19 +124,38 @@ function toSummaryInput(snapshot: Awaited<ReturnType<typeof getFinancialSnapshot
     ? (revolvingBalance / revolvingLimits) * 100
     : finite(profile.creditUtilization);
 
+  const monthlyBillsSum = sumKnown(billValues);
+  const totalDebtSum = sumKnown(debtBalances);
+
+  const hasInsurance = bills.some((b) => isInsuranceRecord(text(b.name, b.providerNormalized))) ||
+    assets.some((a) => isInsuranceRecord(text(a.name, a.type)));
+
+  let filled = 0;
+  if (monthlyNetIncome !== null) filled++;
+  if (monthlyBillsSum !== null) filled++;
+  if (totalDebtSum !== null) filled++;
+  if (cash !== null) filled++;
+  if (investments !== null || retirement !== null) filled++;
+  const documentCompletionPct = (filled / 5) * 100;
+
   return {
     monthlyNetIncome,
-    monthlyBills: sumKnown(billValues),
+    monthlyBills: monthlyBillsSum,
     monthlyDebtPayments: sumKnown(debtPayments),
     cash,
     investments,
     retirement,
     otherAssets,
-    totalDebt: sumKnown(debtBalances),
+    totalDebt: totalDebtSum,
     highInterestDebt,
     creditUtilization,
     employerMatchCaptured: typeof profile.employerMatchCaptured === "boolean" ? profile.employerMatchCaptured : null,
     latestTaxEstimate: null,
+    paystubCount: paystubs.length,
+    hasInsurance,
+    documentCompletionPct,
+    hasTaxEstimate: false,
+    taxEstimateAgeDays: null,
   };
 }
 
@@ -142,14 +167,31 @@ router.get("/command-center/summary", async (req: AuthenticatedRequest, res) => 
       return;
     }
 
-    await ensureUser({ userId });
-    const snapshot = await getFinancialSnapshot(userId);
-    const summary = createCommandCenterSummary(toSummaryInput(snapshot));
+    // Fast path: serve from 30-second cache if fresh
+    const cached = commandCenterCache.get(userId);
+    if (cached) {
+      res.setHeader("Cache-Control", "private, max-age=30");
+      res.json(cached);
+      return;
+    }
 
-    res.json({
-      generatedAt: new Date().toISOString(),
-      ...summary,
-    });
+    await ensureUser({ userId });
+    const [snapshot, taxEstimate] = await Promise.all([
+      getFinancialSnapshot(userId),
+      getLatestTaxEstimateForAI(userId).catch(() => null),
+    ]);
+    const baseInput = toSummaryInput(snapshot);
+    const summaryInput: CommandCenterInput = {
+      ...baseInput,
+      latestTaxEstimate: taxEstimate ?? null,
+      hasTaxEstimate: taxEstimate !== null,
+    };
+    const summary = createCommandCenterSummary(summaryInput);
+
+    const payload = { generatedAt: new Date().toISOString(), ...summary };
+    commandCenterCache.set(userId, payload);
+    res.setHeader("Cache-Control", "private, max-age=30");
+    res.json(payload);
   } catch (error) {
     logger.error({ err: error }, "command center summary failed");
     res.status(500).json({

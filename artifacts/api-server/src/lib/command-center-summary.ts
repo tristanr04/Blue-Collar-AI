@@ -1,3 +1,5 @@
+import { computeHealthScore, type HealthScoreResult } from "./health-score-engine.js";
+
 export type CommandCenterInput = {
   monthlyNetIncome?: number | null;
   monthlyBills?: number | null;
@@ -16,6 +18,16 @@ export type CommandCenterInput = {
     effectiveTaxRate?: number | null;
     confidence?: "low" | "medium" | "high" | null;
   } | null;
+  /** Number of paystubs on file (income stability scoring). */
+  paystubCount?: number;
+  /** True if any insurance policy is on record. */
+  hasInsurance?: boolean;
+  /** 0–100: percentage of core financial data that is filled in. */
+  documentCompletionPct?: number;
+  /** True if a tax estimate has been saved. */
+  hasTaxEstimate?: boolean;
+  /** Days since last tax estimate. Null if none. */
+  taxEstimateAgeDays?: number | null;
 };
 
 export type CommandCenterMetric = {
@@ -44,6 +56,7 @@ export type CommandCenterSummary = {
   creditUtilization: CommandCenterMetric;
   emergencyFundMonths: CommandCenterMetric;
   healthScore: number | null;
+  healthScoreDetail: HealthScoreResult | null;
   taxEstimate: CommandCenterInput["latestTaxEstimate"];
   nextBestMove: NextBestMove;
   missingData: string[];
@@ -196,24 +209,24 @@ export function createCommandCenterSummary(raw: CommandCenterInput): CommandCent
   if (totalDebt === null) missingData.push("debt balances");
   if (investments === null && retirement === null) missingData.push("investment accounts");
 
-  let healthScore: number | null = null;
-  if (monthlyNetIncome !== null && monthlyNeeds !== null && cash !== null && totalDebt !== null) {
-    const cashFlowScore = monthlyCashFlow !== null && monthlyCashFlow > 0
-      ? Math.min(25, Math.round((monthlyCashFlow / Math.max(monthlyNetIncome, 1)) * 100))
-      : 0;
-    const emergencyScore = emergencyFundMonths !== null
-      ? emergencyFundMonths >= 6 ? 25 : emergencyFundMonths >= 3 ? 18 : emergencyFundMonths >= 1 ? 10 : 3
-      : 0;
-    const debtScore = highInterestDebt === 0
-      ? 25
-      : totalDebt === 0
-        ? 25
-        : Math.max(0, 25 - Math.round(((highInterestDebt ?? totalDebt) / Math.max(monthlyNetIncome * 12, 1)) * 25));
-    const creditScore = creditUtilization === null
-      ? 10
-      : creditUtilization <= 10 ? 25 : creditUtilization <= 30 ? 18 : creditUtilization <= 50 ? 10 : 3;
-    healthScore = Math.max(0, Math.min(100, cashFlowScore + emergencyScore + debtScore + creditScore));
-  }
+  const healthEngineResult = computeHealthScore({
+    monthlyNetIncome,
+    paystubCount: raw.paystubCount ?? 0,
+    monthlyBills,
+    monthlyDebtPayments,
+    cash,
+    investments,
+    retirement,
+    totalDebt,
+    highInterestDebt,
+    creditUtilization,
+    hasTaxEstimate: raw.hasTaxEstimate ?? false,
+    taxEstimateAgeDays: raw.taxEstimateAgeDays ?? null,
+    hasInsurance: raw.hasInsurance ?? false,
+    documentCompletionPct: raw.documentCompletionPct ?? 0,
+  });
+  const healthScore = healthEngineResult.score;
+  const healthScoreDetail = healthEngineResult;
 
   return {
     netWorth: metric(netWorth),
@@ -228,6 +241,7 @@ export function createCommandCenterSummary(raw: CommandCenterInput): CommandCent
     creditUtilization: metric(creditUtilization),
     emergencyFundMonths: metric(emergencyFundMonths),
     healthScore,
+    healthScoreDetail,
     taxEstimate: raw.latestTaxEstimate ?? null,
     nextBestMove: chooseNextBestMove({
       monthlyNetIncome,

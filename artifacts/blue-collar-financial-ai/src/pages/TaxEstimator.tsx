@@ -866,7 +866,7 @@ export default function TaxEstimator() {
             Tax Estimator
           </h1>
           <p className="text-slate-400 mt-1 text-sm">
-            2026 federal + Oklahoma estimate · Not tax advice
+            2026 federal + state estimate · Not tax advice
           </p>
         </div>
 

@@ -1,0 +1,256 @@
+You are now acting as the lead software engineer for Blue Collar AI.
+
+Work continuously through the following sprint without stopping between tasks unless a build or test fails.
+
+GENERAL RULES
+
+- Work only from the current GitHub main branch.
+- Commit progress frequently.
+- Never overwrite existing working functionality.
+- Never replace production code with placeholders.
+- Preserve all existing authentication, scanner, AI, tax, dashboard, referral, and financial data.
+- Every new feature must be mobile-first.
+- Every feature must include loading, empty, authentication, and API error states.
+- Every backend endpoint must be authenticated.
+- Never return another user's data.
+- Never fabricate financial values.
+- Null is better than fake zero.
+
+After every milestone:
+
+Run:
+pnpm run typecheck
+pnpm -r --if-present run test
+pnpm run build
+
+Fix every failure before moving forward.
+
+========================
+SPRINT 1
+Financial Health Engine
+========================
+
+Build the Blue Collar Financial Health Score.
+
+Categories:
+
+- Cash Flow
+- Emergency Fund
+- Debt
+- Credit Utilization
+- Investments
+- Retirement
+- Tax Readiness
+- Insurance
+- Income Stability
+- Financial Document Completion
+
+Requirements:
+
+- 0–100 score
+- Category subscores
+- Weighted scoring
+- One highest-priority recommendation
+- Monthly score history
+- Score explanation
+- Never score missing data as zero
+- Missing categories should lower confidence instead
+
+========================
+SPRINT 2
+Financial Timeline
+========================
+
+Automatically create timeline events whenever financial records change.
+
+Support:
+
+- Paystubs
+- Banks
+- Credit cards
+- Investments
+- Retirement
+- Bills
+- Loans
+- Insurance
+- Tax estimates
+
+Display:
+
+- This month summary
+- Net worth change
+- Cash change
+- Debt change
+- Investment change
+- Timeline feed
+
+Backfill existing users safely.
+
+========================
+SPRINT 3
+Weekly Financial Snapshot
+========================
+
+Generate automatic weekly summaries.
+
+Examples:
+
+"Cash increased $850."
+
+"Debt decreased $220."
+
+"Investments gained $140."
+
+"Estimated refund increased $95."
+
+"Financial score improved 4 points."
+
+Allow users to review previous weekly snapshots.
+
+========================
+SPRINT 4
+Smarter AI
+========================
+
+Reduce verbosity.
+
+Target:
+
+40–70% shorter answers.
+
+Rules:
+
+- Speak conversationally.
+- Stop repeating information.
+- Give one recommendation first.
+- Expand only if requested.
+- Use timeline context.
+- Use dashboard context.
+- Use tax estimates.
+- Use financial score.
+- Mention trends naturally.
+
+========================
+SPRINT 5
+Tax Engine
+========================
+
+Improve estimator accuracy.
+
+Support:
+
+- Federal
+- All states
+- Multiple W-2s
+- 1099
+- Overtime
+- Double time
+- Bonuses
+- Per diem
+- Retirement
+- HSA
+- FSA
+- Employer match
+- Filing status
+- Dependents
+- Credits
+
+Fix every scrolling issue on mobile.
+
+Prevent invalid combinations.
+
+Save calculations automatically.
+
+========================
+SPRINT 6
+Dashboard
+========================
+
+Complete the Financial Command Center.
+
+Top cards:
+
+- Financial Health Score
+- Net Worth
+- Monthly Surplus
+- Estimated Refund/Owed
+- Next Best Move
+
+Second row:
+
+- Cash
+- Investments
+- Retirement
+- Debt
+- Emergency Fund
+
+Third row:
+
+- Income
+- Bills
+- Utilization
+- Timeline
+
+No duplicated information.
+
+========================
+SPRINT 7
+Performance
+========================
+
+Improve:
+
+- Lazy loading
+- API caching
+- Database queries
+- Bundle size
+- Scanner speed
+- AI response latency
+- Mobile rendering
+- Image compression
+
+========================
+SPRINT 8
+QA
+========================
+
+Perform a complete regression test.
+
+Test:
+
+- Authentication
+- Scanner
+- AI
+- Tax
+- Dashboard
+- Timeline
+- Health Score
+- Referral system
+- Mobile layout
+- Desktop layout
+- API authentication
+- Empty states
+- Error states
+- Duplicate uploads
+- Failed uploads
+- Cross-user isolation
+- Build
+- Typecheck
+
+Fix every verified bug.
+
+========================
+FINAL REPORT
+========================
+
+Only stop when the sprint is complete or blocked.
+
+Return:
+
+- Files changed
+- Features completed
+- Tests passed
+- Build result
+- Current git commit
+- Remaining verified bugs
+- Recommended next sprint

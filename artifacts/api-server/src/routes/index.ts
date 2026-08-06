@@ -21,6 +21,8 @@ import subscriptionsRouter from "./subscriptions.js";
 import overtimeTaxRouter from "./overtime-tax.js";
 import referralsRouter from "./referrals.js";
 import timelineRouter from "./timeline.js";
+import healthScoreRouter from "./health-score.js";
+import weeklySnapshotRouter from "./weekly-snapshot.js";
 
 const router: IRouter = Router();
 
@@ -46,5 +48,7 @@ router.use(subscriptionsRouter);
 router.use(overtimeTaxRouter);
 router.use(referralsRouter);
 router.use(timelineRouter);
+router.use(healthScoreRouter);
+router.use(weeklySnapshotRouter);
 
 export default router;

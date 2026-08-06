@@ -13,29 +13,35 @@ import { JobQueueProvider } from '@/lib/jobQueue';
 import { Shell } from '@/components/layout/Shell';
 import { DeveloperOnlyPage, ProtectedPage } from '@/components/auth/ProtectedPage';
 
+// ─── Route-level code splitting (Sprint 7 performance) ───────────────────────
+// Core auth / onboarding pages load eagerly (needed before shell renders).
+// All other pages are lazy-loaded to keep the initial bundle small.
 import Welcome from '@/pages/Welcome';
 import SignIn from '@/pages/SignIn';
 import SignUp from '@/pages/SignUp';
 import Onboarding from '@/pages/Onboarding';
-import Scanner from '@/pages/Scanner';
-import Dashboard from '@/pages/Dashboard';
-import RetentionDashboard from '@/pages/RetentionDashboard';
-import Documents from '@/pages/Documents';
-import DocumentsReview from '@/pages/DocumentsReview';
-import Paystubs from '@/pages/Paystubs';
-import Debts from '@/pages/Debts';
-import Bills from '@/pages/Bills';
-import Banking from '@/pages/Banking';
-import Investments from '@/pages/Investments';
-import Scenario from '@/pages/Scenario';
-import AgeProgress from '@/pages/AgeProgress';
-import GrowthHub from '@/pages/GrowthHub';
-import TaxEstimator from '@/pages/TaxEstimator';
-import Settings from '@/pages/Settings';
-import AskAI from '@/pages/AskAI';
-import Timeline from '@/pages/Timeline';
-import TestLab from '@/pages/TestLab';
 import NotFound from '@/pages/not-found';
+
+const Scanner          = React.lazy(() => import('@/pages/Scanner'));
+const Dashboard        = React.lazy(() => import('@/pages/Dashboard'));
+const RetentionDashboard = React.lazy(() => import('@/pages/RetentionDashboard'));
+const Documents        = React.lazy(() => import('@/pages/Documents'));
+const DocumentsReview  = React.lazy(() => import('@/pages/DocumentsReview'));
+const Paystubs         = React.lazy(() => import('@/pages/Paystubs'));
+const Debts            = React.lazy(() => import('@/pages/Debts'));
+const Bills            = React.lazy(() => import('@/pages/Bills'));
+const Banking          = React.lazy(() => import('@/pages/Banking'));
+const Investments      = React.lazy(() => import('@/pages/Investments'));
+const Scenario         = React.lazy(() => import('@/pages/Scenario'));
+const AgeProgress      = React.lazy(() => import('@/pages/AgeProgress'));
+const GrowthHub        = React.lazy(() => import('@/pages/GrowthHub'));
+const TaxEstimator     = React.lazy(() => import('@/pages/TaxEstimator'));
+const Settings         = React.lazy(() => import('@/pages/Settings'));
+const AskAI            = React.lazy(() => import('@/pages/AskAI'));
+const Timeline         = React.lazy(() => import('@/pages/Timeline'));
+const HealthScore      = React.lazy(() => import('@/pages/HealthScore'));
+const WeeklySnapshot   = React.lazy(() => import('@/pages/WeeklySnapshot'));
+const TestLab          = React.lazy(() => import('@/pages/TestLab'));
 
 // ─── Clerk key + proxy ────────────────────────────────────────────────────────
 const clerkPubKey: string | undefined = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -129,15 +135,40 @@ function ClerkQueryClientCacheInvalidator() {
   return null;
 }
 
+// ─── Page-transition skeleton (Suspense fallback) ────────────────────────────
+function PageSkeleton() {
+  return (
+    <div className="min-h-screen bg-[#050b15] p-4">
+      <div className="mx-auto max-w-2xl space-y-4">
+        <div className="h-8 w-48 animate-pulse rounded-xl bg-white/[0.06]" />
+        <div className="h-36 w-full animate-pulse rounded-3xl bg-white/[0.06]" />
+        <div className="grid grid-cols-2 gap-3">
+          {[1,2,3,4].map(i => (
+            <div key={i} className="h-24 animate-pulse rounded-2xl bg-white/[0.06]" />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Route wrappers ───────────────────────────────────────────────────────────
 const protectedPage = (Page: React.ComponentType) =>
   function ProtectedRoute() {
-    return <ProtectedPage><Page /></ProtectedPage>;
+    return (
+      <React.Suspense fallback={<PageSkeleton />}>
+        <ProtectedPage><Page /></ProtectedPage>
+      </React.Suspense>
+    );
   };
 
 const developerPage = (Page: React.ComponentType) =>
   function DeveloperRoute() {
-    return <DeveloperOnlyPage><Page /></DeveloperOnlyPage>;
+    return (
+      <React.Suspense fallback={<PageSkeleton />}>
+        <DeveloperOnlyPage><Page /></DeveloperOnlyPage>
+      </React.Suspense>
+    );
   };
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -168,6 +199,8 @@ function Router() {
         <Route path="/settings" component={protectedPage(Settings)} />
         <Route path="/ask-ai" component={protectedPage(AskAI)} />
         <Route path="/timeline" component={protectedPage(Timeline)} />
+        <Route path="/health-score" component={protectedPage(HealthScore)} />
+        <Route path="/weekly-snapshot" component={protectedPage(WeeklySnapshot)} />
         <Route path="/test-lab" component={developerPage(TestLab)} />
         <Route component={NotFound} />
       </Switch>

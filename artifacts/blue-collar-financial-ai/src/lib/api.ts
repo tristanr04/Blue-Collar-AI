@@ -652,3 +652,104 @@ export async function getTimelineSummary(token: string): Promise<TimelineSummary
   const res = await financialFetch("/timeline/summary", token);
   return res.json() as Promise<TimelineSummaryResponse>;
 }
+
+// ─── Financial Health Score ───────────────────────────────────────────────────
+
+export type CategoryStatus = 'excellent' | 'good' | 'fair' | 'needs_work' | 'missing';
+
+export interface HealthCategory {
+  key: string;
+  label: string;
+  score: number;
+  maxScore: number;
+  pct: number;
+  status: CategoryStatus;
+  explanation: string;
+  hasData: boolean;
+}
+
+export interface HealthRecommendation {
+  category: string;
+  title: string;
+  detail: string;
+  route: string;
+}
+
+export interface HealthScoreResult {
+  score: number | null;
+  rawScore: number;
+  maxPossible: number;
+  confidence: number;
+  categories: HealthCategory[];
+  recommendation: HealthRecommendation;
+}
+
+export interface HealthScoreDetailResponse {
+  generatedAt: string;
+  healthScore: HealthScoreResult;
+}
+
+export interface HealthScoreHistoryEntry {
+  month: string;
+  score: number | null;
+  confidence: number | null;
+  capturedAt: string;
+}
+
+export interface HealthScoreHistoryResponse {
+  history: HealthScoreHistoryEntry[];
+}
+
+/** Load the full 10-category health score breakdown. */
+export async function getHealthScoreDetail(token: string): Promise<HealthScoreDetailResponse> {
+  const res = await financialFetch("/health-score/detail", token);
+  return res.json() as Promise<HealthScoreDetailResponse>;
+}
+
+/** Load monthly health score history. */
+export async function getHealthScoreHistory(token: string): Promise<HealthScoreHistoryResponse> {
+  const res = await financialFetch("/health-score/history", token);
+  return res.json() as Promise<HealthScoreHistoryResponse>;
+}
+
+// ─── Weekly Financial Snapshot ────────────────────────────────────────────────
+
+export interface WeeklySnapshotSummary {
+  weekStart: string;
+  weekEnd: string;
+  sentences: string[];
+  trends: MonthlyTrends;
+  capturedAt: string;
+}
+
+export interface StoredWeeklySnapshot {
+  id: string;
+  weekStart: string;
+  weekEnd: string;
+  sentences: string[];
+  trends: MonthlyTrends;
+  capturedAt: string;
+}
+
+export interface WeeklySnapshotCurrentResponse {
+  generatedAt: string;
+  current: WeeklySnapshotSummary;
+  healthScore: number | null;
+  healthConfidence: number;
+}
+
+export interface WeeklySnapshotHistoryResponse {
+  history: StoredWeeklySnapshot[];
+}
+
+/** Get this week's financial snapshot (auto-generated from timeline events). */
+export async function getWeeklySnapshotCurrent(token: string): Promise<WeeklySnapshotCurrentResponse> {
+  const res = await financialFetch("/weekly-snapshot/current", token);
+  return res.json() as Promise<WeeklySnapshotCurrentResponse>;
+}
+
+/** Get past weekly snapshots. */
+export async function getWeeklySnapshotHistory(token: string): Promise<WeeklySnapshotHistoryResponse> {
+  const res = await financialFetch("/weekly-snapshot/history", token);
+  return res.json() as Promise<WeeklySnapshotHistoryResponse>;
+}
