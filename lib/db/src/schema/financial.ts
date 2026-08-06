@@ -448,3 +448,74 @@ export const timelineEventsTable = pgTable(
 );
 
 export type TimelineEventRecord = typeof timelineEventsTable.$inferSelect;
+
+// ─── Financial Goals ──────────────────────────────────────────────────────────
+
+export const financialGoalsTable = pgTable(
+  "financial_goals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    description: text("description"),
+    category: text("category").notNull().default("savings"),
+    // emergency_fund | savings | debt_payoff | investment | purchase | other
+    targetAmount: doublePrecision("target_amount").notNull().default(0),
+    currentAmount: doublePrecision("current_amount").notNull().default(0),
+    targetDate: text("target_date"), // ISO date YYYY-MM-DD
+    status: text("status").notNull().default("active"),
+    // active | completed | paused | archived
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("financial_goals_user_status_idx").on(table.userId, table.status),
+  ],
+);
+
+export const insertFinancialGoalSchema = createInsertSchema(financialGoalsTable).omit({
+  id: true,
+  userId: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+});
+
+export type FinancialGoalRecord = typeof financialGoalsTable.$inferSelect;
+
+// ─── Debt Payoff Plans ────────────────────────────────────────────────────────
+
+export const debtPayoffPlansTable = pgTable(
+  "debt_payoff_plans",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    strategy: text("strategy").notNull().default("avalanche"),
+    // avalanche | snowball | utilization | custom
+    extraMonthlyPayment: doublePrecision("extra_monthly_payment").notNull().default(0),
+    customOrder: jsonb("custom_order").$type<string[]>().notNull().default([]),
+    // debt IDs in user-defined priority order (used when strategy = "custom")
+    status: text("status").notNull().default("active"),
+    // active | completed | archived
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("debt_payoff_plans_user_status_idx").on(table.userId, table.status),
+  ],
+);
+
+export const insertDebtPayoffPlanSchema = createInsertSchema(debtPayoffPlansTable).omit({
+  id: true,
+  userId: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type DebtPayoffPlanRecord = typeof debtPayoffPlansTable.$inferSelect;

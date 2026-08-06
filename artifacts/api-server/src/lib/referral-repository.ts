@@ -18,9 +18,43 @@ export class ReferralError extends Error {
       | "attribution_not_found"
       | "attribution_expired"
       | "already_attached"
-      | "self_referral",
+      | "self_referral"
+      | "circular_referral",
   ) {
     super(message);
+  }
+}
+
+/**
+ * Walk the referrer chain from `startUserId` toward the root.
+ * At each step, look up the referral row where referred_user_id = currentUser.
+ * If we encounter `blockedUserId` in the chain, the attachment would create a cycle.
+ *
+ * Capped at 50 hops to guard against pathological DB state.
+ */
+async function assertNoReferralCycle(
+  startUserId: string,
+  blockedUserId: string,
+): Promise<void> {
+  const MAX_DEPTH = 50;
+  let currentUserId: string | null = startUserId;
+
+  for (let depth = 0; depth < MAX_DEPTH && currentUserId !== null; depth++) {
+    if (currentUserId === blockedUserId) {
+      throw new ReferralError(
+        "This referral would create a circular chain.",
+        "circular_referral",
+      );
+    }
+
+    // Find the referral row where this user was the referred party
+    const [parent] = await db
+      .select({ referrerUserId: referralsTable.referrerUserId })
+      .from(referralsTable)
+      .where(eq(referralsTable.referredUserId, currentUserId))
+      .limit(1);
+
+    currentUserId = parent?.referrerUserId ?? null;
   }
 }
 
@@ -149,6 +183,11 @@ export async function attachReferralToUser(token: string, referredUserId: string
     throw new ReferralError("Referral attribution is already attached.", "already_attached");
   }
   if (referral.referredUserId === referredUserId) return referral;
+
+  // Guard against circular chains: walk the referrer chain upward.
+  // If referredUserId appears anywhere in the chain above referrerUserId,
+  // attaching would create a cycle (A→B→C→A, etc.).
+  await assertNoReferralCycle(referral.referrerUserId, referredUserId);
 
   const now = new Date();
   const [updated] = await db.transaction(async (tx) => {

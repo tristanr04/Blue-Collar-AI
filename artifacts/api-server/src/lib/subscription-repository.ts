@@ -125,13 +125,13 @@ export async function upsertSubscription(
         provider_subscription_id, trial_ends_at, current_period_starts_at,
         current_period_ends_at, cancel_at_period_end, canceled_at, metadata)
      VALUES ($1,$2,
-       COALESCE($3,'free'), COALESCE($4,'active'),
+       COALESCE($3::subscription_plan,'free'), COALESCE($4::subscription_status,'active'),
        COALESCE($5,'stripe'), $6,$7,$8,$9,$10,
        COALESCE($11,false), $12,
        COALESCE($13::jsonb,'{}'))
      ON CONFLICT (user_id) DO UPDATE SET
-       plan                     = COALESCE($3, subscriptions.plan),
-       status                   = COALESCE($4, subscriptions.status),
+       plan                     = COALESCE($3::subscription_plan, subscriptions.plan),
+       status                   = COALESCE($4::subscription_status, subscriptions.status),
        provider                 = COALESCE($5, subscriptions.provider),
        provider_customer_id     = COALESCE($6, subscriptions.provider_customer_id),
        provider_subscription_id = COALESCE($7, subscriptions.provider_subscription_id),

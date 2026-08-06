@@ -7,3 +7,4 @@
 - [BCFAI Financial Timeline](bcfai-financial-timeline.md) — timelineEventsTable, idempotency keys, lazy backfill, monthly trends (null ≠ $0); Timeline page at /timeline.
 - [BCFAI Sprints 3-8](bcfai-sprints-3-8.md) — Weekly Snapshot, Smarter AI, All-State Tax, Dashboard spec, Known-gap fixes, Perf (lazy+cache), QA clean.
 - [BCFAI Subscription & Billing](bcfai-subscription-billing.md) — webhook raw-body placement, router path must be "/", DI pattern for tests, scan usage recording, node:test not Vitest.
+- [BCFAI Sprint Backtest](bcfai-sprint-backtest.md) — Phase 1-3 results (601/272 tests pass), new features, API gotchas (checkEntitlement shape, paystub fields, enum cast fix).

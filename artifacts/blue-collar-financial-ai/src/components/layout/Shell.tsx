@@ -3,7 +3,7 @@ import { Link, useLocation } from 'wouter';
 import {
   Home, ScanLine, WalletCards, Sparkles, Menu, Settings,
   FileText, TrendingDown, Receipt, Landmark, ChartNoAxesCombined,
-  Calculator, Loader2, HardHat, ShieldCheck, Banknote, Target, Users, History, Activity, CalendarDays, CreditCard,
+  Calculator, Loader2, HardHat, ShieldCheck, Banknote, Target, Users, History, Activity, CalendarDays, CreditCard, Building2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useJobQueue } from '@/lib/jobQueue';
@@ -20,6 +20,8 @@ const navItems = [
   { href: '/tax-estimator', label: 'Tax Estimator', icon: Banknote },
   { href: '/age-progress', label: 'Age Progress', icon: Target },
   { href: '/growth', label: 'Growth Hub', icon: Users },
+  { href: '/goals', label: 'Goals', icon: Target },
+  { href: '/workspaces', label: 'Workspaces', icon: Building2 },
   { href: '/timeline', label: 'Timeline', icon: History },
   { href: '/health-score', label: 'Health Score', icon: Activity },
   { href: '/weekly-snapshot', label: 'Weekly', icon: CalendarDays },

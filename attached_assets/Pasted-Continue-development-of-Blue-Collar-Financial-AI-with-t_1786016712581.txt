@@ -1,0 +1,258 @@
+Continue development of Blue Collar Financial AI with the next sequential sprint.
+
+This sprint begins with a completely fresh backtest of the current application and then moves into real-world user simulation, financial-data reconciliation, launch controls, customer-support tools, operational reliability, and production deployment readiness.
+
+Work through the entire sprint independently. Do not stop after completing one section and do not ask me routine implementation questions. Only stop for information that genuinely cannot be determined from the repository or completed without external credentials.
+
+Before making changes:
+
+1. Inspect the current main branch and all recent changes.
+2. Review every existing migration.
+3. Review the current test suites and test configuration.
+4. Review the authentication, document scanner, financial calculations, AI assistant, subscriptions, referrals, workspaces, notifications, exports, analytics, and background jobs.
+5. Identify which features from prior sprints actually exist and which are only partially implemented.
+6. Do not assume a feature is complete merely because a route, button, schema, or placeholder exists.
+7. Run a full baseline verification before editing anything.
+8. Record exact baseline test totals and failures.
+
+Do not:
+
+- Delete or rewrite working systems without a verified reason.
+- Hardcode fake success states.
+- Create duplicate versions of existing services.
+- weaken tests to make them pass.
+- Ignore test failures as “pre-existing” without investigating them.
+- Expose financial data, secrets, tokens, or complete documents.
+- Claim an integration is active when credentials are missing.
+- Stop after the backtest.
+- Move to unrelated features.
+- report tests as passing unless they were actually executed.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 1 — COMPLETE FRESH BACKTEST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Run every available verification command separately so failures are attributable to the correct suite.
+
+Run:
+
+- Dependency installation using the repository lockfile.
+- TypeScript type checking.
+- Linting.
+- Formatting verification.
+- Shared schema validation.
+- API/Zod tests.
+- API unit tests.
+- API integration tests.
+- Frontend unit tests.
+- Component tests.
+- End-to-end tests.
+- Accessibility tests.
+- Database migration validation.
+- Production builds for every application artifact.
+- Production startup smoke test.
+- Health endpoint test.
+- Readiness endpoint test if present.
+- Dependency-security audit.
+- Browser-console inspection.
+- Server-log inspection.
+
+Requirements:
+
+- Do not combine commands in a way that hides which command failed.
+- Capture exact pass, fail, skipped, and todo counts for each suite.
+- Confirm no test suite silently exits without discovering tests.
+- Confirm test configuration includes all expected test directories.
+- Confirm production-only files are included in the build.
+- Confirm no development mock is accidentally active in production.
+- Confirm migrations run against a clean database.
+- Confirm migrations run safely against a database containing realistic existing data.
+- Confirm application startup does not rely on undeclared Replit-only variables.
+- Confirm optional integrations disable safely when credentials are missing.
+- Confirm mandatory production configuration fails clearly rather than crashing later.
+
+If any baseline test fails:
+
+1. Reproduce it.
+2. Identify the actual root cause.
+3. Fix the implementation.
+4. Add a regression test.
+5. Rerun the affected suite.
+6. Rerun the complete suite before continuing.
+
+Do not proceed until the application is clean or the only remaining blockers require external credentials and are documented precisely.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 2 — TEST-SUITE INTEGRITY AUDIT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Audit the tests themselves to make sure the green result is meaningful.
+
+Check for:
+
+- Tests that contain no assertions.
+- Tests that always pass.
+- Excessive mocking that bypasses real application logic.
+- Tests that mock the exact function being tested.
+- Skipped tests.
+- `.only` tests.
+- Disabled test files.
+- Commented-out assertions.
+- Snapshot tests accepting broken output.
+- Flaky timing assumptions.
+- Tests dependent on execution order.
+- Shared mutable fixtures.
+- Tests dependent on live AI, Stripe, email, OCR, or notification services.
+- Tests that fail to enforce database ownership.
+- Tests that only validate frontend hiding instead of backend enforcement.
+- Incomplete route coverage.
+- Missing negative-path coverage.
+- Missing concurrency coverage.
+- Missing mobile viewport coverage.
+- Missing database rollback coverage.
+
+Requirements:
+
+- Remove accidental `.skip`, `.only`, or disabled coverage.
+- Keep intentionally unsupported tests documented.
+- Make tests deterministic.
+- Freeze dates and timezones where needed.
+- Use stable fixtures.
+- Verify that intentionally introduced defects cause the appropriate tests to fail.
+- Restore the correct code after mutation checks.
+- Do not weaken assertions.
+
+Create a test-coverage map for:
+
+- Authentication.
+- Accounts.
+- Documents.
+- Extraction.
+- Normalization.
+- Calculations.
+- Bills.
+- Income.
+- Debt plans.
+- Goals.
+- Weekly snapshots.
+- AI assistant.
+- Subscription enforcement.
+- Referrals.
+- Rewards.
+- Workspaces.
+- Notifications.
+- Reports.
+- Exports.
+- Admin access.
+- Privacy controls.
+- Scheduled jobs.
+
+Add missing critical-path tests before continuing.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 3 — REALISTIC USER-JOURNEY BACKTEST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Create automated or scripted scenarios that simulate realistic users from registration through ongoing use.
+
+Use isolated test users and synthetic data only.
+
+Scenario A — New free user:
+
+1. Create account.
+2. Verify email flow using a mock provider.
+3. Complete onboarding.
+4. Add income manually.
+5. Add recurring bills.
+6. Upload a bank-statement test fixture.
+7. Review low-confidence fields.
+8. Confirm extracted information.
+9. View dashboard.
+10. Create an emergency-fund goal.
+11. Ask the AI assistant a grounded question.
+12. Reach the free-plan scan limit.
+13. Attempt to bypass the limit through direct API calls.
+14. Verify backend rejection.
+15. Export personal data.
+16. Log out.
+17. Confirm no private data remains visible.
+
+Scenario B — Irregular-income worker:
+
+1. Add straight-time, overtime, double-time, per-diem, and stipend income.
+2. Add several pay periods with different totals.
+3. Verify weekly and monthly averages.
+4. Verify conservative, expected, and optimistic projections.
+5. Verify per diem is not counted twice.
+6. Verify year-to-date pay-stub fields are not treated as current pay.
+7. Create a cash-flow forecast.
+8. Delay an expected paycheck.
+9. Confirm the forecast changes without corrupting historical data.
+
+Scenario C — Debt-heavy user:
+
+1. Add several credit cards.
+2. Add an auto loan.
+3. Add a personal loan.
+4. Include one missing interest rate.
+5. Include a 0% promotional rate.
+6. Create avalanche, snowball, utilization, and custom payoff plans.
+7. Verify interest and payoff-order calculations.
+8. Change a balance.
+9. Confirm every linked plan recalculates once.
+10. Confirm no duplicated payments or goals are created.
+
+Scenario D — Paid subscriber:
+
+1. Begin checkout using mocked Stripe.
+2. Complete checkout.
+3. Confirm paid access is not granted by redirect alone.
+4. Process a valid signed webhook.
+5. Confirm entitlement activation.
+6. Process the same webhook twice.
+7. Confirm no duplicate state changes.
+8. Simulate upgrade.
+9. Simulate downgrade.
+10. Simulate cancellation.
+11. Confirm access remains until period end.
+12. Simulate failed payment.
+13. Confirm premium restrictions and billing messaging.
+14. Confirm Customer Portal access.
+
+Scenario E — Referral flow:
+
+1. User generates a referral link.
+2. Second user opens it.
+3. Attribution survives authentication redirects.
+4. Referred user completes the configured qualification event.
+5. Qualification occurs once.
+6. Reward is created once.
+7. Duplicate and concurrent events do not create duplicate rewards.
+8. Self-referral fails.
+9. Circular referral fails.
+10. Tampered code fails.
+11. Cross-user reward access fails.
+
+Scenario F — Business workspace:
+
+1. Owner creates workspace.
+2. Owner sends invitation.
+3. Member accepts.
+4. Expired invitation fails.
+5. Reused invitation fails.
+6. Regular member cannot promote themselves.
+7. Workspace owner cannot view personal member finances by default.
+8. Seat limits are enforced.
+9. Ownership transfer works.
+10. The only owner cannot leave without transferring ownership.
+11. Cross-workspace requests fail.
+
+Scenario G — Destructive and recovery actions:
+
+1. Archive an account.
+2. Restore it.
+3. Delete a document.
+4. Retry an interrupted processing job.
+5. Cancel a request midway.
+6. Refresh during processing.
+7. Double-t

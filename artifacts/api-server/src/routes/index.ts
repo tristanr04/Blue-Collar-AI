@@ -23,6 +23,10 @@ import referralsRouter from "./referrals.js";
 import timelineRouter from "./timeline.js";
 import healthScoreRouter from "./health-score.js";
 import weeklySnapshotRouter from "./weekly-snapshot.js";
+import goalsRouter from "./goals.js";
+import debtPayoffRouter from "./debt-payoff.js";
+import workspacesRouter from "./workspaces.js";
+import exportRouter from "./export.js";
 // Note: webhook-stripe is mounted in app.ts (before body parsers) — not here.
 
 const router: IRouter = Router();
@@ -51,5 +55,9 @@ router.use(referralsRouter);
 router.use(timelineRouter);
 router.use(healthScoreRouter);
 router.use(weeklySnapshotRouter);
+router.use(goalsRouter);
+router.use(debtPayoffRouter);
+router.use(workspacesRouter);
+router.use(exportRouter);
 
 export default router;
