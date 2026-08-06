@@ -1,0 +1,1549 @@
+Continue developing Blue Collar Financial AI. Complete this entire multi-feature product sprint independently without stopping after each phase and without asking routine implementation questions.
+
+Before changing anything:
+
+1. Inspect the complete repository and recent changes.
+2. Read the database schema and all migrations.
+3. Identify the current authentication, subscription, document-processing, notification, analytics, calculation, onboarding, referral, and testing architecture.
+4. Run the existing test suite and production build to establish a baseline.
+5. Preserve all existing working functionality.
+6. Follow the current project structure and visual design system.
+7. Reuse existing utilities and components rather than creating competing implementations.
+8. Make safe database migrations that preserve existing data.
+
+Do not:
+- Redesign the entire application.
+- Replace working systems without a verified technical reason.
+- Hardcode fake financial data or fake successful integrations.
+- Expose secrets or private financial information.
+- Grant access based only on frontend state.
+- Stop after one feature.
+- leave avoidable TypeScript errors, failing tests, placeholders, or unresolved regressions.
+- claim that a test or feature works unless it was actually verified.
+
+This sprint includes product features, reliability improvements, security hardening, mobile fixes, and comprehensive testing.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 1 — BASELINE AUDIT AND REGRESSION SWEEP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Run and record:
+
+- TypeScript checks.
+- Linting.
+- Formatting checks.
+- API tests.
+- Zod/schema tests.
+- Frontend tests.
+- Integration tests.
+- End-to-end tests.
+- Accessibility tests.
+- Production build.
+- Database migration validation.
+
+Inspect the app for:
+
+- Broken routes.
+- Broken buttons.
+- Dead links.
+- Forms that submit twice.
+- Buttons that remain disabled incorrectly.
+- Missing loading states.
+- Missing empty states.
+- Missing error states.
+- Modals that do not close.
+- Mobile overflow.
+- Stale dashboard information.
+- Incorrect cached data.
+- Authorization gaps.
+- Duplicate API requests.
+- Duplicate records.
+- Invalid financial totals.
+- Browser console warnings.
+- Server log errors.
+- Unhandled promise rejections.
+- Race conditions.
+- Unsafe TypeScript casts.
+- Duplicate calculation logic.
+- Temporary mocks and placeholders.
+- TODO and FIXME comments.
+- Features visible to users but not completed.
+- Features protected in the interface but not enforced by the server.
+
+Fix every verified defect before continuing. Do not make unnecessary rewrites when the current implementation is correct.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 2 — IRREGULAR INCOME AND BLUE-COLLAR PAY ENGINE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Build a centralized income engine designed for workers whose checks change from week to week.
+
+Support:
+
+- Hourly wages.
+- Weekly pay.
+- Biweekly pay.
+- Semimonthly pay.
+- Monthly pay.
+- Straight-time hours.
+- Time-and-a-half overtime.
+- Double-time hours.
+- Custom overtime multipliers.
+- Per diem.
+- Taxable per diem.
+- Non-taxable per diem.
+- Storm pay.
+- Call-out pay.
+- On-call stipends.
+- Bonuses.
+- Mileage reimbursements.
+- Union dues.
+- Benefit deductions.
+- Retirement contributions.
+- Employer retirement match.
+- Insurance deductions.
+- Garnishments.
+- Other recurring deductions.
+- Multiple employers.
+- Changing hourly rates.
+- Checks with missing or incomplete details.
+
+Each pay record should support:
+
+- Pay-period start.
+- Pay-period end.
+- Payment date.
+- Employer.
+- Base hourly rate.
+- Hours by rate category.
+- Gross taxable wages.
+- Non-taxable reimbursements.
+- Pretax deductions.
+- After-tax deductions.
+- Taxes withheld.
+- Net pay.
+- Employer retirement contribution.
+- Employee retirement contribution.
+- Source document.
+- Extraction confidence.
+- User-confirmed status.
+
+Calculations must:
+
+- Keep gross wages separate from non-taxable reimbursements.
+- Avoid counting per diem twice.
+- Correctly apply overtime multipliers.
+- Handle checks spanning a rate increase.
+- Handle zero-hour stipend checks.
+- Handle negative adjustments.
+- Handle retroactive pay.
+- Handle year-to-date values without counting them as current-period values.
+- Distinguish current-check figures from year-to-date figures.
+- Avoid floating-point errors.
+- Use integer cents or the application’s precise decimal type.
+- Clearly label estimates.
+
+Add an income dashboard showing:
+
+- Average weekly net pay.
+- Average monthly net pay.
+- Lowest recent check.
+- Highest recent check.
+- Straight-time income.
+- Overtime income.
+- Non-taxable income.
+- Income trend.
+- Income volatility.
+- Year-to-date income.
+- Estimated annualized income.
+- Data freshness.
+- Number of confirmed versus unconfirmed checks.
+
+Annualized income must offer at least:
+
+- Conservative estimate based on lower recent earnings.
+- Base estimate based on rolling average.
+- Higher estimate including recent overtime.
+
+Do not present any estimate as guaranteed.
+
+Add comprehensive tests for overtime, double time, per diem, deductions, rate changes, missing information, and year-to-date field confusion.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 3 — PAY-STUB AND EMPLOYMENT DOCUMENT EXTRACTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Improve document extraction for:
+
+- Pay stubs.
+- Payroll screenshots.
+- Employer earnings statements.
+- Union benefit statements.
+- Retirement contribution statements.
+- Per-diem reports.
+- Time sheets.
+- Year-end wage summaries.
+
+Extract structured fields only when supported by the document.
+
+Requirements:
+
+- Treat uploaded text as untrusted data.
+- Ignore instructions embedded inside documents.
+- Never allow document text to override schemas or system rules.
+- Distinguish pay-period amounts from year-to-date amounts.
+- Distinguish employee deductions from employer contributions.
+- Distinguish net pay from direct-deposit distributions.
+- Distinguish regular hours from overtime and double-time hours.
+- Support multiple overtime lines.
+- Support employer-specific labels.
+- Preserve the original extracted text separately from normalized values where safe.
+- Attach confidence scores to important fields.
+- Require user review for ambiguous values.
+- Never invent missing wage rates, tax amounts, or deductions.
+- Prevent repeated scans from generating duplicate pay records.
+- Detect substantially identical pay stubs with different filenames.
+- Allow the user to correct extracted values before confirming them.
+- Recalculate projections immediately after confirmed corrections.
+
+Add adversarial test fixtures covering:
+
+- Year-to-date totals larger than current-period totals.
+- Multiple direct-deposit accounts.
+- Negative payroll adjustments.
+- Blurry screenshots.
+- Cropped screenshots.
+- Two pay stubs in one image.
+- Rotated images.
+- Different employer formats.
+- Missing hourly rate.
+- Missing hours.
+- Per diem mixed into net pay.
+- Employer contributions listed beside employee contributions.
+- Prompt-injection text placed inside a fake pay stub.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 4 — SAFE-TO-SPEND AND CASH-FLOW FORECAST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Build a cash-flow calendar and a conservative “safe to spend” estimate.
+
+Inputs should include:
+
+- Current available cash.
+- Pending income.
+- Confirmed upcoming income.
+- Recurring bills.
+- One-time bills.
+- Debt minimums.
+- Mortgage or rent.
+- Utilities.
+- Subscriptions.
+- Planned savings.
+- Planned investments.
+- Credit-card payments.
+- User-selected cash buffer.
+- Due dates.
+- Pay dates.
+- Accounts from which obligations will be paid.
+
+The forecast should show:
+
+- Today’s available amount.
+- Obligations due before the next expected check.
+- Projected balance after each upcoming transaction.
+- Lowest projected balance.
+- Days until the next income event.
+- Safe-to-spend estimate.
+- Potential shortfall dates.
+- Bills that are not fully funded.
+- Data requiring confirmation.
+
+Safety requirements:
+
+- Use conservative assumptions when expected pay is uncertain.
+- Do not count unconfirmed income as guaranteed.
+- Do not count credit availability as cash.
+- Do not count transfers between user-owned accounts as income.
+- Do not double-count card purchases and card payments.
+- Clearly identify pending and estimated values.
+- Never initiate transfers.
+- Never recommend overdrawing an account.
+- Never represent safe-to-spend as a guarantee.
+- Handle missing bill dates.
+- Handle irregular pay.
+- Handle several checks within one month.
+- Handle bills due on weekends.
+- Handle past-due obligations.
+- Handle negative balances.
+- Handle users with no income data.
+
+Allow users to select forecast modes:
+
+- Conservative.
+- Expected.
+- Optimistic.
+
+Default to conservative.
+
+Add calendar and timeline views that work well on mobile.
+
+Add tests for month boundaries, leap years, daylight-saving changes, duplicate bills, delayed paychecks, partial payments, and negative cash flow.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 5 — BILL DETECTION AND RECURRING OBLIGATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Improve recurring bill management.
+
+Support:
+
+- Mortgage.
+- Rent.
+- Utilities.
+- Phone.
+- Internet.
+- Insurance.
+- Vehicle payments.
+- Personal loans.
+- Credit cards.
+- Medical payments.
+- Childcare.
+- Memberships.
+- Streaming subscriptions.
+- Union dues.
+- Custom bills.
+
+Users must be able to:
+
+- Add a bill manually.
+- Detect a bill from a statement or transaction.
+- Confirm or reject a detected recurring bill.
+- Change frequency.
+- Change due date.
+- Change expected amount.
+- Mark variable bills.
+- Mark autopay.
+- Mark a payment completed.
+- Skip one occurrence.
+- Pause and resume.
+- Archive.
+- Delete with confirmation.
+- Link a bill to a debt or account.
+- View bill history.
+
+Detection requirements:
+
+- Do not automatically create bills from uncertain patterns.
+- Require confirmation for newly detected recurring charges.
+- Avoid treating transfers as bills.
+- Avoid treating irregular purchases as recurring.
+- Detect duplicate subscriptions carefully.
+- Support changing bill amounts.
+- Track expected versus actual amount.
+- Warn about unusual increases without using alarming language.
+- Avoid repeating a warning after it has been dismissed unless conditions materially change.
+
+Generate upcoming occurrences idempotently.
+
+Prevent duplicate monthly bill occurrences caused by retries or scheduled jobs.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 6 — DEBT PAYOFF PLANNER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Build or improve a comprehensive debt-payoff planner.
+
+Support:
+
+- Credit cards.
+- Auto loans.
+- Mortgages.
+- Personal loans.
+- Medical debt.
+- Student loans.
+- Buy-now-pay-later accounts.
+- Custom debts.
+
+Each debt may include:
+
+- Current balance.
+- Interest rate.
+- Minimum payment.
+- Due date.
+- Credit limit.
+- Promotional rate.
+- Promotional-rate expiration.
+- Fixed or variable rate.
+- Remaining term.
+- Original balance.
+- Secured or unsecured status.
+- User-selected extra payment.
+- Data-confidence status.
+
+Strategies:
+
+- Minimum payments only.
+- Debt snowball.
+- Debt avalanche.
+- Highest-utilization first.
+- User-defined priority.
+- Custom extra-payment amount.
+
+Results should show:
+
+- Estimated payoff date.
+- Estimated total interest.
+- Estimated monthly payments.
+- Order of payoff.
+- Interest difference between strategies.
+- Time difference between strategies.
+- Monthly schedule.
+- Amount rolled into the next debt after payoff.
+- Assumptions and missing information.
+
+Requirements:
+
+- Use mathematically correct amortization.
+- Use precise decimal handling.
+- Support 0% promotional periods.
+- Support changing rates when information is available.
+- Handle rates that are missing.
+- Handle minimum payments defined as a percentage with a floor.
+- Prevent negative amortization from being hidden.
+- Warn when the entered payment may not cover estimated interest.
+- Do not promise lender acceptance or exact payoff timing.
+- Do not advise users to miss payments.
+- Do not recommend draining the user’s selected emergency buffer.
+- Never automatically move money.
+- Allow users to compare strategies side by side.
+- Keep calculations centralized and tested.
+
+Add hand-verified unit tests for payoff schedules and interest calculations.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 7 — EMERGENCY FUND AND FINANCIAL BUFFER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Create an emergency-fund planner based on verified expenses.
+
+Support:
+
+- User-selected target amount.
+- One-month target.
+- Three-month target.
+- Six-month target.
+- Custom target.
+- Essential-expenses-only mode.
+- All-expenses mode.
+- Irregular-income buffer adjustment.
+- Linked savings accounts.
+- Manual balance.
+- Planned recurring contribution.
+
+Show:
+
+- Current fund.
+- Target fund.
+- Percentage complete.
+- Remaining amount.
+- Estimated months to target.
+- Monthly essential expenses.
+- Suggested range rather than one universal answer.
+- Impact of income volatility.
+- Last balance update.
+
+Requirements:
+
+- Explain assumptions.
+- Do not automatically categorize every expense as essential.
+- Let users review essential and nonessential categories.
+- Do not count credit cards as emergency savings.
+- Prevent the same savings account from being counted twice.
+- Handle negative cash.
+- Handle users without expense history.
+- Clearly separate educational suggestions from professional advice.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 8 — RETIREMENT CONTRIBUTION AND EMPLOYER-MATCH MODULE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Build a retirement-contribution organizer.
+
+Support:
+
+- Traditional 401(k).
+- Roth 401(k).
+- Traditional IRA.
+- Roth IRA.
+- Pension contributions.
+- Employer match.
+- Profit sharing.
+- Custom retirement accounts.
+
+Track:
+
+- Employee contribution amount.
+- Employee contribution percentage.
+- Pretax versus Roth contribution.
+- Employer contribution.
+- Employer-match formula.
+- Vesting information when entered.
+- Annual contribution progress.
+- Pay-period contribution.
+- Contribution source.
+- Last update.
+
+Employer-match formulas must support:
+
+- A percentage match up to a contribution threshold.
+- Tiered matches.
+- Dollar-for-dollar matches.
+- Partial matches.
+- Fixed employer contributions.
+- Custom formulas entered by the user.
+
+Examples the engine must support include:
+
+- 100% of the first 3%, plus 50% of the next 4%.
+- 50% of contributions up to 6%.
+- A fixed percentage of wages regardless of employee contribution.
+- No employer contribution.
+
+Requirements:
+
+- Centralize all employer-match calculations.
+- Do not invent plan rules.
+- Require the user to confirm uncertain extracted rules.
+- Distinguish employer contribution from employee contribution.
+- Handle contribution limits as centralized year-based configuration.
+- Do not hardcode current-year legal limits across multiple files.
+- Label tax and retirement projections as estimates.
+- Avoid personalized tax claims unless supported by entered information.
+- Do not present educational projections as fiduciary advice.
+- Test tiered-match calculations thoroughly.
+
+If current-year contribution limits are not already configured, create a versioned configuration system with clearly documented values that can be updated without editing calculation logic.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 9 — FINANCIAL GOALS AND AUTOMATIC PROGRESS TRACKING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Improve goal tracking so confirmed account and debt updates automatically update linked goals.
+
+Support:
+
+- Emergency fund.
+- Debt payoff.
+- Vehicle payoff.
+- Home purchase.
+- Down payment.
+- Vacation.
+- Tax reserve.
+- Retirement contribution.
+- Investment target.
+- Custom goal.
+
+Add:
+
+- Linked accounts.
+- Linked debts.
+- Starting value.
+- Current value.
+- Target amount.
+- Target date.
+- Optional recurring contribution.
+- Milestones.
+- Progress history.
+- Paused status.
+- Completed status.
+- Archived status.
+- Notes.
+- Source of current value.
+- Last recalculation timestamp.
+
+Requirements:
+
+- Do not double-count linked accounts.
+- Do not overwrite manual progress without explanation.
+- Show whether progress is automatic or manually entered.
+- Handle decreases in progress honestly.
+- Handle completed goals.
+- Handle no target date.
+- Handle impossible target dates.
+- Show estimated required contribution but not as a guarantee.
+- Preserve progress history.
+- Make recalculation idempotent.
+
+Add milestone notifications at useful intervals without notification spam.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 10 — REFERRAL AND CREW-GROWTH SYSTEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Build a complete referral system suitable for blue-collar crews, friends, and business partners.
+
+Referral capabilities:
+
+- Unique referral code for each eligible user.
+- Shareable referral link.
+- Mobile share sheet where supported.
+- Copy-link button.
+- QR code.
+- Referral dashboard.
+- Pending referrals.
+- Qualified referrals.
+- Reward history.
+- Referral terms.
+- Fraud-review status.
+- Admin referral diagnostics.
+
+Referral lifecycle:
+
+1. Link clicked.
+2. Referral attribution stored.
+3. New account created.
+4. Email or identity verification completed.
+5. User reaches the configured qualification event.
+6. Referral is marked qualified.
+7. Reward becomes pending.
+8. Reward becomes approved.
+9. Reward becomes issued or credited.
+10. Reversal occurs only for a documented valid reason.
+
+Qualification must be configurable and may include:
+
+- Completing onboarding.
+- Uploading and confirming a first document.
+- Remaining active for a configured period.
+- Starting a paid subscription.
+- Completing a first paid billing period.
+
+Do not hardcode the qualification rule in multiple places.
+
+Attribution requirements:
+
+- Store first-touch attribution.
+- Store eligible referral owner.
+- Use signed referral identifiers.
+- Support reasonable attribution expiration.
+- Do not allow users to change their referrer after qualification.
+- Prevent self-referrals.
+- Prevent circular referrals.
+- Prevent one account from qualifying multiple referrers.
+- Handle users who open the link on mobile and finish registration later.
+- Preserve referral attribution through authentication redirects when possible.
+- Never expose internal referral database IDs.
+
+Fraud safeguards:
+
+- Detect obvious self-referral signals.
+- Detect repeated payment methods only if data is safely available through the payment provider and without storing card details.
+- Detect excessive referrals from the same device or network as a review signal, not automatic proof of fraud.
+- Detect disposable or repeated email patterns where supported.
+- Detect immediate cancellation or refund patterns.
+- Never automatically accuse a user of fraud.
+- Place questionable rewards into manual review.
+- Record sanitized reasons.
+- Add rate limiting.
+- Prevent brute-force referral-code guessing.
+- Make qualification and reward issuance idempotent.
+- Ensure concurrent events cannot issue the same reward twice.
+
+Reward system:
+
+- Centralized configurable reward rules.
+- Support account credit.
+- Support subscription discount.
+- Support free subscription time.
+- Support points or non-cash internal rewards.
+- Support external cash rewards only when an approved payout provider is configured.
+- Do not claim money was sent when no payout provider exists.
+- Never store payment credentials directly.
+- Record reward status and audit history.
+- Clearly explain reward timing and requirements.
+
+Create a polished referral page with:
+
+- Clear explanation.
+- Referral link.
+- Copy action.
+- Share action.
+- QR code.
+- Progress.
+- Status definitions.
+- Reward history.
+- Terms.
+- Empty state.
+- Error state.
+- Mobile-responsive layout.
+
+Add analytics for referral actions without storing private financial information.
+
+Test:
+
+- Valid referral.
+- Expired referral.
+- Invalid code.
+- Self-referral.
+- Circular referral.
+- Duplicate attribution.
+- Duplicate qualification event.
+- Concurrent reward issuance.
+- Subscription cancellation before qualification.
+- Refund after qualification.
+- Admin review.
+- Cross-user referral-record access.
+- Referral-link tampering.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 11 — CREW AND BUSINESS WORKSPACES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Add business workspace support without allowing employers or crew leaders to see private personal financial information by default.
+
+Workspace roles:
+
+- Owner.
+- Administrator.
+- Member.
+- Read-only member where useful.
+
+Workspace capabilities:
+
+- Create workspace.
+- Invite members.
+- Accept or reject invitations.
+- Remove member.
+- Change role.
+- Leave workspace.
+- Transfer ownership safely.
+- View workspace referral performance.
+- View aggregate, non-sensitive engagement.
+- Manage business subscription seats.
+- Manage workspace settings.
+
+Privacy requirements:
+
+- Personal account balances remain private.
+- Personal debts remain private.
+- Personal documents remain private.
+- Personal income remains private.
+- Personal AI conversations remain private.
+- Workspace owners cannot access private financial records merely because they invited a user.
+- Sharing any specific financial record must require explicit user consent.
+- Aggregate reporting must enforce minimum group-size thresholds when necessary to avoid revealing an individual.
+- Server-side authorization must protect every workspace operation.
+- Invitations must expire.
+- Invitation tokens must be unguessable and single-use.
+- Prevent role escalation.
+- Prevent removing the only owner without transferring ownership.
+- Audit important membership and permission changes.
+
+Business subscription requirements:
+
+- Enforce seat limits.
+- Keep subscription state synchronized through secure billing webhooks.
+- Do not count expired invitations as active seats.
+- Handle removed members.
+- Handle downgraded plans.
+- Provide a safe resolution flow when a downgrade creates excess seats.
+- Do not silently delete members.
+
+Add tests for all roles, cross-workspace access, expired invites, reused invites, seat limits, and ownership transfer.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 12 — FINANCIAL REPORTS AND EXPORTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Create polished reports users can view and export.
+
+Reports:
+
+- Financial overview.
+- Net-worth summary.
+- Assets.
+- Liabilities.
+- Cash-flow summary.
+- Income summary.
+- Overtime and per-diem summary.
+- Recurring bills.
+- Debt payoff.
+- Emergency-fund progress.
+- Goal progress.
+- Retirement contributions.
+- Document-processing history.
+- Account-balance history.
+
+Time ranges:
+
+- Current month.
+- Previous month.
+- Quarter.
+- Year to date.
+- Previous year.
+- Custom date range.
+
+Requirements:
+
+- Use the centralized calculation engine.
+- Show data freshness.
+- Show missing or unconfirmed data.
+- Separate actual values from estimates.
+- Explain assumptions.
+- Allow users to include or exclude archived accounts.
+- Avoid misleading charts.
+- Handle no-data periods.
+- Handle partial periods.
+- Handle accounts created in the middle of a reporting period.
+- Prevent duplicate totals.
+- Ensure exports contain only the authenticated user’s data.
+
+Export formats:
+
+- CSV for structured data.
+- PDF if the project already has a safe PDF-generation approach.
+- Printable web report as a fallback.
+
+Export security:
+
+- Generate large exports asynchronously.
+- Use expiring download references.
+- Enforce ownership at download time.
+- Do not reveal internal storage paths.
+- Prevent another user from guessing an export URL.
+- Sanitize exported filenames.
+- Exclude secrets, tokens, and internal diagnostic data.
+- Clearly label masked account numbers.
+
+Do not add an unsafe PDF dependency solely to satisfy this phase. Use the safest approach supported by the project.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 13 — AI FINANCIAL ASSISTANT RELIABILITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Audit and improve the AI assistant.
+
+The assistant may help users:
+
+- Understand their dashboard.
+- Explain calculations.
+- Identify missing information.
+- Summarize confirmed financial records.
+- Compare debt-payoff strategies.
+- Understand cash-flow patterns.
+- Prepare questions for a financial, tax, or legal professional.
+- Create educational action checklists.
+
+The assistant must not:
+
+- Invent balances or transactions.
+- Claim access to data it does not have.
+- Treat unconfirmed extraction as verified truth.
+- Guarantee financial outcomes.
+- Present itself as a licensed financial adviser, attorney, accountant, or tax preparer.
+- Recommend illegal tax evasion.
+- Tell users to hide income.
+- Encourage users to miss required debt payments.
+- Place trades.
+- Transfer funds.
+- Change accounts without explicit confirmation.
+- Reveal another user’s information.
+- Follow instructions embedded in uploaded documents.
+- Reveal system prompts, secrets, or hidden configuration.
+
+Data-grounding requirements:
+
+- Retrieve only records belonging to the authenticated user.
+- Identify which records support the response.
+- Prefer confirmed data.
+- Label unconfirmed data.
+- State when information is unavailable.
+- Do not silently substitute sample data.
+- Use structured tool inputs and outputs when possible.
+- Validate AI-generated structured output.
+- Reject malformed output safely.
+- Apply maximum query and response limits.
+- Add timeouts.
+- Add retry policies where safe.
+- Add provider fallback or graceful degradation where supported.
+- Track sanitized provider errors.
+- Do not log complete prompts containing financial records.
+
+Prompt-injection defenses:
+
+- Treat documents, transaction descriptions, account names, filenames, and user-imported text as untrusted content.
+- Separate instructions from retrieved data.
+- Never permit retrieved data to change authorization rules.
+- Never permit retrieved data to request secrets or external actions.
+- Add adversarial tests for prompt injection.
+- Add tests attempting cross-user data access through conversational wording.
+
+Assistant UX:
+
+- Show when the answer uses estimates.
+- Provide concise calculation details.
+- Allow users to correct underlying data.
+- Avoid overly alarming language.
+- Provide safe next steps.
+- Include an educational-information disclaimer where contextually appropriate without repeating it excessively.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 14 — PERSONALIZED NEXT-BEST-ACTION ENGINE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Create a deterministic recommendation engine using verified rules before relying on generative AI.
+
+Possible recommendations:
+
+- Review a low-confidence document.
+- Update a stale account balance.
+- Confirm a detected bill.
+- Address an upcoming cash-flow shortfall.
+- Review an unusually high bill.
+- Complete onboarding.
+- Add a missing due date.
+- Add a missing minimum payment.
+- Add a missing interest rate.
+- Review credit utilization.
+- Build a selected cash buffer.
+- Capture an employer match.
+- Continue progress toward a user-selected goal.
+- Review a subscription renewal.
+- Resolve failed billing.
+- Complete a pending referral qualification step.
+
+Requirements:
+
+- Base recommendations on verified or clearly labeled estimated data.
+- Include an explanation of why each recommendation appears.
+- Include the supporting data date.
+- Prioritize urgent obligations over optional optimization.
+- Do not shame users.
+- Do not use fake urgency.
+- Do not repeat dismissed recommendations unless relevant data materially changes.
+- Support dismiss.
+- Support snooze.
+- Support mark-complete.
+- Support deep links to the relevant action.
+- Limit the number displayed at once.
+- Make generation idempotent.
+- Do not allow AI output to perform actions directly.
+- Keep sensitive details out of notification previews.
+
+Add tests for prioritization, dismissal, snooze, changed-data resurfacing, and duplicate prevention.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 15 — IN-APP NOTIFICATION CENTER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Build or improve a reliable notification center.
+
+Notification types:
+
+- Document completed.
+- Document failed.
+- Document needs review.
+- Bill approaching.
+- Cash-flow risk.
+- Goal milestone.
+- Weekly check-in.
+- Monthly summary.
+- Account stale.
+- Subscription issue.
+- Payment failed.
+- Referral qualified.
+- Referral reward approved.
+- Workspace invitation.
+- Security alert.
+
+Requirements:
+
+- Read and unread states.
+- Mark one as read.
+- Mark all as read.
+- Delete or dismiss where appropriate.
+- Deep link to the related record.
+- Pagination.
+- Empty state.
+- Loading state.
+- Error state.
+- Mobile layout.
+- Notification preferences by category.
+- Quiet-hours support if external notifications exist.
+- Master opt-out for nonessential communication.
+- Essential security and billing notifications handled separately.
+- Do not include sensitive balances in external notification previews by default.
+- Prevent duplicate notifications.
+- Ensure retries are idempotent.
+- Ensure one user cannot read another user’s notifications.
+
+If email, SMS, or push integrations are unavailable, implement the in-app system fully and document safe environment-variable placeholders. Do not pretend that external messages were sent.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 16 — SEARCH, FILTERING, AND DATA NAVIGATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Add fast, privacy-safe search and filtering for:
+
+- Accounts.
+- Documents.
+- Bills.
+- Debts.
+- Goals.
+- Pay records.
+- Notifications.
+- Reports.
+- Referral records where authorized.
+- Workspace members where authorized.
+
+Requirements:
+
+- Search only records the current user is authorized to access.
+- Debounce frontend search.
+- Cancel stale requests.
+- Paginate results.
+- Avoid loading full document contents just to search metadata.
+- Support filters appropriate to each record type.
+- Preserve filters during navigation where useful.
+- Provide clear zero-result states.
+- Sanitize search terms.
+- Prevent expensive unbounded queries.
+- Add server-side limits.
+- Add relevant database indexes only after reviewing query patterns.
+- Test cross-user search isolation.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 17 — OFFLINE, NETWORK FAILURE, AND RETRY SAFETY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Improve behavior on weak mobile connections.
+
+Handle:
+
+- Request timeout.
+- Lost connection.
+- Slow upload.
+- Interrupted upload.
+- Duplicate retry.
+- Page refresh during processing.
+- App reopened after interruption.
+- Browser back navigation.
+- Server restart during background processing.
+- AI or OCR provider outage.
+- Billing-provider outage.
+- Notification-provider outage.
+
+Requirements:
+
+- Preserve unsaved form data when practical.
+- Clearly show connectivity status.
+- Allow safe retry.
+- Use idempotency keys for actions that create records.
+- Do not retry destructive or charge-related operations without idempotency protection.
+- Resume multipart or staged uploads only if safely supported.
+- Otherwise explain that the upload must restart.
+- Never display a false success state.
+- Reconcile background status after reconnecting.
+- Avoid duplicate documents, accounts, bills, subscriptions, rewards, and notifications.
+- Add error boundaries.
+- Add request correlation IDs.
+- Add sanitized diagnostic information.
+
+Test simulated slow networks, timeouts, aborted requests, duplicate taps, and provider failures.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 18 — MOBILE APPLICATION QUALITY PASS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Audit all screens at common mobile widths.
+
+Test at minimum:
+
+- 320px width.
+- 375px width.
+- 390px width.
+- 430px width.
+- Tablet width.
+- Portrait orientation.
+- Landscape orientation where practical.
+- Increased operating-system text size.
+
+Fix:
+
+- Horizontal overflow.
+- Hidden actions.
+- Buttons under safe areas.
+- Keyboard-covered inputs.
+- Unreadable tables.
+- Broken charts.
+- Offscreen dialogs.
+- Sticky headers covering content.
+- Tiny touch targets.
+- Double-submission on taps.
+- Incorrect numeric keyboards.
+- Date-picker problems.
+- File-picker problems.
+- Layout shifts.
+- Long institution or account names.
+- Long currency values.
+- Long error messages.
+- Navigation that cannot be reached.
+- Focus loss after validation errors.
+
+Requirements:
+
+- Preserve all entered values on validation failure.
+- Use appropriate input modes.
+- Do not require hover.
+- Provide accessible labels.
+- Make destructive actions harder to trigger accidentally.
+- Test dark mode if the app supports it.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 19 — SECURITY AND AUTHORIZATION ATTACK PASS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Perform an explicit attack-oriented audit.
+
+Attempt and prevent:
+
+- Accessing another user’s accounts by changing an ID.
+- Accessing another user’s documents.
+- Accessing another user’s reports.
+- Accessing another user’s notifications.
+- Accessing another user’s exports.
+- Accessing another workspace.
+- Changing workspace roles without permission.
+- Issuing duplicate referral rewards.
+- Faking subscription status.
+- Bypassing scan limits.
+- Replaying webhooks.
+- Replaying invitation tokens.
+- Reusing password-reset links.
+- Uploading executable or malformed files.
+- Filename path traversal.
+- Oversized request bodies.
+- SQL injection.
+- Stored XSS.
+- Reflected XSS.
+- Open redirects.
+- Server-side request forgery.
+- Mass assignment.
+- CSRF where applicable.
+- Brute-force login.
+- Brute-force referral codes.
+- User enumeration.
+- Session fixation.
+- Sensitive data remaining after logout.
+- Sensitive data appearing in logs.
+- Secrets appearing in frontend bundles.
+- Prompt-injection attempts through documents and transaction text.
+
+Requirements:
+
+- Enforce authorization in every server handler.
+- Do not rely on hidden interface elements.
+- Use schema validation.
+- Use least privilege.
+- Use safe error responses.
+- Rate-limit sensitive endpoints.
+- Use secure production cookies.
+- Add appropriate security headers.
+- Verify webhook signatures.
+- Store processed webhook event IDs.
+- Rotate or invalidate sensitive tokens when appropriate.
+- Audit sensitive changes.
+- Run dependency vulnerability checks.
+- Do not blindly apply major dependency upgrades.
+- Test fixes after each dependency change.
+
+Create regression tests for every verified authorization or security issue.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 20 — DATABASE CONSISTENCY AND CONCURRENCY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Audit database behavior under retries and simultaneous requests.
+
+Protect:
+
+- Document creation.
+- Account creation.
+- Pay-record creation.
+- Bill occurrence creation.
+- Weekly snapshot creation.
+- Subscription updates.
+- Referral qualification.
+- Reward issuance.
+- Goal recalculation.
+- Notification creation.
+- Workspace invitations.
+- Membership changes.
+- Export jobs.
+
+Requirements:
+
+- Use database uniqueness constraints where appropriate.
+- Use transactions for multi-step operations.
+- Use optimistic locking or version checks where useful.
+- Make background jobs idempotent.
+- Handle two application instances running the same scheduled task.
+- Handle duplicate queue delivery.
+- Handle out-of-order webhook events.
+- Preserve audit history.
+- Avoid orphaned records.
+- Avoid partial destructive changes.
+- Add repair or reconciliation jobs only where needed.
+- Ensure reconciliation jobs are safe to run repeatedly.
+
+Add concurrency-focused integration tests where the test environment permits.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 21 — ADMIN OPERATIONS AND SUPPORT TOOLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Improve the existing admin area or add a minimal secure admin operations panel.
+
+Admin capabilities may include:
+
+- View failed document jobs.
+- Retry safe failed jobs.
+- View sanitized provider status.
+- View webhook failures.
+- Replay an eligible webhook through the normal idempotent handler.
+- View referral rewards requiring manual review.
+- Approve or reject a reward with a reason.
+- View scheduled-job health.
+- View export-job failures.
+- View aggregate subscription counts.
+- View aggregate scan usage.
+- View aggregate onboarding completion.
+- View aggregate referral performance.
+- View workspace seat usage.
+- Search users by safe identifiers for support.
+- View a sanitized user-account status summary.
+
+Admin must never display:
+
+- Passwords.
+- Authentication tokens.
+- Stripe secrets.
+- Full card details.
+- Full bank account numbers.
+- Full uploaded document contents by default.
+- Raw financial AI prompts.
+- Hidden system prompts.
+- Unredacted provider responses.
+- Sensitive information unrelated to the support task.
+
+Requirements:
+
+- Require an explicit server-enforced admin role.
+- Log admin actions.
+- Require reasons for sensitive manual changes.
+- Prevent an admin from casually impersonating a user.
+- If impersonation already exists, require strong safeguards and visible audit logging.
+- Add tests proving normal users cannot access any admin route or API.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 22 — PRIVACY, CONSENT, AND DATA CONTROLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Improve privacy controls.
+
+Users should be able to:
+
+- Review privacy settings.
+- Review notification preferences.
+- Review analytics consent.
+- Export their data.
+- Request account deletion.
+- Remove demo data.
+- Delete uploaded documents where allowed.
+- Archive financial accounts.
+- Revoke workspace sharing.
+- See active workspace memberships.
+- See active sessions where supported.
+- Sign out other sessions where supported.
+
+Requirements:
+
+- Explain what deletion does.
+- Explain what may be retained for legal, billing, fraud-prevention, or audit reasons without overstating legal requirements.
+- Do not claim compliance certifications that have not been verified.
+- Do not claim data is encrypted in a particular way unless the implementation verifies it.
+- Keep consent records versioned.
+- Do not enable nonessential external notifications before consent.
+- Do not place sensitive details in analytics.
+- Do not include private financial information in referral sharing.
+- Enforce data ownership during exports and deletion.
+- Add tests for privacy-setting changes.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 23 — PRODUCT ANALYTICS AND FUNNEL DIAGNOSTICS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Centralize privacy-safe product analytics.
+
+Track non-sensitive events such as:
+
+- signup_started
+- signup_completed
+- onboarding_started
+- onboarding_step_completed
+- onboarding_completed
+- paystub_upload_started
+- paystub_upload_completed
+- document_review_started
+- document_review_completed
+- bill_confirmed
+- debt_plan_created
+- cashflow_forecast_viewed
+- goal_created
+- referral_link_copied
+- referral_link_shared
+- referral_signup_completed
+- referral_qualified
+- reward_approved
+- workspace_created
+- workspace_invitation_sent
+- workspace_invitation_accepted
+- report_viewed
+- export_requested
+- recommendation_opened
+- recommendation_dismissed
+- subscription_upgrade_started
+- checkout_completed
+- payment_failed
+
+Never include:
+
+- Account balances.
+- Income amounts.
+- Debt amounts.
+- Names extracted from documents.
+- Account numbers.
+- Transaction descriptions.
+- Uploaded text.
+- Full filenames containing personal information.
+- AI prompt contents.
+- Payment information.
+
+Requirements:
+
+- Centralize event names.
+- Validate event payloads.
+- Redact unexpected fields.
+- Respect consent.
+- Disable cleanly when analytics is not configured.
+- Avoid duplicate events.
+- Add tests ensuring sensitive values cannot be emitted.
+
+Create internal funnel views only from aggregate, non-sensitive event data.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 24 — TEST SUITE EXPANSION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Add or improve tests for all new and modified functionality.
+
+Unit tests:
+
+- Wage calculations.
+- Overtime calculations.
+- Double-time calculations.
+- Per-diem calculations.
+- Employer-match formulas.
+- Cash-flow forecast.
+- Safe-to-spend estimate.
+- Bill recurrence.
+- Debt amortization.
+- Emergency-fund calculations.
+- Goal progress.
+- Referral qualification.
+- Reward rules.
+- Recommendation prioritization.
+- Financial normalization.
+
+Integration tests:
+
+- Pay-stub processing.
+- Duplicate pay-stub detection.
+- Account ownership.
+- Bill creation.
+- Forecast generation.
+- Debt-plan persistence.
+- Referral attribution.
+- Referral qualification.
+- Concurrent reward issuance.
+- Workspace permissions.
+- Notification isolation.
+- Export isolation.
+- Subscription limits.
+- Webhook replay protection.
+- Scheduled-job idempotency.
+
+End-to-end tests:
+
+- New user completes onboarding.
+- User scans and confirms a pay stub.
+- Income dashboard updates.
+- User creates a bill.
+- Cash-flow forecast updates.
+- User creates a debt plan.
+- User creates a goal.
+- User shares a referral.
+- Referred user signs up.
+- Referral progresses through the configured qualification flow.
+- Business owner creates a workspace and invites a member.
+- User generates and downloads a report.
+- User changes notification preferences.
+- User exports data.
+- User logs out and no private data remains visible.
+
+Security tests:
+
+- Cross-user resource access.
+- Cross-workspace access.
+- Referral tampering.
+- Duplicate reward events.
+- Forged billing state.
+- Malformed webhook.
+- Oversized upload.
+- Prompt injection.
+- Stored XSS.
+- Rate-limit enforcement.
+- Expired invitation.
+- Reused invitation.
+- Expired export link.
+
+Accessibility tests:
+
+- Keyboard navigation.
+- Modal focus.
+- Form labels.
+- Error announcements.
+- Contrast.
+- Reduced motion.
+- Accessible charts.
+- Mobile navigation.
+
+Do not weaken assertions to make tests pass. Correct the implementation.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 25 — FINAL PRODUCTION READINESS PASS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Review:
+
+- Environment-variable validation.
+- Safe development defaults.
+- Production-only requirements.
+- Database migrations.
+- Scheduled jobs.
+- Queue workers.
+- Health endpoints.
+- Readiness checks.
+- Graceful shutdown.
+- Logging.
+- Error tracking.
+- Backups.
+- Restore documentation.
+- Rollback documentation.
+- Rate limits.
+- Security headers.
+- Content Security Policy.
+- CORS.
+- File storage.
+- Expiring downloads.
+- Stripe configuration.
+- Referral reward configuration.
+- Notification configuration.
+- Analytics configuration.
+
+Requirements:
+
+- Fail fast in production when mandatory secrets are absent.
+- Allow optional integrations to disable cleanly.
+- Never silently use test payment configuration in production.
+- Never report an integration as active if credentials are missing.
+- Ensure migrations are safe for existing data.
+- Ensure jobs are safe under multiple server instances.
+- Ensure scheduled jobs cannot generate duplicates.
+- Ensure production seed scripts cannot overwrite real data.
+- Keep health endpoints free of sensitive information.
+- Document every required external setup step.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FINAL VERIFICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After completing all phases:
+
+1. Run TypeScript type checking.
+2. Run linting.
+3. Run formatting checks.
+4. Run API tests.
+5. Run Zod/schema tests.
+6. Run frontend tests.
+7. Run unit tests.
+8. Run integration tests.
+9. Run end-to-end tests.
+10. Run accessibility tests.
+11. Run migration verification.
+12. Run dependency-security audit.
+13. Run the production build.
+14. Start the application using the production startup command if supported.
+15. Test the health endpoint.
+16. Test the readiness endpoint if present.
+17. Inspect browser logs.
+18. Inspect server logs.
+19. Fix all regressions caused by this sprint.
+20. Repeat the verification process until clean or only verified external-configuration blockers remain.
+
+Do not report a test as passing unless it actually ran.
+
+At completion provide one detailed report containing:
+
+- Baseline condition before changes.
+- Executive summary.
+- Features implemented.
+- Bugs fixed.
+- Irregular-pay features added.
+- Pay-stub extraction improvements.
+- Cash-flow forecast implementation.
+- Bill-management improvements.
+- Debt-planning implementation.
+- Emergency-fund implementation.
+- Retirement-match implementation.
+- Goal improvements.
+- Referral-system implementation.
+- Fraud safeguards.
+- Workspace implementation.
+- Privacy safeguards.
+- Reporting and export implementation.
+- AI-assistant safeguards.
+- Recommendation engine.
+- Notification improvements.
+- Mobile fixes.
+- Accessibility fixes.
+- Security fixes.
+- Performance improvements.
+- Database migrations.
+- Database constraints and indexes.
+- Scheduled jobs.
+- Background jobs.
+- New API routes.
+- New pages and components.
+- Environment variables.
+- External dashboard configuration required.
+- Analytics events.
+- Test files created or modified.
+- Exact test totals for every suite.
+- Production-build result.
+- Dependency-security audit result.
+- Remaining verified gaps.
+- Exact manual steps I must complete.
+
+Continue until this entire sprint is finished. Do not stop after an individual phase, and do not begin unrelated features afterward.

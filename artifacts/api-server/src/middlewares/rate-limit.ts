@@ -80,3 +80,17 @@ export const scanLimiter = createLimiter({
   limit: 10,
   label: "scan_document",
 });
+
+/** Stripe Checkout session creation: 10 per hour per IP. */
+export const checkoutLimiter = createLimiter({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  label: "checkout",
+});
+
+/** Stripe Customer Portal session creation: 20 per hour per IP. */
+export const portalLimiter = createLimiter({
+  windowMs: 60 * 60 * 1000,
+  limit: 20,
+  label: "portal",
+});

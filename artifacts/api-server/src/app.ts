@@ -6,6 +6,7 @@ import {
   clerkProxyMiddleware,
 } from "./middlewares/clerkProxyMiddleware.js";
 import router from "./routes/index.js";
+import webhookStripeRouter from "./routes/webhook-stripe.js";
 import { logger } from "./lib/logger.js";
 import { makeCors } from "./middlewares/cors.js";
 import { generalLimiter } from "./middlewares/rate-limit.js";
@@ -74,6 +75,13 @@ app.use("/api/scan-document", (req, res, next) => {
 
   next();
 });
+
+// ─── Stripe webhook — raw body BEFORE JSON parser ─────────────────────────────
+// Stripe signature verification requires the unmodified raw bytes.
+// This must be registered before express.json() so the body is not parsed.
+
+app.use("/api/webhooks/stripe", express.raw({ type: "application/json", limit: "1mb" }));
+app.use("/api/webhooks/stripe", webhookStripeRouter);
 
 // ─── Body parsing (250 KB cap) ────────────────────────────────────────────────
 

@@ -753,3 +753,22 @@ export async function getWeeklySnapshotHistory(token: string): Promise<WeeklySna
   const res = await financialFetch("/weekly-snapshot/history", token);
   return res.json() as Promise<WeeklySnapshotHistoryResponse>;
 }
+
+// ─── Subscription & billing ────────────────────────────────────────────────────
+
+export type {
+  PlanId,
+  SubscriptionStatus,
+  UsageStat,
+  SubscriptionResponse,
+  PlanDefinition,
+  PlansResponse,
+} from "./subscription-api";
+
+export {
+  getMySubscription,
+  getPlans,
+  createCheckoutSession,
+  createBillingPortalSession,
+  checkEntitlement as checkSubscriptionEntitlement,
+} from "./subscription-api";

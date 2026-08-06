@@ -22,6 +22,7 @@ import SignUp from '@/pages/SignUp';
 import Onboarding from '@/pages/Onboarding';
 import NotFound from '@/pages/not-found';
 
+const Pricing          = React.lazy(() => import('@/pages/Pricing'));
 const Scanner          = React.lazy(() => import('@/pages/Scanner'));
 const Dashboard        = React.lazy(() => import('@/pages/Dashboard'));
 const RetentionDashboard = React.lazy(() => import('@/pages/RetentionDashboard'));
@@ -201,6 +202,7 @@ function Router() {
         <Route path="/timeline" component={protectedPage(Timeline)} />
         <Route path="/health-score" component={protectedPage(HealthScore)} />
         <Route path="/weekly-snapshot" component={protectedPage(WeeklySnapshot)} />
+        <Route path="/pricing" component={protectedPage(Pricing)} />
         <Route path="/test-lab" component={developerPage(TestLab)} />
         <Route component={NotFound} />
       </Switch>

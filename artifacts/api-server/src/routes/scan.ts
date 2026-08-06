@@ -19,6 +19,7 @@ import { scanSemaphore } from "../middlewares/ai-guard.js";
 import { makeAbortController } from "../middlewares/timeout.js";
 import { requireAuthenticatedUser } from "../middlewares/auth.js";
 import type { AuthenticatedRequest } from "../middlewares/auth.js";
+import { checkScanEntitlement } from "../middlewares/subscription.js";
 import {
   checkDocumentFingerprint,
   createScannedDocument,
@@ -1304,6 +1305,7 @@ router.post(
   "/scan-document",
   scanLimiter,
   requireAuthenticatedUser,
+  checkScanEntitlement,
   scanSemaphore.middleware(),
   upload.single("file"),
   async (req, res) => {

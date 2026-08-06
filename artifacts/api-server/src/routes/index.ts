@@ -23,6 +23,7 @@ import referralsRouter from "./referrals.js";
 import timelineRouter from "./timeline.js";
 import healthScoreRouter from "./health-score.js";
 import weeklySnapshotRouter from "./weekly-snapshot.js";
+// Note: webhook-stripe is mounted in app.ts (before body parsers) — not here.
 
 const router: IRouter = Router();
 

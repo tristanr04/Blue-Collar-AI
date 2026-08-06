@@ -1,10 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useLocation } from 'wouter';
+import { useAuth } from '@clerk/react';
 import {
   Shield, Trash2, RefreshCw, User, Lock, AlertTriangle,
   ChevronRight, Download, Upload, CheckCircle2, History,
   RotateCcw, ChevronDown, ChevronUp, Calculator,
+  CreditCard, ExternalLink, Zap, Loader2, Star, TrendingUp,
 } from 'lucide-react';
+import { getMySubscription, createBillingPortalSession, type SubscriptionResponse } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -16,6 +19,36 @@ import { US_STATE_CODES, TAX_FILING_STATUSES } from '@/lib/profile-context-api';
 
 export default function Settings() {
   const [_, setLocation] = useLocation();
+  const { getToken } = useAuth();
+
+  // ── Subscription state ───────────────────────────────────────────────────────
+  const [sub, setSub] = useState<SubscriptionResponse | null>(null);
+  const [subLoading, setSubLoading] = useState(true);
+  const [portalLoading, setPortalLoading] = useState(false);
+  const [portalError, setPortalError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getToken().then(token => {
+      if (!token) { setSubLoading(false); return; }
+      return getMySubscription(token).then(setSub).catch(() => null);
+    }).finally(() => setSubLoading(false));
+  }, [getToken]);
+
+  async function handleManageBilling() {
+    setPortalLoading(true);
+    setPortalError(null);
+    try {
+      const token = await getToken();
+      if (!token) throw new Error('Not authenticated');
+      const { url } = await createBillingPortalSession(token);
+      if (url) window.location.href = url;
+    } catch (err) {
+      setPortalError(err instanceof Error ? err.message : 'Unable to open billing portal.');
+    } finally {
+      setPortalLoading(false);
+    }
+  }
+
   const {
     profile, updateProfile, resetToDemo, clearAll, changeHistory, undoImport, restoreFieldValue,
     profileContext, saveProfileContext, profileContextSaving, profileContextError,
@@ -612,6 +645,131 @@ export default function Settings() {
           </CardContent>
         </Card>
       )}
+
+      {/* Subscription & Billing */}
+      <Card className="border-border shadow-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <CreditCard className="w-5 h-5 text-primary" /> Subscription &amp; Billing
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {subLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading subscription…
+            </div>
+          ) : sub ? (
+            <>
+              {/* Plan badge */}
+              <div className="flex items-center justify-between rounded-xl border border-border bg-muted/30 px-4 py-3">
+                <div className="flex items-center gap-2">
+                  {sub.effectivePlan === 'free'
+                    ? <Zap className="w-4 h-4 text-muted-foreground" />
+                    : sub.effectivePlan === 'pro'
+                      ? <Star className="w-4 h-4 text-emerald-500" />
+                      : <TrendingUp className="w-4 h-4 text-blue-500" />}
+                  <span className="font-semibold capitalize">
+                    {sub.definition?.name ?? sub.effectivePlan} Plan
+                  </span>
+                </div>
+                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide
+                  ${sub.status === 'active' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400'
+                  : sub.status === 'past_due' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400'
+                  : 'bg-muted text-muted-foreground'}`}
+                >
+                  {sub.status}
+                </span>
+              </div>
+
+              {/* Billing warning */}
+              {sub.billingWarning && (
+                <div className="flex items-start gap-2 rounded-xl border border-amber-300/40 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  {sub.billingWarning}
+                </div>
+              )}
+
+              {/* Usage summary */}
+              {sub.usage && (
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { label: 'Scans', stat: sub.usage.document_scan },
+                    { label: 'AI questions', stat: sub.usage.ai_question },
+                  ].map(({ label, stat }) => (
+                    <div key={label} className="rounded-xl border border-border bg-muted/20 px-3 py-2">
+                      <div className="text-xs text-muted-foreground">{label} this month</div>
+                      <div className="text-sm font-semibold">
+                        {stat.used}{stat.limit !== null ? ` / ${stat.limit}` : ''}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Next renewal */}
+              {sub.currentPeriodEndsAt && (
+                <p className="text-xs text-muted-foreground">
+                  {sub.cancelAtPeriodEnd ? 'Cancels' : 'Renews'} {new Date(sub.currentPeriodEndsAt).toLocaleDateString()}
+                </p>
+              )}
+
+              {/* Portal error */}
+              {portalError && (
+                <div className="text-xs text-destructive">{portalError}</div>
+              )}
+
+              {/* Actions */}
+              <div className="flex flex-col gap-2">
+                {sub.hasStripeSubscription && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full justify-between"
+                    onClick={handleManageBilling}
+                    disabled={portalLoading}
+                  >
+                    <span className="flex items-center gap-2">
+                      {portalLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ExternalLink className="w-4 h-4" />}
+                      Manage billing &amp; invoices
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                  </Button>
+                )}
+                {sub.effectivePlan === 'free' && (
+                  <Button
+                    size="sm"
+                    className="w-full bg-emerald-600 hover:bg-emerald-500 text-white"
+                    onClick={() => setLocation('/pricing')}
+                  >
+                    <Star className="w-4 h-4 mr-2" /> Upgrade to Pro
+                  </Button>
+                )}
+                {sub.effectivePlan !== 'free' && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full text-muted-foreground"
+                    onClick={() => setLocation('/pricing')}
+                  >
+                    View all plans
+                  </Button>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">You're on the Free plan.</p>
+              <Button
+                size="sm"
+                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white"
+                onClick={() => setLocation('/pricing')}
+              >
+                <Star className="w-4 h-4 mr-2" /> View plans
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Danger Zone */}
       <Card className="border-destructive/30 shadow-sm">
