@@ -1,0 +1,110 @@
+Continue development autonomously. Do not stop after one task—work through this priority list until all items are complete, testing after every major change.
+
+PHASE 1 – Performance
+- Audit every API call and eliminate redundant requests.
+- Add caching wherever safe to reduce latency.
+- Lazy load heavy components.
+- Optimize bundle size.
+- Improve mobile responsiveness.
+- Ensure no screen takes longer than 2 seconds to load on normal connections.
+
+PHASE 2 – Database
+- Verify every table has proper indexes.
+- Remove duplicate records automatically where appropriate.
+- Add data validation before writes.
+- Prevent race conditions during simultaneous requests.
+- Optimize every query for speed.
+
+PHASE 3 – Security
+- Validate every user input.
+- Sanitize uploaded files.
+- Prevent duplicate submissions.
+- Add rate limiting.
+- Strengthen authentication checks.
+- Verify users cannot access another user's information through URLs or API requests.
+- Log all security events.
+
+PHASE 4 – AI Improvements
+- Improve prompt consistency.
+- Add graceful fallbacks if an AI provider fails.
+- Display progress indicators during AI processing.
+- Prevent hallucinated financial calculations by requiring deterministic math.
+- Improve conversation memory inside each session.
+
+PHASE 5 – Financial Engine
+- Verify every calculator against known test cases.
+- Add edge-case handling for:
+  - Negative balances
+  - Zero income
+  - Multiple jobs
+  - Weekly/Biweekly/Monthly pay
+  - Overtime
+  - Per diem
+  - Bonuses
+  - Employer retirement matching
+- Ensure every calculation is deterministic and repeatable.
+
+PHASE 6 – Document Scanner
+- Continue improving OCR accuracy.
+- Improve recognition of low-quality images.
+- Better detect rotated documents.
+- Better detect cropped images.
+- Handle partially obscured text.
+- Reduce false positives.
+- Improve confidence scoring.
+- Continue expanding support for additional financial document layouts.
+
+PHASE 7 – Error Recovery
+- Add retry logic.
+- Prevent crashes from malformed data.
+- Display meaningful user-friendly error messages.
+- Automatically recover from temporary failures whenever possible.
+
+PHASE 8 – User Experience
+- Add subtle loading animations.
+- Improve navigation consistency.
+- Reduce unnecessary clicks.
+- Make every workflow obvious for first-time users.
+- Verify dark mode and light mode consistency.
+- Improve accessibility.
+
+PHASE 9 – Testing
+Run an automated regression suite covering:
+- Authentication
+- Dashboard
+- AI chat
+- OCR
+- Budget tools
+- Investment tracking
+- Bills
+- Financial calculators
+- Referral system
+- Notifications
+- Settings
+- Mobile layouts
+- Offline recovery
+
+Automatically fix every failing test before continuing.
+
+PHASE 10 – Final Audit
+Search the entire codebase for:
+- TODO
+- FIXME
+- console.log
+- dead code
+- unused imports
+- duplicate components
+- memory leaks
+- performance bottlenecks
+- security warnings
+
+Resolve everything possible.
+
+When complete, provide a detailed report including:
+1. Everything improved.
+2. Every bug fixed.
+3. Performance improvements measured.
+4. Remaining known issues.
+5. Recommendations for the next development sprint.
+
+Do not pause after one task. Continue autonomously through the entire list until all feasible work is completed.

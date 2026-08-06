@@ -687,10 +687,7 @@ export default function Scanner() {
     if (docs.every(d => d.status === 'done' || d.status === 'error')) {
       const doneCount  = docs.filter(d => d.status === 'done').length;
       const errorCount = docs.filter(d => d.status === 'error').length;
-      console.log(
-        `[BCFAI] batch complete — ${doneCount} succeeded, ${errorCount} failed ` +
-        `(total ${docs.length})`,
-      );
+
       setStep('review');
     }
   }, [docs, step]);
@@ -771,10 +768,7 @@ export default function Scanner() {
     while (activeCountRef.current < SCAN_CONCURRENCY && queueRef.current.length > 0) {
       const docId = queueRef.current.shift()!;
       activeCountRef.current++;
-      console.log(
-        `[BCFAI] queue — dispatching slot ${activeCountRef.current}/${SCAN_CONCURRENCY} ` +
-        `docId=${docId} pending=${queueRef.current.length}`,
-      );
+
       // .finally() releases the slot unconditionally — success, fatal error,
       // AND the 429-release path all flow through here.
       runOneScan(docId).finally(() => {
@@ -793,7 +787,7 @@ export default function Scanner() {
     const doc = docsRef.current.find(d => d.id === docId);
     if (!doc) return; // Doc was removed while waiting in the queue
 
-    console.log(`[BCFAI] processing started — "${doc.file.name}" (id=${docId})`);
+
 
     setDocs(prev => prev.map(d =>
       d.id === docId
@@ -825,11 +819,7 @@ export default function Scanner() {
         confidenceFlags, reconciliationWarnings, errorPatternFlags, hasBlockingIssues,
       } = normalizeScanResult(result);
 
-      console.log(
-        `[BCFAI] extraction complete — "${doc.file.name}": docType=${resolvedDocType}` +
-        (institutionName ? ` institution="${institutionName}"` : '') +
-        (hasBlockingIssues ? ' ⚠️ blocking gate flags' : ''),
-      );
+
 
       setDocs(prev => prev.map(d =>
         d.id === docId
@@ -1000,10 +990,7 @@ export default function Scanner() {
         : doc,
     );
 
-    console.log(
-      `[BCFAI] files selected: ${files.length} file(s): ` +
-      files.map(f => `${f.name} (${(f.size / 1024).toFixed(1)} KB)`).join(', '),
-    );
+
 
     // Reset all queue state from any previous batch.
     retryTimersRef.current.forEach(t => clearTimeout(t));
@@ -1024,10 +1011,7 @@ export default function Scanner() {
       .map(d => d.id);
 
     const dupCount = docsWithDupErrors.filter(d => d.status === 'error' && d.errorStage === 'duplicate_document').length;
-    console.log(
-      `[BCFAI] queue created: ${queueRef.current.length} doc(s) to process` +
-      (dupCount > 0 ? `, ${dupCount} duplicate(s) skipped` : ''),
-    );
+
 
     dispatchNext();
     // Step transition to 'review' is handled by the batch-completion useEffect.

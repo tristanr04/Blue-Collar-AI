@@ -63,12 +63,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        <nav className="flex-1 space-y-1 overflow-y-auto p-3">
+        <nav className="flex-1 space-y-1 overflow-y-auto p-3" aria-label="Main navigation">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = location.startsWith(item.href);
             return (
-              <Link key={item.href} href={item.href} className={cn(
+              <Link key={item.href} href={item.href} aria-current={active ? 'page' : undefined} className={cn(
                 'group flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold transition-all',
                 active
                   ? 'border border-blue-400/25 bg-blue-500/15 text-blue-300 shadow-[inset_3px_0_0_#3b82f6]'
@@ -113,8 +113,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 <Loader2 className="h-3 w-3 animate-spin" /> {activeCount}
               </div>
             )}
-            <Link href="/settings" className="rounded-xl border border-white/10 bg-white/5 p-2 text-slate-400 hover:text-white">
-              <Settings className="h-5 w-5" />
+            <Link href="/settings" aria-label="Settings" className="rounded-xl border border-white/10 bg-white/5 p-2 text-slate-400 hover:text-white">
+              <Settings className="h-5 w-5" aria-hidden="true" />
             </Link>
           </div>
         </header>
@@ -122,12 +122,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <div className="flex-1 overflow-y-auto">{children}</div>
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-50 flex items-center border-t border-blue-500/15 bg-[#07111f]/95 px-1 pb-safe backdrop-blur-xl md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-50 flex items-center border-t border-blue-500/15 bg-[#07111f]/95 px-1 pb-safe backdrop-blur-xl md:hidden" aria-label="Mobile navigation">
         {mobileItems.map((item) => {
           const Icon = item.icon;
           const active = location.startsWith(item.href);
           return (
-            <Link key={item.href} href={item.href} className={cn(
+            <Link key={item.href} href={item.href} aria-label={item.label} aria-current={active ? 'page' : undefined} className={cn(
               'relative flex min-h-16 flex-1 flex-col items-center justify-center gap-1 text-[10px] font-semibold transition-colors',
               active ? 'text-blue-400' : 'text-slate-500'
             )}>

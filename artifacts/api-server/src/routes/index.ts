@@ -1,4 +1,9 @@
 import { Router, type IRouter } from "express";
+import {
+  financialGuideLimiter,
+  exportLimiter,
+  spendingLimiter,
+} from "../middlewares/rate-limit.js";
 import healthRouter from "./health.js";
 import authRouter from "./auth.js";
 import financialDataRouter from "./financial-data.js";
@@ -41,13 +46,13 @@ router.use(backgroundJobsRouter);
 router.use(profileContextRouter);
 router.use(taxScenariosRouter);
 router.use(taxContextRouter);
-router.use(spendingInsightsRouter);
+router.use(spendingLimiter, spendingInsightsRouter);
 router.use(transactionImportRouter);
 router.use(transactionStatementImportRouter);
 router.use(commandCenterRouter);
 router.use(financialMemoryRouter);
 router.use(retentionNotificationsRouter);
-router.use(financialGuideRouter);
+router.use(financialGuideLimiter, financialGuideRouter);
 router.use(insuranceScanRouter);
 router.use(subscriptionsRouter);
 router.use(overtimeTaxRouter);
@@ -58,6 +63,6 @@ router.use(weeklySnapshotRouter);
 router.use(goalsRouter);
 router.use(debtPayoffRouter);
 router.use(workspacesRouter);
-router.use(exportRouter);
+router.use(exportLimiter, exportRouter);
 
 export default router;

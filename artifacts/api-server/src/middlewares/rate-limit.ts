@@ -94,3 +94,24 @@ export const portalLimiter = createLimiter({
   limit: 20,
   label: "portal",
 });
+
+/** Financial guide AI (unauthenticated): 30 per hour per IP. */
+export const financialGuideLimiter = createLimiter({
+  windowMs: 60 * 60 * 1000,
+  limit: 30,
+  label: "financial_guide",
+});
+
+/** Data export: 10 per 15 minutes per IP. */
+export const exportLimiter = createLimiter({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  label: "export",
+});
+
+/** Spending analysis (public compute): 60 per 15 minutes per IP. */
+export const spendingLimiter = createLimiter({
+  windowMs: 15 * 60 * 1000,
+  limit: 60,
+  label: "spending_analyze",
+});

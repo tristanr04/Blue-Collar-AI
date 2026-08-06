@@ -8,3 +8,4 @@
 - [BCFAI Sprints 3-8](bcfai-sprints-3-8.md) — Weekly Snapshot, Smarter AI, All-State Tax, Dashboard spec, Known-gap fixes, Perf (lazy+cache), QA clean.
 - [BCFAI Subscription & Billing](bcfai-subscription-billing.md) — webhook raw-body placement, router path must be "/", DI pattern for tests, scan usage recording, node:test not Vitest.
 - [BCFAI Sprint Backtest](bcfai-sprint-backtest.md) — Phase 1-3 results (601/272 tests pass), new features, API gotchas (checkEntitlement shape, paystub fields, enum cast fix).
+- [BCFAI 10-Phase Sprint](bcfai-10phase-sprint.md) — 670 tests/0 fail; DB indexes, security hardening, error boundaries, accessibility, edge-case tests; asset type enum is capitalized; overtime needs hoursWorkedInWorkweek for "qualified" status.

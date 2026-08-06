@@ -12,6 +12,8 @@ import MigrationDialog from '@/components/MigrationDialog';
 import { JobQueueProvider } from '@/lib/jobQueue';
 import { Shell } from '@/components/layout/Shell';
 import { DeveloperOnlyPage, ProtectedPage } from '@/components/auth/ProtectedPage';
+import { PageErrorBoundary } from '@/components/ErrorBoundary';
+import { PageSkeleton } from '@/components/PageLoadingSpinner';
 
 // ─── Route-level code splitting (Sprint 7 performance) ───────────────────────
 // Core auth / onboarding pages load eagerly (needed before shell renders).
@@ -138,39 +140,26 @@ function ClerkQueryClientCacheInvalidator() {
   return null;
 }
 
-// ─── Page-transition skeleton (Suspense fallback) ────────────────────────────
-function PageSkeleton() {
-  return (
-    <div className="min-h-screen bg-[#050b15] p-4">
-      <div className="mx-auto max-w-2xl space-y-4">
-        <div className="h-8 w-48 animate-pulse rounded-xl bg-white/[0.06]" />
-        <div className="h-36 w-full animate-pulse rounded-3xl bg-white/[0.06]" />
-        <div className="grid grid-cols-2 gap-3">
-          {[1,2,3,4].map(i => (
-            <div key={i} className="h-24 animate-pulse rounded-2xl bg-white/[0.06]" />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Route wrappers ───────────────────────────────────────────────────────────
 const protectedPage = (Page: React.ComponentType) =>
   function ProtectedRoute() {
     return (
-      <React.Suspense fallback={<PageSkeleton />}>
-        <ProtectedPage><Page /></ProtectedPage>
-      </React.Suspense>
+      <PageErrorBoundary>
+        <React.Suspense fallback={<PageSkeleton />}>
+          <ProtectedPage><Page /></ProtectedPage>
+        </React.Suspense>
+      </PageErrorBoundary>
     );
   };
 
 const developerPage = (Page: React.ComponentType) =>
   function DeveloperRoute() {
     return (
-      <React.Suspense fallback={<PageSkeleton />}>
-        <DeveloperOnlyPage><Page /></DeveloperOnlyPage>
-      </React.Suspense>
+      <PageErrorBoundary>
+        <React.Suspense fallback={<PageSkeleton />}>
+          <DeveloperOnlyPage><Page /></DeveloperOnlyPage>
+        </React.Suspense>
+      </PageErrorBoundary>
     );
   };
 

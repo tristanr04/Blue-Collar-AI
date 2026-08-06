@@ -6,6 +6,22 @@ const SENSITIVE_API_PREFIXES = [
   "/api/scan-document",
   "/api/ai",
   "/api/capabilities",
+  "/api/goals",
+  "/api/debt-payoff",
+  "/api/tax-scenarios",
+  "/api/tax-context",
+  "/api/timeline",
+  "/api/workspaces",
+  "/api/export",
+  "/api/subscriptions",
+  "/api/spending",
+  "/api/overtime",
+  "/api/health-score",
+  "/api/weekly-snapshot",
+  "/api/command-center",
+  "/api/referrals",
+  "/api/profile-context",
+  "/api/transactions",
 ] as const;
 
 /**

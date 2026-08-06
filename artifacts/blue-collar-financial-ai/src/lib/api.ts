@@ -136,11 +136,6 @@ export async function scanFile(
   // even when the browser omits it (common on iOS Safari).
   form.append("file", file, file.name);
 
-  console.log(
-    `[BCFAI] API request sent — ${file.name} ` +
-    `(${(file.size / 1024).toFixed(1)} KB, type="${file.type || "unknown"}")`,
-  );
-
   let res: Response;
   try {
     // Do NOT set Content-Type manually — let fetch generate the multipart boundary.
@@ -175,10 +170,6 @@ export async function scanFile(
       }),
     );
   }
-
-  console.log(
-    `[BCFAI] API response received — ${file.name} — HTTP ${res.status}`,
-  );
 
   let json: unknown;
   try {

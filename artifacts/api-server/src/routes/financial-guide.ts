@@ -39,16 +39,28 @@ router.post("/ai/financial-guide", async (req, res) => {
     state?: string;
   };
 
-  if (!body.question?.trim()) {
+  const question = body.question?.trim() ?? "";
+  if (!question) {
     res.status(400).json({ error: "Question is required." });
     return;
   }
+  if (question.length > 2_000) {
+    res.status(400).json({ error: "Question must be 2,000 characters or fewer.", maxLength: 2_000 });
+    return;
+  }
+  // Sanitize: limit extractedDocuments to 10 items, cap profile keys to 50
+  const safeDocuments = Array.isArray(body.extractedDocuments)
+    ? body.extractedDocuments.slice(0, 10)
+    : [];
+  const safeProfile = body.financialProfile && typeof body.financialProfile === "object"
+    ? Object.fromEntries(Object.entries(body.financialProfile).slice(0, 50))
+    : {};
 
   const context = {
-    taxYear: body.taxYear ?? null,
-    state: body.state ?? null,
-    financialProfile: body.financialProfile ?? {},
-    extractedDocuments: body.extractedDocuments ?? [],
+    taxYear: typeof body.taxYear === "number" ? body.taxYear : null,
+    state: typeof body.state === "string" ? body.state.slice(0, 2).toUpperCase() : null,
+    financialProfile: safeProfile,
+    extractedDocuments: safeDocuments,
   };
 
   try {
@@ -59,7 +71,7 @@ router.post("/ai/financial-guide", async (req, res) => {
         { role: "system", content: GUIDE_PROMPT },
         {
           role: "user",
-          content: `CONFIRMED CONTEXT:\n${JSON.stringify(context, null, 2)}\n\nQUESTION:\n${body.question}`,
+          content: `CONFIRMED CONTEXT:\n${JSON.stringify(context, null, 2)}\n\nQUESTION:\n${question}`,
         },
       ],
     });
