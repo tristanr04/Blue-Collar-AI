@@ -10,6 +10,7 @@
  *   - Filters every table by userId — no cross-user leakage is possible.
  *   - Excludes internal processing fields (token hashes, etc.).
  *   - Rate-limited to 10 exports per 15 minutes to prevent abuse.
+ *   - Explicitly disables browser and intermediary caching of financial data.
  */
 
 import { Router, type IRouter } from "express";
@@ -101,6 +102,10 @@ router.get(
         payoffPlans,
       };
 
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+      res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("Content-Type", "application/json");
       res.setHeader(
         "Content-Disposition",
