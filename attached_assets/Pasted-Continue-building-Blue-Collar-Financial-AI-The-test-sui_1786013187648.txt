@@ -1,0 +1,103 @@
+Continue building Blue Collar Financial AI. The test suite and production build are currently clean. Move to the next task: complete the Subscription & Billing system.
+
+Do not redesign unrelated parts of the app and do not stop to ask me questions. First inspect the existing authentication, database schema, routes, pricing UI, feature limits, and any existing Stripe code. Preserve working functionality and follow the project’s current architecture and design system.
+
+Implement a complete, production-ready subscription system with these plans:
+
+1. Free
+- $0
+- Limited document scans per month
+- Basic dashboard and budgeting features
+- No premium AI analysis
+- No team accounts
+
+2. Pro
+- Use the existing price if one is already configured.
+- If no price exists, use $19.99/month as a configurable default.
+- Higher monthly scan allowance
+- Full AI financial analysis
+- Financial history and weekly snapshots
+- Export and reporting features
+- Priority processing
+
+3. Business
+- Use the existing price if one is already configured.
+- If no price exists, use $49.99/month as a configurable default.
+- Everything in Pro
+- Multiple users or team seats
+- Shared client/customer workspace support
+- Higher usage limits
+- Business reporting and administrative controls
+
+All pricing, limits, feature access, and Stripe price IDs must be stored in one centralized configuration file so they can be changed later without editing multiple files.
+
+Stripe requirements:
+- Use Stripe Checkout for new subscriptions.
+- Use Stripe Customer Portal for upgrades, downgrades, payment-method updates, invoice history, and cancellations.
+- Start in Stripe test mode only. Do not activate live charges.
+- Use environment variables for all Stripe secrets and price IDs.
+- Never expose the Stripe secret key to the frontend.
+- Create or reuse a Stripe customer for each authenticated user.
+- Store Stripe customer ID, subscription ID, plan, subscription status, current period dates, cancellation status, and usage limits in the database.
+- Add secure webhook handling with signature verification.
+- Handle at minimum:
+  - checkout.session.completed
+  - customer.subscription.created
+  - customer.subscription.updated
+  - customer.subscription.deleted
+  - invoice.paid
+  - invoice.payment_failed
+- Make webhook processing idempotent so duplicate events cannot corrupt subscription data.
+- The webhook must be the source of truth for paid access.
+- Do not grant paid access based only on a successful frontend redirect.
+
+Access-control requirements:
+- Create a reusable server-side subscription/entitlement guard.
+- Paid features must be enforced on the server, not only hidden in the interface.
+- Prevent users from bypassing scan limits by manually calling API routes.
+- Track monthly usage per billing period.
+- Reset usage safely when a new billing period begins.
+- Display the user’s current plan, usage, renewal date, and subscription status.
+- Show clear upgrade prompts when a limit is reached.
+- Users with past_due or unpaid subscriptions should receive a clear billing warning and restricted premium access.
+- Canceled subscriptions should retain access until the paid period ends.
+- Free users must still be able to use the core app without broken screens.
+
+User-interface requirements:
+- Add a polished pricing page matching the existing Blue Collar Financial AI design.
+- Clearly compare Free, Pro, and Business.
+- Mark Pro as the recommended plan.
+- Add Upgrade, Manage Billing, Change Plan, and Cancel Subscription actions where appropriate.
+- Add loading, success, canceled-checkout, payment-failed, and error states.
+- Make all subscription screens mobile responsive.
+- Do not use fake success states or hardcoded subscription status.
+
+Database and safety:
+- Create migrations safely and preserve existing user data.
+- Do not delete or rename existing production fields unless absolutely necessary.
+- Add appropriate indexes and uniqueness constraints.
+- Ensure one Stripe event cannot be processed more than once.
+- Do not log payment details, secrets, or sensitive financial data.
+- Add rate limiting to checkout-session and billing-portal endpoints.
+
+Testing:
+- Add unit and integration tests for plan configuration, entitlement checks, monthly limits, webhook verification, duplicate webhook events, upgrades, downgrades, cancellation, failed payments, and free-user restrictions.
+- Mock Stripe during automated tests.
+- Test unauthorized requests and users attempting to access another user’s billing records.
+- Run all existing tests plus the new tests.
+- Run TypeScript checks, linting, API/Zod tests, frontend tests, and a production build.
+- Fix every regression caused by this work.
+
+If Stripe environment variables are not available, finish the full implementation using clearly documented placeholder environment variables and mocked test coverage. The application must continue running without crashing, and the pricing page should explain that checkout is temporarily unavailable rather than pretending payment succeeded.
+
+At completion, provide:
+1. A concise summary of what was implemented.
+2. Every database migration created.
+3. Every required environment variable.
+4. The Stripe dashboard setup steps I must perform.
+5. The webhook endpoint URL and events that must be selected.
+6. The exact Free, Pro, and Business limits configured.
+7. Test totals and production-build result.
+8. Any remaining verified gaps.
+
+Do not move to another feature after completing this task.
