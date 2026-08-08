@@ -1,5 +1,6 @@
 import { fileTypeFromBuffer } from "file-type";
 import sharp, { type Metadata as SharpMetadata } from "sharp";
+import { computeFileFingerprint } from "./fingerprint.js";
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_IMAGE_PIXELS = 25_000_000;
@@ -64,6 +65,7 @@ export interface NormalizedImage {
   mime: "image/jpeg";
   width: number;
   height: number;
+  fingerprint: string;
 }
 
 /**
@@ -115,6 +117,7 @@ export async function normalizeImage(buffer: Buffer): Promise<NormalizedImage> {
       mime: "image/jpeg",
       width: normalized.info.width,
       height: normalized.info.height,
+      fingerprint: computeFileFingerprint(normalized.data),
     };
   } catch {
     throw new UploadValidationError(

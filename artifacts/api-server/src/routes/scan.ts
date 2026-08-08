@@ -1334,9 +1334,10 @@ router.post(
       // ── Fingerprint / duplicate-document check ─────────────────────────────
       // Computed BEFORE AI so we never waste an AI call on a duplicate upload.
       // Ensure the user row exists first (required by the FK on scanned_documents).
-      const fingerprint = computeFileFingerprint(buffer);
+      const rawFingerprint = computeFileFingerprint(buffer);
+      let persistenceFingerprint = rawFingerprint;
       await ensureUser({ userId });
-      const existingDoc = await checkDocumentFingerprint(userId, fingerprint);
+      const existingDoc = await checkDocumentFingerprint(userId, rawFingerprint);
       if (existingDoc) {
         abort.clearTimeout();
         res.status(409).json({
@@ -1402,6 +1403,30 @@ router.post(
         logger.info({ file: originalname, kind: "pdf" }, "[BCFAI] AI request started");
       } else {
         const normalized = await normalizeImage(buffer);
+        persistenceFingerprint = normalized.fingerprint;
+
+        // Metadata and encoder differences must not let a previously imported
+        // photo bypass duplicate detection. Check the canonical, sanitized
+        // image before making any AI request.
+        if (persistenceFingerprint !== rawFingerprint) {
+          const existingCanonicalDocument = await checkDocumentFingerprint(
+            userId,
+            persistenceFingerprint,
+          );
+          if (existingCanonicalDocument) {
+            abort.clearTimeout();
+            res.status(409).json({
+              stage: "duplicate_document",
+              resultCode: "PROCESSING_ERROR",
+              error:
+                "This document has already been imported. Each file can only be added once per account. " +
+                `(First imported: ${existingCanonicalDocument.createdAt.toLocaleDateString()})`,
+              retryable: false,
+            });
+            return;
+          }
+        }
+
         responseMime = normalized.mime;
         normalizedDimensions = {
           width: normalized.width,
@@ -1621,7 +1646,7 @@ router.post(
         );
 
         createScannedDocument(userId, {
-          fileFingerprint: fingerprint,
+          fileFingerprint: persistenceFingerprint,
           fileName: originalname,
           mimeType: responseMime,
           documentType: "Auto Loan",
@@ -1675,7 +1700,7 @@ router.post(
         );
 
         createScannedDocument(userId, {
-          fileFingerprint: fingerprint,
+          fileFingerprint: persistenceFingerprint,
           fileName: originalname,
           mimeType: responseMime,
           documentType: "Bank Statement",
@@ -1879,7 +1904,7 @@ router.post(
 
       // ── Persist document record (fire-and-forget; never fail the scan) ─────
       createScannedDocument(userId, {
-        fileFingerprint: fingerprint,
+        fileFingerprint: persistenceFingerprint,
         fileName: originalname,
         mimeType: responseMime,
         documentType: data.docType ?? "Unknown",
