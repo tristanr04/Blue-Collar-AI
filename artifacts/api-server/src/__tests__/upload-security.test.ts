@@ -7,6 +7,7 @@ import {
   detectSupportedUpload,
   normalizeImage,
 } from "../lib/upload-security.js";
+import { computeFileFingerprint } from "../lib/fingerprint.js";
 
 async function expectUploadError(
   action: () => Promise<unknown>,
@@ -57,6 +58,57 @@ test("detects and normalizes a valid PNG to metadata-free JPEG", async () => {
   assert.equal(normalized.height, 480);
   assert.equal(normalized.buffer[0], 0xff);
   assert.equal(normalized.buffer[1], 0xd8);
+  assert.equal(normalized.fingerprint, computeFileFingerprint(normalized.buffer));
+});
+
+test("canonical image fingerprints ignore removable metadata", async () => {
+  const pixels = {
+    create: {
+      width: 24,
+      height: 16,
+      channels: 3 as const,
+      background: { r: 23, g: 91, b: 177 },
+    },
+  };
+  const plain = await sharp(pixels).png().toBuffer();
+  const withMetadata = await sharp(pixels)
+    .withMetadata({ orientation: 1 })
+    .png()
+    .toBuffer();
+
+  assert.notEqual(
+    computeFileFingerprint(plain),
+    computeFileFingerprint(withMetadata),
+    "fixture must prove raw-byte fingerprints differ",
+  );
+
+  const normalizedPlain = await normalizeImage(plain);
+  const normalizedWithMetadata = await normalizeImage(withMetadata);
+  assert.equal(normalizedPlain.fingerprint, normalizedWithMetadata.fingerprint);
+  assert.deepEqual(normalizedPlain.buffer, normalizedWithMetadata.buffer);
+});
+
+test("canonical image fingerprints still distinguish different pixels", async () => {
+  const first = await sharp({
+    create: {
+      width: 24,
+      height: 16,
+      channels: 3,
+      background: { r: 23, g: 91, b: 177 },
+    },
+  }).png().toBuffer();
+  const second = await sharp({
+    create: {
+      width: 24,
+      height: 16,
+      channels: 3,
+      background: { r: 24, g: 91, b: 177 },
+    },
+  }).png().toBuffer();
+
+  const normalizedFirst = await normalizeImage(first);
+  const normalizedSecond = await normalizeImage(second);
+  assert.notEqual(normalizedFirst.fingerprint, normalizedSecond.fingerprint);
 });
 
 test("rejects corrupt image bytes during normalization", async () => {
